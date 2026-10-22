@@ -122,3 +122,22 @@ def test_middle_frame_picks_the_middle_of_an_odd_count(tmp_path):
     frames = [solid((0, 0, 0))] * 3 + [solid((250, 250, 250))] * 4
     src = write_video(tmp_path / "src.mp4", frames)
     assert np.asarray(middle_frame(src))[10, 10, 0] > 200
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg CLI not installed")
+def test_normalize_nonzero_start_keeps_every_frame(tmp_path):
+    colors = [(i * 5, 255 - i * 5, 40) for i in range(48)]
+    src = write_video(tmp_path / "src.mp4", [solid(c) for c in colors], fps=24)
+    shifted = tmp_path / "shifted.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-itsoffset", "0.3", "-i", str(src)]
+        + ["-c", "copy", str(shifted)],
+        check=True,
+    )
+    meta = normalize(shifted, tmp_path / "n.mp4", min_seconds=0, max_seconds=30)
+    out = [int(f[32, 32, 0]) for f in iter_frames(tmp_path / "n.mp4")]
+    assert meta["frames"] == len(out) == 48
+    assert all(abs(a - c[0]) <= 2 for a, c in zip(out, colors, strict=True))
+    assert all(
+        b - a >= 2 for a, b in zip(out, out[1:], strict=False)
+    )  # strictly advancing: no duplicates
