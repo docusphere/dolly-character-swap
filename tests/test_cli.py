@@ -318,3 +318,26 @@ def test_help_has_example_epilog(capsys):
         cli.main(["--help"])
     text = capsys.readouterr().out
     assert "charswap review <id> --approve" in text and "show stages and review" in text
+
+
+@pytest.mark.parametrize("mode", ["depth", "face_mesh", "depth_mesh", "direct"])
+def test_paid_stage_tables_agree(mode):
+    from character_swap.costs import PREP_STEPS, STAGE_PRICE
+    from character_swap.pipeline import PAID_STAGES
+
+    assert [STAGE_PRICE[s] for s in PAID_STAGES[mode]] == PREP_STEPS[mode]
+
+
+@pytest.mark.parametrize("mode", ["depth", "depth_mesh"])
+def test_paid_stages_exact_for_depth_modes(mode):
+    from character_swap.pipeline import PAID_STAGES
+
+    assert PAID_STAGES[mode] == ["separate", "transcribe", "describe", "depth", "masks"]
+
+
+def test_estimate_stages_matches_prepare_estimate():
+    from character_swap.costs import estimate_prepare, estimate_stages
+    from character_swap.pipeline import PAID_STAGES
+
+    assert estimate_stages(PAID_STAGES["depth"], 30) == estimate_prepare("depth", 30)
+    assert estimate_stages([], 30).total == 0

@@ -91,6 +91,10 @@ def estimate_prepare(mode: str, seconds: float) -> Estimate:
     return Estimate(lines=tuple(_cost(key, seconds) for key in PREP_STEPS[mode]))
 
 
+def estimate_stages(stage_names: list[str], seconds: float) -> Estimate:
+    return Estimate(lines=tuple(_cost(STAGE_PRICE[name], seconds) for name in stage_names))
+
+
 def estimate_repair() -> Estimate:
     return Estimate(lines=(_cost("sam3", 0),))
 

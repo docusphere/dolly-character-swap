@@ -14,10 +14,9 @@ import av
 
 from character_swap.config import MissingSettingError, Settings
 from character_swap.costs import (
-    PRICES,
-    STAGE_PRICE,
     estimate_prepare,
     estimate_repair,
+    estimate_stages,
     record_spend,
 )
 from character_swap.jobs import Job, JobError
@@ -195,7 +194,7 @@ def _resume(args, settings, env) -> int:
         settings.require("REPLICATE_API_TOKEN")
     remaining = remaining_paid_stages(job)
     if remaining:
-        total = sum(PRICES[STAGE_PRICE[name]].usd for name in remaining)
+        total = estimate_stages(remaining, seconds=30).total
         env.out(f"Remaining paid steps: {', '.join(remaining)} (up to ${total:.4f})")
         if not args.yes and not env.proceed():
             return 1
