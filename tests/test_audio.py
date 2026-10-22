@@ -1,3 +1,5 @@
+import wave
+
 import av
 import pytest
 
@@ -9,6 +11,7 @@ from character_swap.media.audio import (
     restore_original_audio,
     write_wav,
 )
+from character_swap.media.video import count_frames, stream_seconds
 from helpers import solid, tone, write_video
 
 
@@ -58,3 +61,46 @@ def test_restore_refuses_large_mismatch(tmp_path):
     generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 24)
     with pytest.raises(DurationMismatchError):
         restore_original_audio(generated, original, tmp_path / "final.mp4")
+
+
+def _held_setup(tmp_path):
+    original = write_video(
+        tmp_path / "upload.mp4", [solid((40, 40, 40))] * 34, audio_seconds=34 / 24
+    )
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 26)
+    return original, generated
+
+
+def test_held_restore_leaves_no_temp_files(tmp_path):
+    original, generated = _held_setup(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    restore_original_audio(generated, original, out_dir / "final.mp4")
+    assert [p.name for p in out_dir.iterdir()] == ["final.mp4"]
+
+
+def test_held_restore_extends_video_to_audio_length(tmp_path):
+    original, generated = _held_setup(tmp_path)
+    result = restore_original_audio(generated, original, tmp_path / "final.mp4")
+    expected = round(stream_seconds(original, "audio") * 24)
+    assert abs(count_frames(result) - expected) <= 1
+
+
+def test_restore_without_original_audio_fails_fast(tmp_path):
+    original = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 34)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 26)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    with pytest.raises(NoAudioError):
+        restore_original_audio(generated, original, out_dir / "final.mp4")
+    assert list(out_dir.iterdir()) == []
+
+
+def test_read_audio_with_zero_audio_frames_raises(tmp_path):
+    path = tmp_path / "empty.wav"
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(44100)
+    with pytest.raises(NoAudioError):
+        read_audio(path)

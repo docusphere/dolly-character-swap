@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from fractions import Fraction
+import tempfile
 from pathlib import Path
 
 import av
 import numpy as np
 
-from character_swap.media.video import iter_frames
+from character_swap.media.video import VideoWriter, iter_frames, stream_seconds
 
 RATE = 44100
 HOLD_GAP = (0.25, 0.5)  # seconds: short provider rounding gaps fixed by holding the last frame
@@ -33,6 +33,8 @@ def read_audio(path: Path) -> np.ndarray:
         for frame in container.decode(audio=0):
             parts.extend(chunk.to_ndarray() for chunk in resampler.resample(frame))
         parts.extend(chunk.to_ndarray() for chunk in resampler.resample(None))
+    if not parts:
+        raise NoAudioError(f"{Path(path).name} has no decodable audio.")
     return np.concatenate(parts, axis=1)
 
 
@@ -73,62 +75,48 @@ def embed_samples(video: Path, samples: np.ndarray, dst: Path) -> Path:
     return Path(dst)
 
 
-def _video_seconds(path: Path) -> float:
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        if stream.duration:
-            return float(stream.duration * stream.time_base)
-        return float(container.duration / av.time_base)
-
-
-def _audio_seconds(path: Path) -> float:
-    with av.open(str(path)) as container:
-        return float(container.duration / av.time_base)
-
-
 def _hold_last_frame(generated: Path, seconds: float, dst: Path) -> Path:
-    frames = list(iter_frames(generated))
+    """Re-encode `generated` to `seconds`, repeating its last frame (streamed, O(1) memory)."""
     with av.open(str(generated)) as probe:
-        rate = probe.streams.video[0].average_rate or Fraction(24, 1)
-    height, width = frames[0].shape[:2]
-    with av.open(str(dst), "w") as output:
-        stream = output.add_stream("libx264", rate=rate)
-        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
-        stream.options = {"crf": "18"}
-        for index in range(round(seconds * float(rate))):
-            frame = av.VideoFrame.from_ndarray(frames[min(index, len(frames) - 1)], format="rgb24")
-            frame.pts, frame.time_base = index, 1 / rate
-            for packet in stream.encode(frame):
-                output.mux(packet)
-        for packet in stream.encode():
-            output.mux(packet)
+        rate = int(round(float(probe.streams.video[0].average_rate or 24)))
+    target = round(seconds * rate)
+    last, written = None, 0
+    first = next(iter_frames(generated))
+    with VideoWriter(dst, first.shape[1], first.shape[0], fps=rate) as writer:
+        for last in iter_frames(generated):
+            writer.write(last)
+            written += 1
+        while written < target:
+            writer.write(last)
+            written += 1
     return dst
 
 
 def restore_original_audio(generated: Path, original: Path, dst: Path) -> Path:
     """Replace the generated audio with the original's audio packets, byte for byte."""
-    gap = _audio_seconds(original) - _video_seconds(generated)
-    if HOLD_GAP[0] < gap <= HOLD_GAP[1]:
-        generated = _hold_last_frame(
-            generated, _audio_seconds(original), dst.with_suffix(".held.mp4")
-        )
-        gap = _audio_seconds(original) - _video_seconds(generated)
-    if abs(gap) > MAX_MISMATCH:
-        raise DurationMismatchError(
-            f"Generated video differs from the original audio by {gap:+.2f}s; "
-            "refusing to trim, loop or stretch the soundtrack."
-        )
-    with (
-        av.open(str(generated)) as video,
-        av.open(str(original)) as source,
-        av.open(str(dst), "w") as output,
-    ):
-        if not source.streams.audio:
+    with av.open(str(original)) as probe:
+        if not probe.streams.audio:
             raise NoAudioError("The original video has no audio track.")
-        audio = output.add_stream_from_template(source.streams.audio[0])
-        _copy_video_packets(video, output)
-        for packet in source.demux(audio=0):
-            if packet.dts is not None:
-                packet.stream = audio
-                output.mux(packet)
+    audio_seconds = stream_seconds(original, "audio")
+    gap = audio_seconds - stream_seconds(generated, "video")
+    with tempfile.TemporaryDirectory() as scratch:
+        if HOLD_GAP[0] < gap <= HOLD_GAP[1]:
+            generated = _hold_last_frame(generated, audio_seconds, Path(scratch) / "held.mp4")
+            gap = audio_seconds - stream_seconds(generated, "video")
+        if abs(gap) > MAX_MISMATCH:
+            raise DurationMismatchError(
+                f"Generated video differs from the original audio by {gap:+.2f}s; "
+                "refusing to trim, loop or stretch the soundtrack."
+            )
+        with (
+            av.open(str(generated)) as video,
+            av.open(str(original)) as source,
+            av.open(str(dst), "w") as output,
+        ):
+            audio = output.add_stream_from_template(source.streams.audio[0])
+            _copy_video_packets(video, output)
+            for packet in source.demux(audio=0):
+                if packet.dts is not None:
+                    packet.stream = audio
+                    output.mux(packet)
     return Path(dst)

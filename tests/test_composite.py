@@ -1,3 +1,4 @@
+import av
 import numpy as np
 import pytest
 from PIL import Image
@@ -51,3 +52,23 @@ def test_clean_removes_thin_edge_slivers_but_keeps_large_subjects(tmp_path):
     cleaned = np.asarray(Image.open(out / "mask_00000.png"))
     assert cleaned[15, 1] == 0 and cleaned[60, 99] == 255
     assert report[0]["removed_border_pixels"] == 20
+
+
+def test_zero_frames_refused(tmp_path):
+    original = tmp_path / "original.mp4"
+    with av.open(str(original), "w") as out:
+        stream = out.add_stream("libx264", rate=24)
+        stream.width, stream.height, stream.pix_fmt = 64, 64, "yuv420p"
+        out.start_encoding()
+    (tmp_path / "masks").mkdir()
+    with pytest.raises(CompositeError, match="no video frames"):
+        composite_depth_subject(original, original, tmp_path / "masks", tmp_path)
+
+
+def test_unparseable_mask_names_refused(tmp_path):
+    original = write_video(tmp_path / "original.mp4", [solid((0, 0, 0))] * 1)
+    depth = write_video(tmp_path / "depth.mp4", [solid((0, 0, 0))] * 1)
+    masks = write_mask_pngs(tmp_path / "masks", 1)
+    (masks / "mask_00000.png").rename(masks / "mask_final.png")
+    with pytest.raises(CompositeError, match="mask_final"):
+        composite_depth_subject(original, depth, masks, tmp_path)

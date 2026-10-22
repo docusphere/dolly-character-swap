@@ -52,9 +52,19 @@ def composite_depth_subject(
     """Write mask.mp4 and composite-silent.mp4 into out_dir."""
     mask_files = sorted(masks_dir.glob("mask_*.png"))
     counts = [count_frames(original), count_frames(depth), len(mask_files)]
+    if counts[0] == 0:
+        raise CompositeError("The original video has no video frames.")
     if len(set(counts)) != 1:
         raise CompositeError(f"Frame alignment failed (original/depth/masks): {counts}.")
-    indices = [int(p.stem.split("_")[-1]) for p in mask_files]
+    indices = []
+    for path in mask_files:
+        try:
+            indices.append(int(path.stem.split("_")[-1]))
+        except ValueError:
+            raise CompositeError(
+                f"Frame alignment failed: cannot read a frame number from {path.name}; "
+                "masks must be named mask_00000.png, mask_00001.png, ..."
+            ) from None
     if indices != list(range(counts[0])):
         raise CompositeError("Frame alignment failed: missing or shifted mask frame numbers.")
 
