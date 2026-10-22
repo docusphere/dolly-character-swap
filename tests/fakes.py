@@ -5,12 +5,17 @@ import shutil
 from pathlib import Path
 
 
+class ReplicateOutputExpired(RuntimeError):
+    """Stands in for the real client's expiry error (matched by class name)."""
+
+
 class FakeReplicate:
-    def __init__(self, outputs=None, files=None, schema=None, fail_download=()):
+    def __init__(self, outputs=None, files=None, schema=None, fail_download=(), flaky_download=()):
         self.outputs = outputs or {}  # key: version or model -> output
         self.files = files or {}  # url -> local path or bytes to "download"
         self.schema = schema or {"video": {"type": "string", "format": "uri"}}
         self.fail_download = set(fail_download)  # urls whose download raises (expired)
+        self.flaky_download = set(flaky_download)  # urls whose download fails transiently
         self.latest_calls = 0
         self.uploads: list[Path] = []
         self.runs: list[dict] = []
@@ -33,7 +38,9 @@ class FakeReplicate:
 
     def download(self, url: str, dest: Path) -> Path:
         if url in self.fail_download:
-            raise RuntimeError("expired")
+            raise ReplicateOutputExpired("expired")
+        if url in self.flaky_download:
+            raise RuntimeError("connection reset")
         source = self.files[url]
         if isinstance(source, bytes):
             Path(dest).write_bytes(source)

@@ -62,3 +62,33 @@ def test_transcribe_rejects_bad_output_shape(runs_dir, tmp_path, bad):
     fake = FakeReplicate(outputs={WHISPER_VERSION: bad})
     with pytest.raises(StageError, match="whisper-prediction.json"):
         transcribe(job, fake)
+
+
+@pytest.mark.parametrize("bad", [None, [1, 2], "   ", {"a": 1}, [""]])
+def test_describe_rejects_bad_output(runs_dir, tmp_path, bad):
+    from character_swap.stages import StageError
+
+    job = make_job(runs_dir, tmp_path)
+    fake = FakeReplicate(outputs={DESCRIBE_MODEL: bad})
+    with pytest.raises(StageError, match="describe-prediction.json"):
+        describe_scene(job, fake)
+
+
+def test_transcribe_none_output_is_bad_shape(runs_dir, tmp_path):
+    from character_swap.stages import StageError
+
+    job = make_job(runs_dir, tmp_path)
+    fake = FakeReplicate(outputs={WHISPER_VERSION: None})
+    with pytest.raises(StageError, match="whisper-prediction.json"):
+        transcribe(job, fake)
+
+
+def test_text_stages_resume_without_second_run(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    fake = FakeReplicate(
+        outputs={WHISPER_VERSION: {"transcription": "hi"}, DESCRIBE_MODEL: ["A room."]}
+    )
+    for _ in range(2):
+        transcribe(job, fake)
+        describe_scene(job, fake)
+    assert len(fake.runs) == 2

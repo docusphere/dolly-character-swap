@@ -21,6 +21,10 @@ class ReplicateError(RuntimeError):
     """Replicate rejected, failed or has not finished a prediction."""
 
 
+class ReplicateOutputExpired(ReplicateError):
+    """The finished prediction's output link is gone; only a new (paid) run recovers it."""
+
+
 class ReplicateClient:
     def __init__(
         self,
@@ -108,7 +112,7 @@ class ReplicateClient:
             data = self._retry(fetch)
         except httpx.HTTPStatusError as error:
             if error.response.status_code in (403, 404, 410):
-                raise ReplicateError(
+                raise ReplicateOutputExpired(
                     "This output link has expired (Replicate keeps outputs ~1 hour). "
                     "Delete the saved prediction record for this step to regenerate "
                     "— this costs money."

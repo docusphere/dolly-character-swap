@@ -4,7 +4,12 @@ import httpx
 import pytest
 import respx
 
-from character_swap.providers.replicate import API, ReplicateClient, ReplicateError
+from character_swap.providers.replicate import (
+    API,
+    ReplicateClient,
+    ReplicateError,
+    ReplicateOutputExpired,
+)
 
 
 def client(**kw):
@@ -275,7 +280,7 @@ def test_failed_without_error_says_no_reason(tmp_path):
 @respx.mock
 def test_download_expired_and_no_part_file(tmp_path):
     respx.get("https://out/gone").mock(return_value=httpx.Response(404))
-    with pytest.raises(ReplicateError, match="expired"):
+    with pytest.raises(ReplicateOutputExpired, match="expired"):
         client().download("https://out/gone", tmp_path / "f.mp4")
     respx.get("https://out/ok").mock(return_value=httpx.Response(200, content=b"d"))
     client().download("https://out/ok", tmp_path / "g.mp4")

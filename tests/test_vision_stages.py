@@ -179,3 +179,27 @@ def test_depth_huggingface_nested_video_path(tmp_path):
     src.write_bytes(b"v")
     depth_huggingface(src, tmp_path / "d.mp4", client_factory=Client)
     assert (tmp_path / "d.mp4").read_bytes() == b"hf"
+
+
+def test_segment_bad_zip_names_record(tmp_path):
+    video, fake = sam_fake(tmp_path, b"not a zip")
+    with pytest.raises(StageError, match=r"sam-prediction\.json"):
+        segment(video, tmp_path / "sam", "person", fake)
+
+
+def test_segment_transient_download_says_retry_without_charge(tmp_path):
+    video, fake = sam_fake(tmp_path, b"", flaky_download={"https://o/m.zip"})
+    with pytest.raises(StageError, match="no new charge") as info:
+        segment(video, tmp_path / "sam", "person", fake)
+    assert "Delete" not in str(info.value)
+
+
+def test_segment_resume_does_not_rerun(tmp_path):
+    video, fake = sam_fake(tmp_path, make_zip("mask_00000.png"))
+    segment(video, tmp_path / "sam", "person", fake)
+    segment(video, tmp_path / "sam", "person", fake)
+    assert len(fake.runs) == 1
+
+
+def test_pick_depth_url_skips_non_string_values():
+    assert pick_depth_url({"depth_meta": {"a": 1}, "depth_video": "u"}) == "u"

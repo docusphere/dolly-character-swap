@@ -10,9 +10,13 @@ def download_or_fail(replicate, url, dest, *, record, what: str, cost: str):
     try:
         return replicate.download(url, dest)
     except Exception as exc:
+        if any(cls.__name__ == "ReplicateOutputExpired" for cls in type(exc).__mro__):
+            raise StageError(
+                f"The {what} result expired ({exc}). Delete {record} and resume "
+                f"to regenerate it (costs {cost})."
+            ) from exc
         raise StageError(
-            f"Could not download the {what} result ({exc}). Delete {record} and resume "
-            f"to regenerate it (costs {cost})."
+            f"Could not download the {what} result ({exc}). Resume the job to retry; no new charge."
         ) from exc
 
 

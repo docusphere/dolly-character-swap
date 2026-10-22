@@ -27,13 +27,19 @@ def segment(video: Path, out_dir: Path, subject: str, replicate) -> Path:
     raw = out_dir / "raw-masks"
     raw.mkdir(exist_ok=True)
     written = 0
-    with zipfile.ZipFile(archive) as zf:
-        names = zf.namelist()
-        for name in names:
-            base = Path(name).name
-            if base.startswith("mask_") and base.endswith(".png"):
-                (raw / base).write_bytes(zf.read(name))
-                written += 1
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            names = zf.namelist()
+            for name in names:
+                base = Path(name).name
+                if base.startswith("mask_") and base.endswith(".png"):
+                    (raw / base).write_bytes(zf.read(name))
+                    written += 1
+    except zipfile.BadZipFile as exc:
+        raise StageError(
+            f"SAM 3 result is not a valid zip ({exc}). "
+            f"Delete {record} and resume to regenerate it (costs ~$0.002)."
+        ) from exc
     if not written:
         raise StageError(
             f"SAM 3 returned no mask_*.png files (entries: {names[:5]}). "

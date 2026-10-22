@@ -34,6 +34,22 @@ def test_separate_writes_vocals_and_music(job, tmp_path):
     assert np.abs(music[:, :n] - expected).max() < 1e-3
 
 
+def test_separate_transient_download_says_retry_without_charge(job, tmp_path):
+    _, urls, files = stem_files(tmp_path)
+    fake = FakeReplicate(outputs={DEMUCS_VERSION: urls}, files=files, flaky_download={"u/bass"})
+    with pytest.raises(StageError, match="connection reset") as info:
+        separate_vocals(job, fake)
+    assert "no new charge" in str(info.value) and "Delete" not in str(info.value)
+
+
+def test_separate_resume_does_not_rerun(job, tmp_path):
+    _, urls, files = stem_files(tmp_path)
+    fake = FakeReplicate(outputs={DEMUCS_VERSION: urls}, files=files)
+    separate_vocals(job, fake)
+    separate_vocals(job, fake)
+    assert len(fake.runs) == 1
+
+
 @pytest.mark.parametrize("missing", ["vocals", "drums"])
 def test_separate_rejects_incomplete_stems(job, tmp_path, missing):
     _, urls, files = stem_files(tmp_path)
@@ -109,8 +125,13 @@ def test_pitch_timeout_is_stage_error(tmp_path, monkeypatch):
 
 def test_pitch_clips_to_full_scale(tmp_path, monkeypatch):
     source = write_wav(tmp_path / "vocals.wav", tone(0.2))
-    loud = write_wav(tmp_path / "loud.wav", tone(0.2) * 0.9)
-    binary = fake_rubberband(tmp_path, f'cp {loud} "$7"')
+    binary = fake_rubberband(tmp_path, 'echo shifted > "$7"')
     monkeypatch.setattr("shutil.which", lambda _name: binary)
-    out = pitch_vocals(source, tmp_path / "p.wav")
-    assert np.abs(read_audio(out)).max() <= 1.0
+    loud = np.full((2, 8820), 1.8)
+    monkeypatch.setattr("character_swap.stages.pitch.read_audio", lambda path: loud)
+    written = {}
+    monkeypatch.setattr(
+        "character_swap.stages.pitch.write_wav", lambda path, data: written.update(data=data)
+    )
+    pitch_vocals(source, tmp_path / "p.wav")
+    assert np.abs(written["data"]).max() <= 1.0

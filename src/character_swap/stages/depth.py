@@ -19,7 +19,9 @@ def pick_depth_url(output) -> str:
     elif isinstance(output, list) and output:
         url = output[0]
     elif isinstance(output, dict):
-        url = next((v for k, v in output.items() if "depth" in k and v), None)
+        url = next(
+            (v for k, v in output.items() if "depth" in k and isinstance(v, str) and v), None
+        )
     if not isinstance(url, str) or not url:
         raise StageError(f"Depth model returned an unexpected output: {output!r}")
     return url

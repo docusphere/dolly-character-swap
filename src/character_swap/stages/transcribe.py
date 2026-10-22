@@ -17,9 +17,13 @@ def transcribe(job: Job, replicate) -> str:
         input={"audio": url, "transcription": "plain text"},
         record=record,
     )
-    text = output.get("transcription") if isinstance(output, dict) else output
-    if text is not None and not isinstance(text, str) or isinstance(output, str):
+    if not isinstance(output, dict):
         raise bad_output(record, "Whisper", output)
-    text = (text or "").strip()
+    text = output.get("transcription")
+    if text is None:
+        text = ""
+    elif not isinstance(text, str):
+        raise bad_output(record, "Whisper", output)
+    text = text.strip()
     job.update(transcript=text)
     return text
