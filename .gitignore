@@ -1,17 +1,24 @@
+# secrets
 .env
-.venv/
-__pycache__/
-*.pyc
-runs/
-*.log
-.DS_Store
-
-.runtime-webhook.json
-
 .env.*
 !.env.example
 *.pem
 *.key
 
-.venv-face/
+# environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# runtime data
+runs/
 models/
+*.log
+.DS_Store
+
+# legacy code being ported (deleted in Plan 3, never committed)
+_legacy/
