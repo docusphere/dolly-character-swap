@@ -70,7 +70,7 @@ def test_separate_ignores_unexpected_stem_names(job, tmp_path):
     urls["../../evil"] = "u/vocals"
     fake = FakeReplicate(outputs={DEMUCS_VERSION: urls}, files=files)
     separate_vocals(job, fake)
-    assert not (job.path("..") / "evil.wav").exists()
+    assert not (job.root.parent / "evil.wav").exists()
     assert not job.path("stem-../../evil.wav").exists()
 
 

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import csv
+import threading
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from character_swap.jobs import Job
+
+_LOG_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -63,8 +67,8 @@ class Estimate:
         return sum(line.usd for line in self.lines)
 
     def describe(self) -> str:
-        rows = [f"  {line.item:<28} ~${line.usd:.3f}" for line in self.lines]
-        rows.append(f"  {'Total':<28} ~${self.total:.3f}")
+        rows = [f"  {line.item:<28} ~${line.usd:.4f}" for line in self.lines]
+        rows.append(f"  {'Total':<28} ~${self.total:.4f}")
         rows.append("  (estimate; check your provider billing page for exact charges)")
         return "\n".join(rows)
 
@@ -85,21 +89,28 @@ def estimate_repair() -> Estimate:
 
 def record_spend(job: Job, step: str, estimate: Estimate, runs_dir: Path) -> None:
     at = datetime.now(UTC).isoformat(timespec="seconds")
-    costs = job.state.get("costs", [])
-    costs.append({"step": step, "usd": estimate.total, "at": at})
-    job.update(costs=costs)
+    job.append_cost({"step": step, "usd": estimate.total, "at": at})
     log = Path(runs_dir) / "spend-log.csv"
-    new = not log.exists()
-    with log.open("a", newline="") as file:
-        writer = csv.writer(file)
-        if new:
-            writer.writerow(["at", "job", "step", "usd_estimate"])
-        writer.writerow([at, job.id, step, f"{estimate.total:.4f}"])
+    with _LOG_LOCK:
+        new = not log.exists() or log.stat().st_size == 0
+        with log.open("a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            if new:
+                writer.writerow(["at", "job", "step", "usd_estimate", "usd_micro"])
+            writer.writerow(
+                [at, job.id, step, f"{estimate.total:.4f}", round(estimate.total * 1_000_000)]
+            )
 
 
 def total_spend(runs_dir: Path) -> float:
     log = Path(runs_dir) / "spend-log.csv"
     if not log.exists():
         return 0.0
-    with log.open() as file:
-        return sum(float(row["usd_estimate"]) for row in csv.DictReader(file))
+    micro = 0
+    with log.open(encoding="utf-8", newline="") as file:
+        for number, row in enumerate(csv.DictReader(file), start=2):
+            try:
+                micro += int(row["usd_micro"])
+            except (KeyError, TypeError, ValueError):
+                warnings.warn(f"Skipping unreadable spend-log.csv row {number}.", stacklevel=2)
+    return micro / 1_000_000

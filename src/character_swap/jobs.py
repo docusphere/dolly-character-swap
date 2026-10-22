@@ -102,7 +102,16 @@ class Job:
         return cls(job_id, root)
 
     def path(self, name: str) -> Path:
+        resolved = (self.root / name).resolve()
+        if not resolved.is_relative_to(self.root.resolve()):
+            raise JobError(f"{name!r} is outside the job folder.")
         return self.root / name
+
+    def append_cost(self, entry: dict[str, Any]) -> None:
+        with _lock_for(self.id):
+            data = self.state
+            data.setdefault("costs", []).append(entry)
+            self._write(data)
 
     @property
     def state(self) -> dict[str, Any]:

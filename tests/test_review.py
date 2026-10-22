@@ -65,3 +65,40 @@ def test_reject_and_clear(depth_job):
     assert status(depth_job)["status"] == "rejected"
     clear(depth_job)
     assert status(depth_job)["status"] == "pending"
+
+
+def test_review_json_is_written_atomically_and_corrupt_is_pending(depth_job):
+    decide(depth_job, approved=True, note="ok", fingerprint=fingerprint(depth_job))
+    assert not list(depth_job.root.glob("*.tmp"))
+    depth_job.path("review.json").write_text("{not json")
+    assert status(depth_job)["status"] == "pending"
+    with pytest.raises(ReviewError, match="Review required"):
+        require_approved(depth_job)
+
+
+def test_fingerprint_framing_distinguishes_boundaries(depth_job):
+    before = fingerprint(depth_job)
+    # moving bytes between adjacent files must change the hash
+    depth_job.path("original.mp4").write_bytes(b"original.mp4" + b"d")
+    depth_job.path("depth.mp4").write_bytes(b"epth.mp4")
+    assert fingerprint(depth_job) != before
+
+
+def test_missing_character_or_unknown_mode_raises_review_error(runs_dir, tmp_path):
+    video = tmp_path / "in.mp4"
+    video.write_bytes(b"v")
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    job.update(mode="direct")
+    with pytest.raises(ReviewError, match="character"):
+        review_files(job)
+    job.update(mode="bogus")
+    with pytest.raises(ReviewError, match="Unknown mode"):
+        review_files(job)
+
+
+def test_deleted_reviewed_file_is_unavailable(depth_job):
+    decide(depth_job, approved=True, note="ok", fingerprint=fingerprint(depth_job))
+    depth_job.path("depth.mp4").unlink()
+    assert status(depth_job)["status"] == "unavailable"
+    with pytest.raises(ReviewError, match="Review required"):
+        require_approved(depth_job)

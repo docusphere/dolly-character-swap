@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
+MAX_PROMPT = 4000
+MAX_SCENE = 300
+_REFERENCE = re.compile(r"@(?=(?:image|video|audio)\d)", flags=re.IGNORECASE)
+
 BASE = (
     "Replace the person in @video1 with the character in @image1 in every frame, including "
     "face, hair, hands, clothing and body shape. Keep the original camera framing, motion, "
@@ -26,6 +32,29 @@ MODE_NOTES = {
 SECONDARY = "@image2 is a second character; use them for the second person in the scene."
 
 
+def _clean(text: str) -> str:
+    """Neutralize untrusted text: no reference tokens, no double quotes, one line."""
+    text = _REFERENCE.sub("", text).replace('"', "'")
+    return " ".join(text.split())
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return "…"[:limit]
+    cut = text[: limit - 1]
+    if " " in cut and text[limit - 1] != " ":
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip() + "…"
+
+
+def validate_prompt(text: str) -> str:
+    if len(text) > MAX_PROMPT:
+        raise ValueError(f"Prompt is {len(text)} characters; the limit is {MAX_PROMPT}.")
+    return text
+
+
 def build_prompt(
     *,
     mode: str,
@@ -36,10 +65,12 @@ def build_prompt(
     parts = [BASE, MODE_NOTES[mode]]
     if has_secondary:
         parts.append(SECONDARY)
-    if scene and scene.strip():
-        parts.append(f"Setting: {scene.strip()}")
-    if transcript and transcript.strip():
-        parts.append(
-            f'The spoken words are: "{transcript.strip()}". Match the lip movements to these words.'
-        )
+    scene = _clean(scene or "")
+    if scene:
+        parts.append(f"Setting: {_truncate(scene, MAX_SCENE)}")
+    words = _clean(transcript or "")
+    if words:
+        template = 'The spoken words are: "{}". Match the lip movements to these words.'
+        used = len("\n\n".join(parts)) + 2 + len(template.format(""))
+        parts.append(template.format(_truncate(words, MAX_PROMPT - used)))
     return "\n\n".join(parts)

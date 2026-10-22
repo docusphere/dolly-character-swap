@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 
 from character_swap.jobs import Job
 
@@ -28,8 +31,14 @@ class ReviewError(ValueError):
 def review_files(job: Job) -> list[str]:
     mode = job.mode
     if mode == "direct":
-        return ["original.mp4", job.state["character_primary"]]
-    return {"depth": DEPTH, "face_mesh": MESH, "depth_mesh": DEPTH_MESH}[mode]
+        character = job.state.get("character_primary")
+        if not character:
+            raise ReviewError("This job has no character image to review.")
+        return ["original.mp4", character]
+    files = {"depth": DEPTH, "face_mesh": MESH, "depth_mesh": DEPTH_MESH}.get(mode)
+    if files is None:
+        raise ReviewError(f"Unknown mode {mode!r}; cannot review.")
+    return files
 
 
 def _compute_fingerprint(job: Job) -> str:
@@ -38,7 +47,7 @@ def _compute_fingerprint(job: Job) -> str:
         path = job.path(name)
         if not path.exists():
             raise ReviewError("Prepare the video before reviewing it.")
-        digest.update(name.encode())
+        digest.update(f"{name}\0{path.stat().st_size}\0".encode())
         with path.open("rb") as file:
             for chunk in iter(lambda: file.read(1 << 20), b""):
                 digest.update(chunk)
@@ -56,8 +65,11 @@ def status(job: Job) -> dict:
     except ReviewError:
         return {"approved": False, "status": "unavailable", "note": "Prepare the video first."}
     saved_path = job.path("review.json")
-    saved = json.loads(saved_path.read_text()) if saved_path.exists() else {}
-    if saved.get("fingerprint") != current:
+    try:
+        saved = json.loads(saved_path.read_text(encoding="utf-8")) if saved_path.exists() else {}
+    except (OSError, ValueError):
+        saved = {}  # unreadable review.json: fail closed
+    if not isinstance(saved, dict) or saved.get("fingerprint") != current:
         return {"approved": False, "status": "pending", "fingerprint": current}
     return saved
 
@@ -73,7 +85,14 @@ def decide(job: Job, *, approved: bool, note: str, fingerprint: str) -> dict:
         "fingerprint": current,
         "reviewed_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
-    job.path("review.json").write_text(json.dumps(data, indent=2))
+    handle, temporary = tempfile.mkstemp(dir=job.root, suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2)
+        os.replace(temporary, job.path("review.json"))
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
     return data
 
 

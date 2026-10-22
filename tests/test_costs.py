@@ -57,3 +57,37 @@ def test_record_spend_writes_job_and_global_log(runs_dir, tmp_path):
 
 def test_total_spend_without_log_is_zero(runs_dir):
     assert total_spend(runs_dir) == 0
+
+
+def test_concurrent_spend_has_one_header_and_all_rows(runs_dir, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    video = tmp_path / "in.mp4"
+    video.write_bytes(b"v")
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    estimate = estimate_prepare("face_mesh", 5)
+    with ThreadPoolExecutor(20) as pool:
+        list(pool.map(lambda _: record_spend(job, "prepare", estimate, runs_dir), range(20)))
+    lines = (runs_dir / "spend-log.csv").read_text().splitlines()
+    assert sum(line.startswith("at,") for line in lines) == 1
+    assert len(lines) == 21
+    assert len(job.state["costs"]) == 20
+
+
+def test_corrupt_row_is_skipped_with_warning(runs_dir):
+    (runs_dir / "spend-log.csv").write_text(
+        "at,job,step,usd_estimate,usd_micro\nt,j,s,0.0170,17000\nt,j,s,0.0\n"
+    )
+    with pytest.warns(UserWarning, match="spend-log"):
+        assert total_spend(runs_dir) == pytest.approx(0.017)
+
+
+def test_micro_totals_are_exact(runs_dir, tmp_path):
+    from character_swap.costs import Line
+
+    video = tmp_path / "in.mp4"
+    video.write_bytes(b"v")
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    for _ in range(3):
+        record_spend(job, "x", Estimate(lines=(Line("a", 0.1),)), runs_dir)
+    assert total_spend(runs_dir) == 0.3

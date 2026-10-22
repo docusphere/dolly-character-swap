@@ -96,3 +96,10 @@ def test_failure_after_mkdir_cleans_up(runs_dir, video, tmp_path, monkeypatch):
     with pytest.raises(ZeroDivisionError):
         Job.create(runs_dir, video, generator="wan", mode="direct", character=face)
     assert list(runs_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", ["../x", "/etc/passwd", "a/../../x"])
+def test_path_must_stay_inside_job(runs_dir, video, name):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    with pytest.raises(JobError, match="outside"):
+        job.path(name)
