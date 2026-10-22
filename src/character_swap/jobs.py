@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
 import shutil
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,7 +17,14 @@ from pathlib import Path
 from typing import Any
 
 MODES_BY_GENERATOR = {"seedance": ("depth", "face_mesh", "depth_mesh"), "wan": ("direct",)}
-_JOB_ID = re.compile(r"^[0-9a-f]{32}$")
+_JOB_ID = re.compile(r"[0-9a-f]{32}")
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(job_id: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(job_id, threading.Lock())
 
 
 class JobError(ValueError):
@@ -54,32 +63,38 @@ class Job:
         source = Path(source)
         if not source.is_file():
             raise JobError(f"Video not found: {source}")
+        if character is not None and not Path(character).is_file():
+            raise JobError(f"Character image not found: {character}")
 
         job_id = uuid.uuid4().hex
         root = Path(runs_dir) / job_id
         root.mkdir(parents=True)
-        shutil.copy2(source, root / "upload.mp4")
-        state: dict[str, Any] = {
-            "id": job_id,
-            "generator": generator,
-            "mode": mode,
-            "subject": subject,
-            "depth_provider": depth_provider,
-            "seed": secrets.randbelow(2**31),
-            "created_at": _now(),
-            "stages": {},
-        }
-        if character is not None:
-            name = f"character-primary{Path(character).suffix.lower()}"
-            shutil.copy2(character, root / name)
-            state["character_primary"] = name
-        job = cls(job_id, root)
-        job._write(state)
+        try:
+            shutil.copy2(source, root / "upload.mp4")
+            state: dict[str, Any] = {
+                "id": job_id,
+                "generator": generator,
+                "mode": mode,
+                "subject": subject,
+                "depth_provider": depth_provider,
+                "seed": secrets.randbelow(2**31),
+                "created_at": _now(),
+                "stages": {},
+            }
+            if character is not None:
+                name = f"character-primary{Path(character).suffix.lower()}"
+                shutil.copy2(character, root / name)
+                state["character_primary"] = name
+            job = cls(job_id, root)
+            job._write(state)
+        except BaseException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
         return job
 
     @classmethod
     def load(cls, runs_dir: Path, job_id: str) -> Job:
-        if not _JOB_ID.match(job_id):
+        if not _JOB_ID.fullmatch(job_id):
             raise JobError("Job IDs are 32 lowercase hex characters.")
         root = Path(runs_dir) / job_id
         if not (root / "state.json").is_file():
@@ -91,7 +106,7 @@ class Job:
 
     @property
     def state(self) -> dict[str, Any]:
-        return json.loads((self.root / "state.json").read_text())
+        return json.loads((self.root / "state.json").read_text(encoding="utf-8"))
 
     @property
     def generator(self) -> str:
@@ -102,27 +117,35 @@ class Job:
         return self.state["mode"]
 
     def update(self, **changes: Any) -> dict[str, Any]:
-        data = self.state
-        data.update(changes)
-        self._write(data)
-        return data
+        with _lock_for(self.id):
+            data = self.state
+            data.update(changes)
+            self._write(data)
+            return data
 
     def stage_done(self, name: str) -> bool:
         return self.state["stages"].get(name, {}).get("status") == "done"
 
     def mark_stage(self, name: str, status: str = "done", **info: Any) -> None:
-        data = self.state
-        data["stages"][name] = {"status": status, "at": _now(), **info}
-        self._write(data)
+        with _lock_for(self.id):
+            data = self.state
+            data["stages"][name] = {"status": status, "at": _now(), **info}
+            self._write(data)
 
     def reset_stages(self, *names: str) -> None:
-        data = self.state
-        for name in names:
-            data["stages"].pop(name, None)
-        self._write(data)
+        with _lock_for(self.id):
+            data = self.state
+            for name in names:
+                data["stages"].pop(name, None)
+            self._write(data)
 
     def _write(self, data: dict[str, Any]) -> None:
         handle, temporary = tempfile.mkstemp(dir=self.root, suffix=".tmp")
-        with os.fdopen(handle, "w") as file:
-            json.dump(data, file, indent=2)
-        os.replace(temporary, self.root / "state.json")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                json.dump(data, file, indent=2)
+            os.replace(temporary, self.root / "state.json")
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
+            raise

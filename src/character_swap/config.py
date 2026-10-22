@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +36,7 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Settings:
-    values: Mapping[str, str]
+    values: Mapping[str, str] = field(repr=False)
     runs_dir: Path
     root: Path
 

@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -44,8 +45,9 @@ def test_unknown_generator_and_missing_video(runs_dir, video, tmp_path):
 def test_load_validates_id_and_existence(runs_dir, video):
     job = Job.create(runs_dir, video, generator="seedance", mode="face_mesh")
     assert Job.load(runs_dir, job.id).mode == "face_mesh"
-    with pytest.raises(JobError, match="32 lowercase hex"):
-        Job.load(runs_dir, "../etc")
+    for bad in ("../etc", "a" * 32 + "\n", "a/b", "/etc/passwd"):
+        with pytest.raises(JobError, match="32 lowercase hex"):
+            Job.load(runs_dir, bad)
     with pytest.raises(JobError, match="No job"):
         Job.load(runs_dir, "0" * 32)
 
@@ -60,3 +62,37 @@ def test_stage_tracking_and_update(runs_dir, video):
     assert not job.stage_done("normalize")
     job.update(transcript="hello")
     assert job.state["transcript"] == "hello"
+
+
+def test_failed_write_leaves_no_temp_and_keeps_state(runs_dir, video):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    before = job.path("state.json").read_text()
+    with pytest.raises(TypeError):
+        job.update(x=object())
+    assert list(job.root.glob("*.tmp")) == []
+    assert job.path("state.json").read_text() == before
+
+
+def test_concurrent_updates_are_not_lost(runs_dir, video):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    threads = [threading.Thread(target=job.update, kwargs={f"k{i}": i}) for i in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(job.state[f"k{i}"] == i for i in range(20))
+
+
+def test_missing_character_creates_no_folder(runs_dir, video, tmp_path):
+    with pytest.raises(JobError, match="Character image not found"):
+        Job.create(runs_dir, video, generator="wan", mode="direct", character=tmp_path / "none.jpg")
+    assert not runs_dir.exists() or list(runs_dir.iterdir()) == []
+
+
+def test_failure_after_mkdir_cleans_up(runs_dir, video, tmp_path, monkeypatch):
+    face = tmp_path / "me.jpg"
+    face.write_bytes(b"jpg")
+    monkeypatch.setattr("character_swap.jobs.secrets.randbelow", lambda n: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        Job.create(runs_dir, video, generator="wan", mode="direct", character=face)
+    assert list(runs_dir.iterdir()) == []
