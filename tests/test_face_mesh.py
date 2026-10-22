@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 
@@ -143,3 +144,34 @@ def test_to_full_frame_maps_crop_to_full():
     assert points[0] == (0.25, 0.0)
     assert points[1] == (0.75, 0.65)
     assert points[2] == (0.5, 0.325)
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes, length: str | None):
+        self._body = io.BytesIO(body)
+        self.headers = {"Content-Length": length} if length else {}
+
+    def read(self, size=-1):
+        return self._body.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_truncated_download_detected(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(b"x" * 40, "100")
+    )
+    with pytest.raises(StageError, match="truncated"):
+        ensure_model(tmp_path)
+    assert not list(tmp_path.glob("face_landmarker*"))
+
+
+def test_complete_download_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(b"x" * 40, "40")
+    )
+    assert ensure_model(tmp_path).read_bytes() == b"x" * 40

@@ -33,7 +33,8 @@ class MeshStyle:
 
 
 class FaceDetector(Protocol):
-    style: MeshStyle
+    @property
+    def style(self) -> MeshStyle: ...
 
     def detect(self, frame: np.ndarray, timestamp_ms: int) -> list[list[Point]]: ...
 
@@ -43,6 +44,10 @@ class FaceDetector(Protocol):
 def _download(url: str, target: str) -> None:
     with urllib.request.urlopen(url, timeout=60) as response, open(target, "wb") as out:  # noqa: S310
         shutil.copyfileobj(response, out)
+        expected = response.headers.get("Content-Length")
+        written = out.tell()
+    if expected is not None and written != int(expected):
+        raise OSError(f"download truncated: got {written} of {expected} bytes")
 
 
 def ensure_model(models_dir: Path, download: Callable = _download) -> Path:
