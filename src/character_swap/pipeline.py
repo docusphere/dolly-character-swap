@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shutil
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -56,18 +57,25 @@ def _notify(status: Status, message: str) -> None:
         warnings.warn(f"status callback failed: {exc}", stacklevel=2)
 
 
+@contextmanager
+def _wrap(label: str) -> Iterator[None]:
+    """One error type for callers: StageError passes through, anything else is wrapped."""
+    try:
+        yield
+    except StageError:
+        raise
+    except Exception as exc:
+        raise StageError(f"{label} failed: {exc}") from exc
+
+
 def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
     if job.stage_done(name):
         _notify(status, f"{label} · already done")
         return
     _notify(status, label)
     clear_review(job)  # any new work invalidates a previous approval
-    try:
+    with _wrap(label):
         work()
-    except StageError:
-        raise
-    except Exception as exc:
-        raise StageError(f"{label} failed: {exc}") from exc
     job.mark_stage(name)
 
 
@@ -134,14 +142,18 @@ def repair_with_rgb(job: Job, services: Services, status: Status = print) -> Non
     if repair_dir.exists():
         # Deliberate: every repair is a fresh, confirmed, paid SAM run (~$0.002).
         shutil.rmtree(repair_dir)
-    _masks(job, services.replicate, "original.mp4", folder="rgb-repair")
-    _composite(job, folder="rgb-repair")
+    with _wrap("Repair: masks"):
+        _masks(job, services.replicate, "original.mp4", folder="rgb-repair")
+    with _wrap("Repair: composite"):
+        _composite(job, folder="rgb-repair")
     job.mark_stage("composite")
     if job.mode == "depth_mesh":
-        job.path("depth-composite-silent.mp4").unlink(missing_ok=True)
-        _mesh(job, services)
+        with _wrap("Repair: mesh"):
+            job.path("depth-composite-silent.mp4").unlink(missing_ok=True)
+            _mesh(job, services)
         job.mark_stage("face_mesh")
-    _embed(job)
+    with _wrap("Repair: embed"):
+        _embed(job)
     job.mark_stage("embed")
     clear_review(job)
     job.update(mask_source="rgb")

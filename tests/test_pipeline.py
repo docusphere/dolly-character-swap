@@ -206,8 +206,9 @@ def test_crash_during_repair_is_healed_by_prepare(make_job, services, monkeypatc
         raise RuntimeError("disk full")
 
     monkeypatch.setattr("character_swap.pipeline.composite_depth_subject", boom)
-    with pytest.raises(RuntimeError, match="disk full"):
+    with pytest.raises(StageError, match="Repair: composite failed: disk full") as info:
         repair_with_rgb(job, services, status=lambda _m: None)
+    assert isinstance(info.value.__cause__, RuntimeError)
     assert not job.stage_done("composite") and not job.stage_done("embed")
     monkeypatch.setattr("character_swap.pipeline.composite_depth_subject", real)
     prepare(job, services, status=lambda _m: None)
