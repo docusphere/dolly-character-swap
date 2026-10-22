@@ -3,6 +3,7 @@ import zipfile
 
 import pytest
 
+from character_swap import pipeline
 from character_swap.jobs import Job
 from character_swap.pipeline import GENERATOR_LIMITS, Services, prepare, repair_with_rgb
 from character_swap.review import decide, fingerprint, review_files, status
@@ -105,7 +106,7 @@ def test_prepare_is_resumable_and_does_not_rerun_paid_stages(make_job, services)
 def test_failed_stage_resumes_without_repaying_earlier_stages(make_job, services, monkeypatch):
     job = make_job("depth")
     boom = {"on": True}
-    real_segment = __import__("character_swap.pipeline", fromlist=["segment"]).segment
+    real_segment = pipeline.segment
 
     def flaky_segment(*args, **kwargs):
         if boom["on"]:
@@ -113,8 +114,9 @@ def test_failed_stage_resumes_without_repaying_earlier_stages(make_job, services
         return real_segment(*args, **kwargs)
 
     monkeypatch.setattr("character_swap.pipeline.segment", flaky_segment)
-    with pytest.raises(RuntimeError, match="simulated timeout"):
+    with pytest.raises(StageError, match="simulated timeout") as info:
         prepare(job, services, status=lambda _m: None)
+    assert isinstance(info.value.__cause__, RuntimeError)
     paid_before = [r["key"] for r in services.replicate.runs]
     boom["on"] = False
     prepare(job, services, status=lambda _m: None)
@@ -192,3 +194,71 @@ def test_direct_mode_produces_every_review_file(make_job, services, tmp_path):
     prepare(job, services, status=lambda _m: None)
     for name in review_files(job):
         assert job.path(name).exists(), name
+
+
+def test_crash_during_repair_is_healed_by_prepare(make_job, services, monkeypatch):
+    job = make_job("depth")
+    prepare(job, services, status=lambda _m: None)
+    before = job.path("prepared.mp4").stat().st_mtime_ns
+    real = pipeline.composite_depth_subject
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("character_swap.pipeline.composite_depth_subject", boom)
+    with pytest.raises(RuntimeError, match="disk full"):
+        repair_with_rgb(job, services, status=lambda _m: None)
+    assert not job.stage_done("composite") and not job.stage_done("embed")
+    monkeypatch.setattr("character_swap.pipeline.composite_depth_subject", real)
+    prepare(job, services, status=lambda _m: None)
+    for name in review_files(job):
+        assert job.path(name).exists(), name
+    assert (
+        job.path("prepared.mp4").stat().st_mtime_ns != before
+    )  # rebuilt (output is deterministic)
+
+
+def test_depth_mesh_repair_leaves_stages_done_and_prepare_is_noop(make_job, services):
+    job = make_job("depth_mesh")
+    prepare(job, services, status=lambda _m: None)
+    repair_with_rgb(job, services, status=lambda _m: None)
+    assert all(job.stage_done(s) for s in ("composite", "face_mesh", "embed"))
+    runs = len(services.replicate.runs)
+    stamp = job.path("composite-silent.mp4").stat().st_mtime_ns
+    prepare(job, services, status=lambda _m: None)
+    assert len(services.replicate.runs) == runs
+    assert job.path("composite-silent.mp4").stat().st_mtime_ns == stamp
+
+
+def test_prepare_on_complete_job_keeps_approval(make_job, services):
+    job = make_job("depth")
+    prepare(job, services, status=lambda _m: None)
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    prepare(job, services, status=lambda _m: None)
+    assert status(job)["status"] == "approved"
+
+
+def test_prepare_that_runs_work_clears_approval(make_job, services):
+    job = make_job("depth")
+    prepare(job, services, status=lambda _m: None)
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    job.reset_stages("embed")
+    prepare(job, services, status=lambda _m: None)
+    assert status(job)["status"] == "pending"
+
+
+def test_status_callback_errors_do_not_abort_stages(make_job, services):
+    job = make_job("depth")
+
+    def bad(_m):
+        raise ValueError("ui bug")
+
+    with pytest.warns(UserWarning, match="ui bug"):
+        prepare(job, services, status=bad)
+    assert job.path("prepared.mp4").exists()
+
+
+def test_clip_length_error_is_wrapped_but_readable(make_job, services):
+    job = make_job("depth", frames=48)
+    with pytest.raises(StageError, match="at least 4"):
+        prepare(job, services, status=lambda _m: None)

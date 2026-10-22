@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import shutil
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from character_swap.jobs import Job
 from character_swap.media.audio import embed_samples, read_audio
@@ -15,35 +17,62 @@ from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene
-from character_swap.stages.face_mesh import track_and_draw
+from character_swap.stages.face_mesh import FaceDetector, track_and_draw
 from character_swap.stages.masks import segment
 from character_swap.stages.pitch import pitch_vocals
 from character_swap.stages.separate import separate_vocals
 from character_swap.stages.transcribe import transcribe
 
-# (min_seconds, max_seconds) per generator; see "Verified provider facts".
+# (min_seconds, max_seconds) per generator; see docs/research/2026-10-22-provider-api-facts.md.
 GENERATOR_LIMITS = {"seedance": (4, 30), "wan": (1, 30)}
 Status = Callable[[str], None]
 
 
+class ReplicateLike(Protocol):
+    def upload(self, path: Path) -> str: ...
+
+    def latest_version(self, model: str): ...
+
+    def run(
+        self, *, input: dict, record: Path, version: str | None = None, model: str | None = None
+    ): ...
+
+    def download(self, url: str, dest: Path) -> Path: ...
+
+
 @dataclass
 class Services:
-    replicate: object
-    face_detector: Callable[[], object]  # returns an object with .detect, .style, .close
+    replicate: ReplicateLike
+    face_detector: Callable[[], FaceDetector]
     rubberband: str = "rubberband"
     hf_token: str | None = None
 
 
+def _notify(status: Status, message: str) -> None:
+    """A UI bug in the callback must never abort a (possibly paid) stage."""
+    try:
+        status(message)
+    except Exception as exc:
+        warnings.warn(f"status callback failed: {exc}", stacklevel=2)
+
+
 def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
     if job.stage_done(name):
-        status(f"{label} · already done")
+        _notify(status, f"{label} · already done")
         return
-    status(label)
-    work()
+    _notify(status, label)
+    clear_review(job)  # any new work invalidates a previous approval
+    try:
+        work()
+    except StageError:
+        raise
+    except Exception as exc:
+        raise StageError(f"{label} failed: {exc}") from exc
     job.mark_stage(name)
 
 
 def prepare(job: Job, services: Services, status: Status = print) -> None:
+    """Run every unfinished stage. `status` runs on the caller's (worker) thread; keep it quick."""
     low, high = GENERATOR_LIMITS[job.generator]
     _stage(
         job,
@@ -55,7 +84,7 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
         status,
     )
     if job.mode == "direct":
-        status("Ready for review")
+        _notify(status, "Ready for review")
         return
 
     r = services.replicate
@@ -91,28 +120,32 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
     if job.mode in ("face_mesh", "depth_mesh"):
         _stage(job, "face_mesh", "Tracking the face mesh", lambda: _mesh(job, services), status)
     _stage(job, "embed", "Embedding pitched vocals", lambda: _embed(job), status)
-    status("Ready for review")
+    _notify(status, "Ready for review")
 
 
 def repair_with_rgb(job: Job, services: Services, status: Status = print) -> None:
     """Re-segment on the original colors (depth can lose detail), keep depth colors, re-review."""
     if job.mode not in ("depth", "depth_mesh"):
         raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
-    status("Re-running SAM 3 on the original colors")
+    redo = ["composite", "embed", *(["face_mesh"] if job.mode == "depth_mesh" else [])]
+    job.reset_stages(*redo)  # a crash below leaves these un-done so prepare() heals the job
+    _notify(status, "Re-running SAM 3 on the original colors")
     repair_dir = job.path("rgb-repair")
     if repair_dir.exists():
         # Deliberate: every repair is a fresh, confirmed, paid SAM run (~$0.002).
         shutil.rmtree(repair_dir)
     _masks(job, services.replicate, "original.mp4", folder="rgb-repair")
     _composite(job, folder="rgb-repair")
+    job.mark_stage("composite")
     if job.mode == "depth_mesh":
         job.path("depth-composite-silent.mp4").unlink(missing_ok=True)
-        job.reset_stages("face_mesh")
         _mesh(job, services)
+        job.mark_stage("face_mesh")
     _embed(job)
+    job.mark_stage("embed")
     clear_review(job)
     job.update(mask_source="rgb")
-    status("Repaired. Review the whole clip again.")
+    _notify(status, "Repaired. Review the whole clip again.")
 
 
 # ---- stage bodies -------------------------------------------------------------
