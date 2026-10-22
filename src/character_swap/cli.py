@@ -7,14 +7,21 @@ import json
 import shutil
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import av
 
 from character_swap.config import MissingSettingError, Settings
-from character_swap.costs import estimate_prepare, estimate_repair, record_spend
+from character_swap.costs import (
+    PRICES,
+    STAGE_PRICE,
+    estimate_prepare,
+    estimate_repair,
+    record_spend,
+)
 from character_swap.jobs import Job, JobError
-from character_swap.pipeline import Services, repair_with_rgb
+from character_swap.pipeline import Services, remaining_paid_stages, repair_with_rgb
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.prompts import build_prompt
 from character_swap.review import ReviewError, decide
@@ -36,12 +43,53 @@ def build_services(settings: Settings) -> Services:  # pragma: no cover - wires 
     )
 
 
-def _ask(question: str) -> bool:  # pragma: no cover - interactive
-    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+def _stderr(text: str = "") -> None:
+    print(text, file=sys.stderr)
+
+
+def _ask(question: str, err: Out = _stderr) -> bool:
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        err("No input available; pass --yes to confirm non-interactively.")
+        return False
+
+
+@dataclass
+class Env:
+    out: Out
+    err: Out
+    confirm: Callable[[str], bool]
+    services_factory: Callable[[Settings], Services]
+    job_id: str | None = None
+    retry: str | None = None  # command name to suggest after a failure
+    extra: dict = field(default_factory=dict)
+
+    def track(self, job: Job, retry: str) -> None:
+        self.job_id, self.retry = job.id, retry
+
+    def proceed(self, question: str = "Continue?") -> bool:
+        if self.confirm(question):
+            return True
+        self.err("Cancelled. Nothing was charged.")
+        return False
+
+
+EPILOG = """example:
+  charswap prepare clip.mp4 --mode depth
+  charswap status <id>
+  charswap review <id> --approve --note "watched all" --fingerprint <fp>
+"""
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="charswap", description="Character Swap workflow")
+    parser = argparse.ArgumentParser(
+        prog="charswap",
+        description="Character Swap workflow",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--debug", action="store_true", help="show full tracebacks")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prep = sub.add_parser("prepare", help="prepare a video for review")
@@ -53,17 +101,22 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument("--character", type=Path, help="character image (required for wan)")
     prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
-    for name in ("status", "prompt"):
-        sub.add_parser(name).add_argument("job")
-    resume = sub.add_parser("resume", help="continue an interrupted job (no repeat charges)")
+    sub.add_parser("status", help="show stages and review fingerprint as JSON").add_argument("job")
+    sub.add_parser("prompt", help="print the editable Seedance prompt").add_argument("job")
+    resume = sub.add_parser(
+        "resume",
+        help="continue an interrupted job "
+        "(saved provider predictions are re-checked, not re-bought)",
+    )
     resume.add_argument("job")
+    resume.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     review = sub.add_parser("review", help="approve or reject the prepared clip")
     review.add_argument("job")
     decision = review.add_mutually_exclusive_group(required=True)
     decision.add_argument("--approve", action="store_true")
     decision.add_argument("--reject", action="store_true")
     review.add_argument("--note", required=True)
-    review.add_argument("--fingerprint", required=True)
+    review.add_argument("--fingerprint", required=True, help="copy from `charswap status`")
     repair = sub.add_parser("repair", help="re-cut the subject using original colors")
     repair.add_argument("job")
     repair.add_argument("--yes", action="store_true")
@@ -71,33 +124,52 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _hint(env: Env) -> None:
+    if env.job_id:
+        env.err(f"Fix the issue, then run: charswap {env.retry} {env.job_id}")
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     settings: Settings | None = None,
     out: Out = print,
-    confirm: Callable[[str], bool] = _ask,
+    err: Out = _stderr,
+    confirm: Callable[[str], bool] | None = None,
     services_factory: Callable[[Settings], Services] = build_services,
 ) -> int:
     args = _parser().parse_args(argv)
     settings = settings or Settings.load()
+    env = Env(out, err, confirm or (lambda q: _ask(q, err)), services_factory)
     try:
-        return COMMANDS[args.command](args, settings, out, confirm, services_factory)
+        return COMMANDS[args.command](args, settings, env)
     except (JobError, ReviewError, StageError, MissingSettingError) as error:
-        out(f"Error: {error}")
+        err(f"Error: {error}")
+        _hint(env)
         return 2
+    except KeyboardInterrupt:
+        where = f" {env.job_id}" if env.job_id else " <job>"
+        err(
+            f"Interrupted. Run `charswap resume{where}` to continue; "
+            "paid steps already started are not charged again."
+        )
+        return 130
+    except Exception as error:
+        if args.debug:
+            raise
+        err(f"Unexpected error: {error}. Run with --debug for details.")
+        return 1
 
 
-def _prepare(args, settings, out, confirm, services_factory) -> int:
+def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth")
     if args.generator == "wan" and args.character is None:
         raise JobError("Wan needs --character IMAGE (your face or character picture).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     estimate = estimate_prepare(mode, seconds=30)
-    out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
-    if not args.yes and not confirm("Continue?"):
-        out("Cancelled. Nothing was charged.")
+    env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
+    if not args.yes and not env.proceed():
         return 1
     job = Job.create(
         settings.runs_dir,
@@ -108,70 +180,79 @@ def _prepare(args, settings, out, confirm, services_factory) -> int:
         depth_provider=args.depth_provider,
         character=args.character,
     )
-    out(f"JOB {job.id}")
-    prepare_job(job, services_factory(settings), status=out)
+    env.track(job, "resume")
+    env.out(f"JOB {job.id}")
+    prepare_job(job, env.services_factory(settings), status=env.out)
     record_spend(job, "prepare", estimate, settings.runs_dir)
-    out(f"Next: watch {job.path('prepared.mp4')} then run `charswap status {job.id}`.")
+    env.out(f"Next: watch {job.path('prepared.mp4')} then run `charswap status {job.id}`.")
     return 0
 
 
-def _resume(args, settings, out, confirm, services_factory):
+def _resume(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
+    env.track(job, "resume")
     if job.mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
-    out(f"Resuming {job.id}; finished steps are skipped and saved predictions are re-checked.")
-    prepare_job(job, services_factory(settings), status=out)
+    remaining = remaining_paid_stages(job)
+    if remaining:
+        total = sum(PRICES[STAGE_PRICE[name]].usd for name in remaining)
+        env.out(f"Remaining paid steps: {', '.join(remaining)} (up to ${total:.4f})")
+        if not args.yes and not env.proceed():
+            return 1
+    env.out(f"Resuming {job.id}; finished steps are skipped and saved predictions are re-checked.")
+    prepare_job(job, env.services_factory(settings), status=env.out)
     if not any(c["step"] == "prepare" for c in job.state.get("costs", [])):
         record_spend(job, "prepare", estimate_prepare(job.mode, seconds=30), settings.runs_dir)
     return 0
 
 
-def _status(args, settings, out, *_):
+def _status(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     state = job.state
-    out(
-        json.dumps(
-            {
-                "job": job.id,
-                "mode": job.mode,
-                "stages": state["stages"],
-                "review": review_status(job),
-            },
-            indent=2,
-        )
-    )
+    report = {
+        "job": job.id,
+        "mode": job.mode,
+        "stages": state["stages"],
+        "review": review_status(job),
+    }
+    env.out(json.dumps(report, indent=2))
     return 0
 
 
-def _review(args, settings, out, *_):
+def _review(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     result = decide(job, approved=args.approve, note=args.note, fingerprint=args.fingerprint)
-    out(f"Review {result['status']}.")
+    env.out(f"Review {result['status']}.")
     return 0
 
 
-def _prompt(args, settings, out, *_):
+def _prompt(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     if job.generator != "seedance":
         raise JobError("Prompts are only for Seedance jobs; Wan takes no text prompt.")
     state = job.state
-    out(build_prompt(mode=job.mode, scene=state.get("scene"), transcript=state.get("transcript")))
+    env.out(
+        build_prompt(mode=job.mode, scene=state.get("scene"), transcript=state.get("transcript"))
+    )
     return 0
 
 
-def _repair(args, settings, out, confirm, services_factory):
+def _repair(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
+    env.track(job, "repair")
+    if job.mode not in ("depth", "depth_mesh"):
+        raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
     settings.require("REPLICATE_API_TOKEN")
-    out("Repair re-runs SAM 3:\n" + estimate_repair().describe())
-    if not args.yes and not confirm("Continue?"):
-        out("Cancelled. Nothing was charged.")
+    env.out("Repair re-runs SAM 3:\n" + estimate_repair().describe())
+    if not args.yes and not env.proceed():
         return 1
-    repair_with_rgb(job, services_factory(settings), status=out)
+    repair_with_rgb(job, env.services_factory(settings), status=env.out)
     record_spend(job, "repair", estimate_repair(), settings.runs_dir)
     return 0
 
 
-def _doctor(args, settings, out, *_):
+def _doctor(args, settings, env) -> int:
+    out = env.out
     ok = True
     out(f"python: {sys.version.split()[0]}")
     out(f"pyav (ffmpeg): {av.__version__}")

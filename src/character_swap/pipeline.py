@@ -27,6 +27,17 @@ from character_swap.stages.transcribe import transcribe
 # (min_seconds, max_seconds) per generator; see docs/research/2026-10-22-provider-api-facts.md.
 GENERATOR_LIMITS = {"seedance": (4, 30), "wan": (1, 30)}
 Status = Callable[[str], None]
+PAID_STAGES = {
+    "depth": ["separate", "transcribe", "describe", "depth", "masks"],
+    "depth_mesh": ["separate", "transcribe", "describe", "depth", "masks"],
+    "face_mesh": ["separate", "transcribe", "describe"],
+    "direct": [],
+}
+
+
+def remaining_paid_stages(job: Job) -> list[str]:
+    """Paid stages this job's mode needs that are not finished yet."""
+    return [name for name in PAID_STAGES[job.mode] if not job.stage_done(name)]
 
 
 class ReplicateLike(Protocol):

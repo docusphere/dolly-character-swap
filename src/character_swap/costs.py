@@ -44,6 +44,14 @@ PRICES: dict[str, Price] = {
     "sam3": Price("SAM 3 masks", 0.002, "run", "2026-10-22", "replicate.com/lucataco/sam3-video"),
 }
 
+STAGE_PRICE = {
+    "separate": "demucs",
+    "transcribe": "whisper",
+    "describe": "describe",
+    "depth": "depth",
+    "masks": "sam3",
+}
+
 PREP_STEPS = {
     "depth": ["demucs", "whisper", "describe", "depth", "sam3"],
     "face_mesh": ["demucs", "whisper", "describe"],
