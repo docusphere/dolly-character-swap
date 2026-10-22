@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import av
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -22,10 +25,6 @@ MODEL_URL = (
 Point = tuple[float, float]  # normalized (x, y) in the full frame
 
 
-class FaceDetector(Protocol):
-    def detect(self, frame: np.ndarray, timestamp_ms: int) -> list[list[Point]]: ...
-
-
 @dataclass(frozen=True)
 class MeshStyle:
     """Each entry: (edges as index pairs, RGB color, line width)."""
@@ -33,14 +32,47 @@ class MeshStyle:
     lines: Sequence[tuple[Sequence[tuple[int, int]], tuple[int, int, int], int]]
 
 
-def ensure_model(models_dir: Path, download: Callable = urllib.request.urlretrieve) -> Path:
+class FaceDetector(Protocol):
+    style: MeshStyle
+
+    def detect(self, frame: np.ndarray, timestamp_ms: int) -> list[list[Point]]: ...
+
+    def close(self) -> None: ...
+
+
+def _download(url: str, target: str) -> None:
+    with urllib.request.urlopen(url, timeout=60) as response, open(target, "wb") as out:  # noqa: S310
+        shutil.copyfileobj(response, out)
+
+
+def ensure_model(models_dir: Path, download: Callable = _download) -> Path:
     model = models_dir / "face_landmarker.task"
     if not model.exists():
         models_dir.mkdir(parents=True, exist_ok=True)
         partial = model.with_suffix(".download")
-        download(MODEL_URL, str(partial))
+        try:
+            download(MODEL_URL, str(partial))
+        except (OSError, urllib.error.URLError) as exc:  # URLError and timeouts are OSErrors
+            partial.unlink(missing_ok=True)
+            raise StageError(
+                f"Could not download the face model from {MODEL_URL}: {exc}. "
+                "Check your connection and retry."
+            ) from exc
         partial.replace(model)
     return model
+
+
+def crop_box(width: int, height: int) -> tuple[int, int, int]:
+    """Centre 50% of the width, top 65% of the height: (x0, crop_w, crop_h)."""
+    return int(width * 0.25), int(width * 0.5), int(height * 0.65)
+
+
+def to_full_frame(
+    points: Sequence[Point], box: tuple[int, int, int], width: int, height: int
+) -> list[Point]:
+    """Map crop-normalized points back to full-frame normalized coordinates."""
+    x0, crop_w, crop_h = box
+    return [((x0 + x * crop_w) / width, (y * crop_h) / height) for x, y in points]
 
 
 def _draw(image: Image.Image, faces: list[list[Point]], style: MeshStyle) -> None:
@@ -62,13 +94,31 @@ def track_and_draw(
     background: Path | None = None,
 ) -> dict:
     """Write the mesh video plus face-landmarks.json and face-tracking.json in report_dir."""
-    total = count_frames(source)
-    backgrounds = iter_frames(background) if background else None
-    if background and count_frames(background) != total:
-        raise StageError("Depth composite and original differ in frame count; rebuild depth first.")
-
-    first = next(iter_frames(source))
+    report_dir.mkdir(parents=True, exist_ok=True)
+    out_video.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        total = count_frames(source)
+        first = next(iter_frames(source), None)
+    except (av.error.FFmpegError, OSError) as exc:
+        raise StageError(
+            f"{source.name} has no video frames (could not decode it: {exc})."
+        ) from exc
+    if first is None:
+        raise StageError(f"{source.name} has no video frames.")
     height, width = first.shape[:2]
+
+    backgrounds = iter_frames(background) if background else None
+    if background:
+        if count_frames(background) != total:
+            raise StageError(
+                "Depth composite and original differ in frame count; rebuild depth first."
+            )
+        bg_height, bg_width = next(iter_frames(background)).shape[:2]
+        if (bg_height, bg_width) != (height, width):
+            raise StageError(
+                f"Depth composite is {bg_width}x{bg_height} but the original is {width}x{height}; "
+                "rebuild depth first."
+            )
     saved, counts = [], []
     with VideoWriter(out_video, width, height) as writer:
         for index, frame in enumerate(iter_frames(source)):
@@ -112,6 +162,8 @@ class MediaPipeDetector:  # pragma: no cover - exercised by the live smoke test
             base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
             running_mode=mp.tasks.vision.RunningMode.VIDEO,
             num_faces=1,
+            # 0.15 confidences kept from the original worker on purpose:
+            # favors tracking continuity over precision.
             min_face_detection_confidence=0.15,
             min_face_presence_confidence=0.15,
             min_tracking_confidence=0.15,
@@ -136,12 +188,13 @@ class MediaPipeDetector:  # pragma: no cover - exercised by the live smoke test
 
     def detect(self, frame: np.ndarray, timestamp_ms: int) -> list[list[Point]]:
         height, width = frame.shape[:2]
-        x0, crop_w, crop_h = int(width * 0.25), int(width * 0.5), int(height * 0.65)
+        box = crop_box(width, height)
+        x0, crop_w, crop_h = box
         crop = np.ascontiguousarray(frame[0:crop_h, x0 : x0 + crop_w])
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=crop)
         result = self._landmarker.detect_for_video(image, timestamp_ms)
         return [
-            [((x0 + p.x * crop_w) / width, (p.y * crop_h) / height) for p in face]
+            to_full_frame([(p.x, p.y) for p in face], box, width, height)
             for face in result.face_landmarks
         ]
 
