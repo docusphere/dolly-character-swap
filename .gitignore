@@ -22,3 +22,6 @@ models/
 
 # legacy code being ported (deleted in Plan 3, never committed)
 _legacy/
+
+# brainstorming mockups
+.superpowers/
