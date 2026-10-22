@@ -76,12 +76,14 @@ def test_review_json_is_written_atomically_and_corrupt_is_pending(depth_job):
         require_approved(depth_job)
 
 
-def test_fingerprint_framing_distinguishes_boundaries(depth_job):
-    before = fingerprint(depth_job)
-    # moving bytes between adjacent files must change the hash
-    depth_job.path("original.mp4").write_bytes(b"original.mp4" + b"d")
-    depth_job.path("depth.mp4").write_bytes(b"epth.mp4")
-    assert fingerprint(depth_job) != before
+def test_fingerprint_hash_format_is_pinned(depth_job):
+    import hashlib
+
+    digest = hashlib.sha256(depth_job.mode.encode())
+    for name in review_files(depth_job):
+        data = depth_job.path(name).read_bytes()
+        digest.update(f"{name}\0{len(data)}\0".encode() + data)
+    assert fingerprint(depth_job) == digest.hexdigest()
 
 
 def test_missing_character_or_unknown_mode_raises_review_error(runs_dir, tmp_path):

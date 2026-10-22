@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import re
-
 MAX_PROMPT = 4000
 MAX_SCENE = 300
-_REFERENCE = re.compile(r"@(?=(?:image|video|audio)\d)", flags=re.IGNORECASE)
 
 BASE = (
     "Replace the person in @video1 with the character in @image1 in every frame, including "
@@ -33,8 +30,8 @@ SECONDARY = "@image2 is a second character; use them for the second person in th
 
 
 def _clean(text: str) -> str:
-    """Neutralize untrusted text: no reference tokens, no double quotes, one line."""
-    text = _REFERENCE.sub("", text).replace('"', "'")
+    """Neutralize untrusted text: no "@" at all, no double quotes, one line."""
+    text = text.replace("@", "").replace('"', "'")
     return " ".join(text.split())
 
 
@@ -73,4 +70,4 @@ def build_prompt(
         template = 'The spoken words are: "{}". Match the lip movements to these words.'
         used = len("\n\n".join(parts)) + 2 + len(template.format(""))
         parts.append(template.format(_truncate(words, MAX_PROMPT - used)))
-    return "\n\n".join(parts)
+    return validate_prompt("\n\n".join(parts))

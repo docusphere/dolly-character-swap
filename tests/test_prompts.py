@@ -31,7 +31,11 @@ def test_blank_scene_and_transcript_are_skipped():
 def test_untrusted_text_cannot_inject_reference_tokens():
     import re
 
-    text = build_prompt(mode="depth", scene="see @Image3", transcript="say @image9 and @Video2 now")
+    text = build_prompt(
+        mode="depth",
+        scene="see @Image3",
+        transcript="say @image9 and @Video2 and @@image9 and @@@video2 now",
+    )
     assert "@image9" not in text and "@image3" not in text.lower() and "@video2" not in text.lower()
     assert set(re.findall(r"@(?:image|video|audio)\d", text.lower())) == {"@video1", "@image1"}
 
