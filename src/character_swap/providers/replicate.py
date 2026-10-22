@@ -188,7 +188,12 @@ class ReplicateClient:
         marker = {"status": "creating", "created_at": datetime.now(UTC).isoformat()}
         try:
             with open(record, "x") as file:  # exclusive: a second runner cannot also pay
-                json.dump(marker, file)
+                try:
+                    json.dump(marker, file)
+                except BaseException:
+                    file.close()
+                    record.unlink(missing_ok=True)  # POST was never sent
+                    raise
         except FileExistsError as error:
             raise ReplicateError(_unconfirmed(record)) from error
         try:
@@ -211,7 +216,13 @@ class ReplicateClient:
                 raise ValueError("not a prediction")
         except ValueError as error:
             raise ReplicateError(_unconfirmed(record)) from error
-        self._save(record, prediction)
+        try:
+            self._save(record, prediction)
+        except OSError as error:
+            raise ReplicateError(
+                f"Paid prediction {prediction['id']} was created but its record could not be "
+                f"saved ({error}). Note this id; check https://replicate.com/predictions."
+            ) from error
         return prediction
 
     def _wait(self, prediction: dict, record: Path) -> Any:
@@ -226,13 +237,22 @@ class ReplicateClient:
             # Built from the id: never send the token to a URL taken from a response.
             url = f"{API}/predictions/{prediction['id']}"
             try:
-                prediction = self._retry(lambda: self._get_json(url))  # noqa: B023
+                fresh = self._retry(lambda: self._get_json(url))  # noqa: B023
             except httpx.HTTPStatusError as error:
-                if error.response.status_code == 401:
+                code = error.response.status_code
+                if code == 401:
                     raise ReplicateError(TOKEN_MESSAGE) from error
+                if code in (403, 404):
+                    raise ReplicateError(
+                        f"Replicate no longer recognizes prediction {prediction['id']} "
+                        f"(status {code}); check https://replicate.com/predictions"
+                    ) from error
                 raise self._lost(prediction, record) from error
-            except httpx.TransportError as error:
+            except (httpx.TransportError, ValueError) as error:
                 raise self._lost(prediction, record) from error
+            if not isinstance(fresh, dict) or "id" not in fresh or "status" not in fresh:
+                raise self._lost(prediction, record)
+            prediction = fresh
             self._save(record, prediction)
             polls += 1
         if prediction["status"] != "succeeded":

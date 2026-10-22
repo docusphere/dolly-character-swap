@@ -307,3 +307,111 @@ def test_auth_header_sent_to_api_but_not_downloads(tmp_path):
     assert up.calls[0].request.headers["authorization"] == "Bearer tok"
     assert mv.calls[0].request.headers["authorization"] == "Bearer tok"
     assert "authorization" not in dl.calls[0].request.headers
+
+
+# ---- recoverable ids and edge cases -----------------------------------------
+LOST = "Resume the job . no new charge"
+
+
+@respx.mock
+def test_record_save_failure_after_post_keeps_id_and_marker(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "paid42", "status": "starting"})
+    )
+
+    def boom(_record, _data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ReplicateClient, "_save", staticmethod(boom))
+    with pytest.raises(ReplicateError, match="paid42.*replicate.com/predictions"):
+        client().run(version="v1", input={}, record=record)
+    assert record.exists()
+    with pytest.raises(ReplicateError, match=UNCONFIRMED):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 1
+
+
+@pytest.mark.parametrize("body", [{"error": "proxy"}, "<html>"])
+@respx.mock
+def test_bad_poll_payload_keeps_good_record(tmp_path, body):
+    record = tmp_path / "r.json"
+    good = {"id": "p1", "status": "processing"}
+    record.write_text(json.dumps(good))
+    resp = (
+        httpx.Response(200, json=body) if isinstance(body, dict) else httpx.Response(200, text=body)
+    )
+    respx.get(f"{API}/predictions/p1").mock(return_value=resp)
+    with pytest.raises(ReplicateError, match=LOST):
+        client().run(version="v1", input={}, record=record)
+    assert json.loads(record.read_text()) == good
+
+
+@respx.mock
+def test_poll_status_errors(tmp_path):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"id": "p1", "status": "processing"}))
+    route = respx.get(f"{API}/predictions/p1")
+    route.mock(return_value=httpx.Response(404))
+    with pytest.raises(ReplicateError, match="no longer recognizes prediction p1 .status 404"):
+        client().run(version="v1", input={}, record=record)
+    route.mock(return_value=httpx.Response(401))
+    with pytest.raises(ReplicateError, match="REPLICATE_API_TOKEN was rejected"):
+        client().run(version="v1", input={}, record=record)
+    route.mock(return_value=httpx.Response(400))
+    with pytest.raises(ReplicateError, match=LOST):
+        client().run(version="v1", input={}, record=record)
+
+
+@respx.mock
+def test_marker_write_failure_removes_marker(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions")
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("character_swap.providers.replicate.json.dump", boom)
+    with pytest.raises(OSError, match="disk full"):
+        client().run(version="v1", input={}, record=record)
+    assert not record.exists() and not route.called
+
+
+@respx.mock
+def test_marker_race_blocks_post(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"status": "creating"}))
+    route = respx.post(f"{API}/predictions")
+    monkeypatch.setattr("pathlib.Path.exists", lambda _self: False)
+    with pytest.raises(ReplicateError, match=UNCONFIRMED):
+        client().run(version="v1", input={}, record=record)
+    assert not route.called
+
+
+@respx.mock
+def test_408_keeps_marker(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(return_value=httpx.Response(408))
+    with pytest.raises(ReplicateError, match=UNCONFIRMED):
+        client().run(version="v1", input={}, record=record)
+    assert record.exists()
+
+
+def test_record_with_id_but_no_status_is_damaged(tmp_path):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"id": "p1"}))
+    with pytest.raises(ReplicateError, match="is damaged"):
+        client().run(version="v1", input={}, record=record)
+
+
+@respx.mock
+def test_auth_header_on_paid_post_and_poll(tmp_path):
+    post = respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p1", "status": "starting"})
+    )
+    poll = respx.get(f"{API}/predictions/p1").mock(
+        return_value=httpx.Response(200, json={"id": "p1", "status": "succeeded", "output": 1})
+    )
+    client().run(version="v1", input={}, record=tmp_path / "r.json")
+    assert post.calls[0].request.headers["authorization"] == "Bearer tok"
+    assert poll.calls[0].request.headers["authorization"] == "Bearer tok"
