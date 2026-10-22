@@ -6,32 +6,40 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from character_swap.stages import StageError
+from character_swap.stages import StageError, bad_output, download_or_fail
 
 DEPTH_MODEL = "lucataco/depth-anything-video"
 HF_SPACE = "depth-anything/Video-Depth-Anything"
 
 
 def pick_depth_url(output) -> str:
+    url = None
     if isinstance(output, str):
-        return output
-    if isinstance(output, list) and output:
-        return output[0]
-    if isinstance(output, dict):
-        for key, value in output.items():
-            if "depth" in key and value:
-                return value
-    raise StageError(f"Depth model returned an unexpected output: {output!r}")
+        url = output
+    elif isinstance(output, list) and output:
+        url = output[0]
+    elif isinstance(output, dict):
+        url = next((v for k, v in output.items() if "depth" in k and v), None)
+    if not isinstance(url, str) or not url:
+        raise StageError(f"Depth model returned an unexpected output: {output!r}")
+    return url
 
 
 def depth_replicate(src: Path, dst: Path, replicate, record: Path) -> Path:
-    version, props = replicate.latest_version(DEPTH_MODEL)
-    key = next((k for k, v in props.items() if "video" in k and v.get("format") == "uri"), None)
-    if key is None:
-        raise StageError(f"{DEPTH_MODEL} no longer has a video input; check its schema.")
-    url = replicate.upload(src)
-    output = replicate.run(version=version, input={key: url}, record=record)
-    return replicate.download(pick_depth_url(output), dst)
+    if record.exists():  # resume: run() reads the saved prediction and ignores the input
+        output = replicate.run(version=None, model=DEPTH_MODEL, input={}, record=record)
+    else:
+        version, props = replicate.latest_version(DEPTH_MODEL)
+        key = next((k for k, v in props.items() if "video" in k and v.get("format") == "uri"), None)
+        if key is None:
+            raise StageError(f"{DEPTH_MODEL} no longer has a video input; check its schema.")
+        url = replicate.upload(src)
+        output = replicate.run(version=version, input={key: url}, record=record)
+    try:
+        depth_url = pick_depth_url(output)
+    except StageError as exc:
+        raise bad_output(record, "Depth model", output) from exc
+    return download_or_fail(replicate, depth_url, dst, record=record, what="depth", cost="~$0.04")
 
 
 def _default_hf_client(token: str | None):  # pragma: no cover - network
@@ -54,7 +62,11 @@ def depth_huggingface(
         grayscale=False,
         api_name="/infer_video_depth",
     )
-    produced = result[1]
-    path = produced.get("video") or produced.get("path") if isinstance(produced, dict) else produced
+    produced = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else None
+    path = produced
+    while isinstance(path, dict):
+        path = path.get("video") or path.get("path")
+    if not isinstance(path, str) or not path:
+        raise StageError(f"The Hugging Face depth Space returned an unexpected result: {result!r}")
     shutil.copyfile(path, dst)
     return dst

@@ -1,3 +1,5 @@
+import pytest
+
 from character_swap.jobs import Job
 from character_swap.stages.describe import DESCRIBE_MODEL, describe_scene
 from character_swap.stages.transcribe import WHISPER_VERSION, transcribe
@@ -48,3 +50,15 @@ def test_describe_scene_accepts_plain_string(runs_dir, tmp_path):
     job = make_job(runs_dir, tmp_path)
     fake = FakeReplicate(outputs={DESCRIBE_MODEL: "A  quiet   office."})
     assert describe_scene(job, fake) == "A quiet office."
+
+
+@pytest.mark.parametrize(
+    "bad", ["just text", ["a"], {"transcription": 5}, {"transcription": ["x"]}]
+)
+def test_transcribe_rejects_bad_output_shape(runs_dir, tmp_path, bad):
+    from character_swap.stages import StageError
+
+    job = make_job(runs_dir, tmp_path)
+    fake = FakeReplicate(outputs={WHISPER_VERSION: bad})
+    with pytest.raises(StageError, match="whisper-prediction.json"):
+        transcribe(job, fake)

@@ -81,3 +81,101 @@ def test_segment_extracts_mask_pngs(tmp_path):
         "mask_only": True,
         "return_zip": True,
     }
+
+
+def make_zip(*names):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name in names:
+            archive.writestr(name, b"png")
+    return buffer.getvalue()
+
+
+def sam_fake(tmp_path, data, **kwargs):
+    video = tmp_path / "depth.mp4"
+    video.write_bytes(b"v")
+    fake = FakeReplicate(
+        outputs={SAM_VERSION: "https://o/m.zip"}, files={"https://o/m.zip": data}, **kwargs
+    )
+    return video, fake
+
+
+def test_segment_ignores_path_traversal(tmp_path):
+    video, fake = sam_fake(tmp_path, make_zip("../evil/mask_00000.png"))
+    raw = segment(video, tmp_path / "sam", "person", fake)
+    assert [p.name for p in raw.iterdir()] == ["mask_00000.png"]
+    assert not (tmp_path / "evil").exists() and not (tmp_path / "sam" / "evil").exists()
+
+
+def test_segment_empty_zip_is_error(tmp_path):
+    video, fake = sam_fake(tmp_path, make_zip("a.txt", "b.txt"))
+    with pytest.raises(StageError, match="a.txt"):
+        segment(video, tmp_path / "sam", "person", fake)
+
+
+def test_segment_rejects_non_string_output(tmp_path):
+    video, fake = sam_fake(tmp_path, b"")
+    fake.outputs[SAM_VERSION] = ["x"]
+    with pytest.raises(StageError, match="sam-prediction.json"):
+        segment(video, tmp_path / "sam", "person", fake)
+
+
+def test_segment_expired_download_names_record(tmp_path):
+    video, fake = sam_fake(tmp_path, b"", fail_download={"https://o/m.zip"})
+    with pytest.raises(StageError, match=r"Delete .*sam-prediction\.json"):
+        segment(video, tmp_path / "sam", "person", fake)
+
+
+def test_depth_replicate_resumes_from_record_without_schema_lookup(tmp_path):
+    src = tmp_path / "original.mp4"
+    src.write_bytes(b"v")
+    record = tmp_path / "rec.json"
+    record.write_text('{"id": "p1", "status": "succeeded"}')
+    fake = FakeReplicate(outputs={DEPTH_MODEL: "https://o/d.mp4"}, files={"https://o/d.mp4": b"d"})
+    depth_replicate(src, tmp_path / "depth.mp4", fake, record)
+    assert fake.latest_calls == 0 and fake.runs == []
+
+
+def test_depth_replicate_expired_download_names_record(tmp_path):
+    src = tmp_path / "original.mp4"
+    src.write_bytes(b"v")
+    fake = FakeReplicate(
+        outputs={f"{DEPTH_MODEL}-latest": "https://o/d.mp4"}, fail_download={"https://o/d.mp4"}
+    )
+    with pytest.raises(StageError, match=r"Delete .*rec\.json"):
+        depth_replicate(src, tmp_path / "d.mp4", fake, tmp_path / "rec.json")
+
+
+@pytest.mark.parametrize("bad", [{"depth_video": 5}, {"depth": ["x"]}, [7]])
+def test_pick_depth_url_requires_string(bad):
+    with pytest.raises(StageError):
+        pick_depth_url(bad)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [[None], [None, None], [None, {"video": None}], [None, {"video": {"path": None}}], None],
+)
+def test_depth_huggingface_rejects_bad_results(tmp_path, result):
+    class Client:
+        def predict(self, *args, **kwargs):
+            return result
+
+    src = tmp_path / "o.mp4"
+    src.write_bytes(b"v")
+    with pytest.raises(StageError):
+        depth_huggingface(src, tmp_path / "d.mp4", client_factory=Client)
+
+
+def test_depth_huggingface_nested_video_path(tmp_path):
+    produced = tmp_path / "hf.mp4"
+    produced.write_bytes(b"hf")
+
+    class Client:
+        def predict(self, *args, **kwargs):
+            return [None, {"video": {"path": str(produced)}}]
+
+    src = tmp_path / "o.mp4"
+    src.write_bytes(b"v")
+    depth_huggingface(src, tmp_path / "d.mp4", client_factory=Client)
+    assert (tmp_path / "d.mp4").read_bytes() == b"hf"
