@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import socket
 import sys
+import threading
+import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +32,9 @@ from character_swap.stages import StageError
 
 Out = Callable[[str], None]
 
+VIEW_HOST = "127.0.0.1"  # the viewer is never reachable from the network
+BROWSER_DELAY = 1.0  # seconds; lets the server start listening before the browser asks
+
 
 def build_services(settings: Settings) -> Services:  # pragma: no cover - wires real clients
     from character_swap.providers.replicate import ReplicateClient
@@ -40,6 +46,12 @@ def build_services(settings: Settings) -> Services:  # pragma: no cover - wires 
         face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),
         hf_token=settings.get("HF_TOKEN") or None,
     )
+
+
+def run_server(app, *, host: str, port: int) -> None:  # pragma: no cover - real server
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 def _stderr(text: str = "") -> None:
@@ -63,6 +75,8 @@ class Env:
     job_id: str | None = None
     retry: str | None = None  # command name to suggest after a failure
     extra: dict = field(default_factory=dict)
+    serve: Callable[..., object] = run_server
+    open_browser: Callable[[str], object] = webbrowser.open
 
     def track(self, job: Job, retry: str) -> None:
         self.job_id, self.retry = job.id, retry
@@ -78,6 +92,7 @@ EPILOG = """example:
   charswap prepare clip.mp4 --mode depth
   charswap status <id>
   charswap review <id> --approve --note "watched all" --fingerprint <fp>
+  charswap view
 """
 
 
@@ -120,7 +135,17 @@ def _parser() -> argparse.ArgumentParser:
     repair.add_argument("job")
     repair.add_argument("--yes", action="store_true")
     sub.add_parser("doctor", help="check this machine's setup")
+    view = sub.add_parser("view", help="open the read-only job viewer in your browser")
+    view.add_argument("--port", type=_port, default=8770)
+    view.add_argument("--no-browser", action="store_true", help="only print the URL")
     return parser
+
+
+def _port(text: str) -> int:
+    port = int(text)
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
 
 
 def _hint(env: Env) -> None:
@@ -136,10 +161,19 @@ def main(
     err: Out = _stderr,
     confirm: Callable[[str], bool] | None = None,
     services_factory: Callable[[Settings], Services] = build_services,
+    serve: Callable[..., object] | None = None,
+    open_browser: Callable[[str], object] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     settings = settings or Settings.load()
-    env = Env(out, err, confirm or (lambda q: _ask(q, err)), services_factory)
+    env = Env(
+        out,
+        err,
+        confirm or (lambda q: _ask(q, err)),
+        services_factory,
+        serve=serve or run_server,
+        open_browser=open_browser or webbrowser.open,
+    )
     try:
         return COMMANDS[args.command](args, settings, env)
     except (JobError, ReviewError, StageError, MissingSettingError) as error:
@@ -265,6 +299,43 @@ def _doctor(args, settings, env) -> int:
     return 0 if ok else 1
 
 
+def _port_free(port: int) -> bool:
+    """Same bind uvicorn will do (SO_REUSEADDR), so a just-stopped viewer is not 'busy'."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((VIEW_HOST, port))
+        except OSError:
+            return False
+    return True
+
+
+def _view(args, settings, env) -> int:
+    from character_swap.web.app import create_app  # keeps other commands fast to start
+
+    port = args.port
+    if not _port_free(port):
+        env.err(f"Port {port} is busy; try `charswap view --port {port + 1}`")
+        return 2
+    url = f"http://{VIEW_HOST}:{port}"
+    app = create_app(settings)
+    env.out(f"Job viewer: {url}  (Ctrl-C to stop)")
+    opener = None
+    if not args.no_browser:
+        opener = threading.Timer(BROWSER_DELAY, env.open_browser, args=[url])
+        opener.daemon = True
+        opener.start()
+    try:
+        env.serve(app, host=VIEW_HOST, port=port)
+    except KeyboardInterrupt:
+        pass  # Ctrl-C is how the viewer is meant to stop; no resume hint here
+    finally:
+        if opener is not None:
+            opener.cancel()
+    env.out("Viewer stopped.")
+    return 0
+
+
 COMMANDS = {
     "prepare": _prepare,
     "resume": _resume,
@@ -273,4 +344,5 @@ COMMANDS = {
     "prompt": _prompt,
     "repair": _repair,
     "doctor": _doctor,
+    "view": _view,
 }

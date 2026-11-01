@@ -1,6 +1,10 @@
 import json
+import socket
+import threading
+import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from character_swap import cli
 from character_swap.config import Settings
@@ -341,3 +345,141 @@ def test_estimate_stages_matches_prepare_estimate():
 
     assert estimate_stages(PAID_STAGES["depth"], 30) == estimate_prepare("depth", 30)
     assert estimate_stages([], 30).total == 0
+
+
+# ---- view ----------------------------------------------------------------------
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class FakeServer:
+    def __init__(self, raise_on_start=None, wait_for=None):
+        self.calls = []
+        self.raise_on_start = raise_on_start
+        self.wait_for = wait_for
+
+    def __call__(self, app, *, host, port):
+        self.calls.append({"app": app, "host": host, "port": port})
+        if self.wait_for is not None:
+            self.wait_for.wait(timeout=5)  # "running" until the browser was opened
+        if self.raise_on_start:
+            raise self.raise_on_start
+
+
+def test_view_serves_the_app_on_localhost_only(settings):
+    port = free_port()
+    server = FakeServer()
+    opened = []
+    code, out = run(
+        ["view", "--port", str(port), "--no-browser"],
+        settings,
+        serve=server,
+        open_browser=opened.append,
+    )
+    assert code == 0 and opened == []
+    [call] = server.calls
+    assert call["host"] == "127.0.0.1" and call["port"] == port
+    assert f"Job viewer: http://127.0.0.1:{port}" in out.text and "Viewer stopped." in out.text
+    page = TestClient(call["app"], base_url="http://127.0.0.1").get("/")
+    assert page.status_code == 200 and "No jobs yet" in page.text
+
+
+def test_view_has_no_host_option(settings):
+    with pytest.raises(SystemExit):
+        run(["view", "--host", "0.0.0.0", "--no-browser"], settings, serve=FakeServer())
+
+
+def test_view_port_check_binds_localhost_only(settings, monkeypatch):
+    binds = []
+
+    class SpySocket:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def setsockopt(self, *args):
+            pass
+
+        def bind(self, address):
+            binds.append(address)
+
+    monkeypatch.setattr(cli.socket, "socket", SpySocket)
+    assert cli._port_free(8123) is True
+    assert binds == [("127.0.0.1", 8123)]
+
+
+def test_view_default_port(settings, monkeypatch):
+    monkeypatch.setattr(cli, "_port_free", lambda port: True)
+    server = FakeServer()
+    code, _ = run(["view", "--no-browser"], settings, serve=server)
+    assert code == 0 and server.calls[0]["port"] == 8770
+
+
+def test_view_opens_the_browser_once_the_server_runs(settings, monkeypatch):
+    monkeypatch.setattr(cli, "BROWSER_DELAY", 0)
+    port = free_port()
+    opened = threading.Event()
+    urls = []
+
+    def open_browser(url):
+        urls.append(url)
+        opened.set()
+
+    code, _ = run(
+        ["view", "--port", str(port)],
+        settings,
+        serve=FakeServer(wait_for=opened),
+        open_browser=open_browser,
+    )
+    assert code == 0 and urls == [f"http://127.0.0.1:{port}"]
+
+
+def test_view_does_not_open_the_browser_if_the_server_fails(settings, monkeypatch):
+    monkeypatch.setattr(cli, "BROWSER_DELAY", 0.2)
+    urls = []
+    with pytest.raises(OSError):
+        run(
+            ["--debug", "view", "--port", str(free_port())],
+            settings,
+            serve=FakeServer(raise_on_start=OSError("bind failed")),
+            open_browser=urls.append,
+        )
+    time.sleep(0.4)
+    assert urls == []
+
+
+def test_view_ctrl_c_stops_cleanly(settings):
+    server = FakeServer(raise_on_start=KeyboardInterrupt())
+    code, out = run(["view", "--port", str(free_port()), "--no-browser"], settings, serve=server)
+    assert code == 0 and "Viewer stopped." in out.text
+    assert "Interrupted" not in out.err.text and "resume" not in out.err.text
+
+
+def test_view_busy_port_is_explained(settings):
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        server = FakeServer()
+        code, out = run(["view", "--port", str(port), "--no-browser"], settings, serve=server)
+    assert code == 2 and server.calls == []
+    assert f"Port {port} is busy; try `charswap view --port {port + 1}`" in out.err.text
+
+
+@pytest.mark.parametrize("port", ["0", "70000", "http"])
+def test_view_rejects_bad_ports(settings, port):
+    with pytest.raises(SystemExit):
+        run(["view", "--port", port], settings, serve=FakeServer())
+
+
+def test_help_lists_view(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "open the read-only job viewer" in capsys.readouterr().out
