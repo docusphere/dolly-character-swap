@@ -15,6 +15,9 @@
 - [ ] Rename `original.mp4` → `normalized.mp4`; depth_mesh composite writes `depth-composite-silent.mp4` directly (remove the copy trick).
 - [x] Stage status "running"/"failed" in state (done with the viewer)
 - [ ] Per-job file lock (or documented single-writer rule).
+- [ ] (Viewer final review) `pipeline.py` owns stage order: `prepare()` loops over `PREP_STAGES_BY_MODE`; keep generation stages (draft/final) in a separate group so "active"/"Preparing" doesn't treat every prepared-but-not-generated job as running.
+- [ ] (Viewer final review) Move SECTIONS + "Why this step?" copy to `web/sections.py` with a per-section `texts` hook (remove id-string branching in view_model/job.html); generation sections plug in there.
+- [x] Review gate requires every prep stage done (status "unavailable", decide refuses) — done in viewer fixes.
 
 ## Before Plan 3 (UI + skill)
 - Stat-keyed fingerprint cache for `review.status()` polling (full hash stays on approve/generate).
@@ -24,6 +27,10 @@
 - Validate character image with PIL at job create; reject silent clips early; validate mode/generator before the cost question.
 - `doctor`: required vs optional checks, HF_TOKEN, face model present.
 - Symlink rejection in fingerprinting; per-job "running" lock for prepare vs decide.
+- CSRF for any state-changing route: Origin / Sec-Fetch-Site same-origin check + per-session token or custom header; never a GET that spends money.
+- Cross-process run lock per job (lock file with pid + heartbeat) → real "is it running?" answer; background threads never get KeyboardInterrupt.
+- Cost confirmation dialog before every paid button (mirror CLI confirm).
+- Viewer polish: slow-poll (~10 s) failed jobs so `charswap resume` shows up live; repair SAM cost row; check nav scroll on phone width before recording; direct mode shows original.mp4 twice.
 
 ## Before charging users (platform)
 - Decimal / micro-USD everywhere; log-before-call semantics; partial-spend logging for abandoned jobs.
