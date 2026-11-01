@@ -369,3 +369,32 @@ def test_repair_marks_running_then_done(make_job, services, monkeypatch):
     assert seen == ["running"]
     stages = job.state["stages"]
     assert all(stages[n]["status"] == "done" for n in ("composite", "face_mesh", "embed"))
+
+
+def test_failure_mark_error_never_hides_the_real_error(make_job, services, tmp_path, monkeypatch):
+    job = _direct_job(make_job, tmp_path)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("real problem")
+
+    real_mark = Job.mark_stage
+
+    def flaky_mark(self, name, status="done", **info):
+        if status == "failed":
+            raise OSError("disk full")
+        return real_mark(self, name, status, **info)
+
+    monkeypatch.setattr("character_swap.pipeline.normalize", broken)
+    monkeypatch.setattr(Job, "mark_stage", flaky_mark)
+    with (
+        pytest.warns(UserWarning, match="Could not record failure of stage normalize: disk full"),
+        pytest.raises(StageError, match="real problem"),
+    ):
+        prepare(job, services, status=lambda _m: None)
+
+
+def test_failure_without_message_records_the_exception_type(make_job, tmp_path):
+    job = _direct_job(make_job, tmp_path)
+    with pytest.raises(ValueError), pipeline._tracked(job, "normalize"):
+        raise ValueError
+    assert job.state["stages"]["normalize"]["error"] == "ValueError"

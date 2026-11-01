@@ -91,12 +91,16 @@ def _tracked(job: Job, name: str) -> Iterator[None]:
     job.mark_stage(name, "running", started_at=started_at)
     try:
         yield
-    except KeyboardInterrupt:
-        job.mark_stage(name, "failed", started_at=started_at, error="interrupted")
-        raise
     except BaseException as exc:
-        error = str(exc) or type(exc).__name__
-        job.mark_stage(name, "failed", started_at=started_at, error=error)
+        error = (
+            "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc) or type(exc).__name__
+        )
+        try:
+            job.mark_stage(name, "failed", started_at=started_at, error=error)
+        except Exception as mark_exc:
+            # Best-effort: the primary error matters more than recording it, so never let a
+            # failing state write (disk full, ...) replace the exception being raised.
+            warnings.warn(f"Could not record failure of stage {name}: {mark_exc}", stacklevel=2)
         raise
     job.mark_stage(name, started_at=started_at)
 
