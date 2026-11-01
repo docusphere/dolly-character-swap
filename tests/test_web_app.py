@@ -157,6 +157,7 @@ def test_file_route_serves_nested_audio_and_images(client, runs_dir, media):
         "sam",
         "%2E%2E/%2E%2E/outside.mp4",
         "..%2F..%2Foutside.mp4",
+        "scene.jpg%00.png",
     ],
 )
 def test_file_route_refuses_everything_else(client, runs_dir, media, name):
@@ -255,3 +256,43 @@ def test_requests_for_other_hosts_are_refused(settings):
 
 def test_every_section_title_is_unique():
     assert len({section.id for section in SECTIONS}) == len(SECTIONS)
+
+
+SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "content-security-policy": (
+        "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; "
+        "script-src 'self'; frame-ancestors 'none'"
+    ),
+}
+
+
+def test_security_headers_on_pages_media_and_api(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    page = client.get(f"/jobs/{job.id}")
+    video = client.get(f"/jobs/{job.id}/files/prepared.mp4", headers={"Range": "bytes=0-9"})
+    api = client.get(f"/api/jobs/{job.id}")
+    missing = client.get("/jobs/nope")
+    for response in (page, video, api, missing, client.get("/")):
+        for name, value in SECURITY_HEADERS.items():
+            assert response.headers[name] == value, (name, response.url)
+    assert video.status_code == 206 and video.headers["accept-ranges"] == "bytes"
+    assert page.headers["cache-control"] == "no-store"
+    assert video.headers["cache-control"] == "no-store"
+    assert client.get("/").headers["cache-control"] == "no-store"
+
+
+def test_pages_use_no_inline_scripts_or_styles(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    for text in (client.get("/").text, client.get(f"/jobs/{job.id}").text):
+        assert " style=" not in text and "<style" not in text
+        assert "<script>" not in text
+
+
+def test_job_page_has_refresh_banner_and_empty_stall_notice(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=5, running=True)
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'id="new-results"' in text and 'id="refresh-button"' in text
+    assert "New results are ready" in text
+    assert 'id="stalled"' in text and 'role="status"' in text

@@ -31,12 +31,29 @@ ALLOWED_SUFFIXES = {".mp4", ".wav", ".jpg", ".jpeg", ".png", ".webp"}
 # Only answer requests addressed to this machine (blocks DNS-rebinding pages from reading jobs).
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
 NOT_FOUND = "Not found."
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; "
+        "script-src 'self'; frame-ancestors 'none'"
+    ),
+}
 
 
 def create_app(settings: Settings) -> FastAPI:
     runs_dir = settings.runs_dir
     app = FastAPI(title="Character Swap viewer", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTS)
+
+    @app.middleware("http")
+    async def harden(request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers.update(SECURITY_HEADERS)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store"  # pages show private job data
+        return response
+
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(icons=ICONS, status_words=STATUS_WORDS)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -80,16 +97,16 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/jobs/{job_id}/files/{name:path}")
     def job_file(job_id: str, name: str) -> FileResponse:
         job = load(job_id)
-        if Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
+        if "\x00" in name or Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
             raise HTTPException(404, NOT_FOUND)
         try:
             path = job.path(name)  # containment: nothing outside the job folder
-        except JobError:
+        except (JobError, ValueError):
             raise HTTPException(404, NOT_FOUND) from None
         if not path.is_file():
             raise HTTPException(404, NOT_FOUND)
         # Range requests (video seeking) are handled by FileResponse.
-        return FileResponse(path, headers={"Cache-Control": "no-cache"})
+        return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/jobs/{job_id}")
     def job_progress(job_id: str) -> JSONResponse:

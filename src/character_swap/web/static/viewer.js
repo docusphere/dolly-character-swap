@@ -13,8 +13,15 @@
 
   function setCurrent(id) {
     links.forEach((link, key) => {
-      if (key === id) link.setAttribute("aria-current", "true");
-      else link.removeAttribute("aria-current");
+      if (key === id) {
+        link.setAttribute("aria-current", "true");
+        // keep the highlighted step visible in the (phone) step bar
+        link.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: reduceMotion ? "auto" : "smooth",
+        });
+      } else link.removeAttribute("aria-current");
     });
   }
 
@@ -73,8 +80,16 @@
   const shown = JSON.stringify(JSON.parse(layout.dataset.stages));
   const startedWaiting = Date.now();
 
+  document.getElementById("refresh-button").addEventListener("click", () => location.reload());
+
+  function playing() {
+    return [...document.querySelectorAll("video, audio")].some((m) => !m.paused && !m.ended);
+  }
+
   function stalled() {
-    document.getElementById("stalled").hidden = false;
+    document.getElementById("stalled").textContent =
+      "No progress for 10 minutes. The job may have stopped. Run " +
+      `charswap resume ${layout.dataset.jobId}.`;
   }
 
   async function tick() {
@@ -83,8 +98,12 @@
       if (response.ok) {
         const data = await response.json();
         if (JSON.stringify(data.stages) !== shown) {
-          location.reload();
-          return;
+          if (!playing()) {
+            location.reload();
+            return;
+          }
+          // never interrupt playback: offer a refresh and keep polling
+          document.getElementById("new-results").hidden = false;
         }
         if (!data.active) return; // finished or failed: nothing more to watch
       }

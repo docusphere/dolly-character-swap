@@ -27,9 +27,10 @@
   </nav>
 
   <main id="main" class="content">
-    <p id="stalled" class="notice" role="status" hidden>
-      No progress for 10 minutes. The job may have stopped. Run
-      <code>charswap resume {{ job.id }}</code>.
+    <p id="stalled" class="notice" role="status"></p>
+    <p id="new-results" class="notice info" role="status" hidden>
+      New results are ready —
+      <button type="button" id="refresh-button">Refresh</button>
     </p>
 
     {% for section in job.sections %}
