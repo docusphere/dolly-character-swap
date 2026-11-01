@@ -398,3 +398,12 @@ def test_failure_without_message_records_the_exception_type(make_job, tmp_path):
     with pytest.raises(ValueError), pipeline._tracked(job, "normalize"):
         raise ValueError
     assert job.state["stages"]["normalize"]["error"] == "ValueError"
+
+
+@pytest.mark.parametrize("mode", ["depth", "face_mesh", "depth_mesh", "direct"])
+def test_viewer_stage_table_matches_what_prepare_runs(make_job, services, tmp_path, mode):
+    from character_swap.web.view_model import STAGES_BY_MODE
+
+    job = _direct_job(make_job, tmp_path) if mode == "direct" else make_job(mode)
+    prepare(job, services, status=lambda _m: None)
+    assert tuple(job.state["stages"]) == STAGES_BY_MODE[mode]
