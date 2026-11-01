@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block body %}
+<main id="main" class="page">
+  <div class="page-head">
+    <h1>Jobs</h1>
+    <p class="meta">All jobs (spend log): <strong>${{ "%.4f"|format(all_jobs_usd) }}</strong> · estimates</p>
+  </div>
+  {% if jobs %}
+  <div class="card table-wrap">
+    <table class="jobs">
+      <caption class="sr-only">Jobs, newest first</caption>
+      <thead>
+        <tr>
+          <th scope="col">Job</th>
+          <th scope="col">Generator</th>
+          <th scope="col">Mode</th>
+          <th scope="col">Progress</th>
+          <th scope="col">Estimated cost so far</th>
+          <th scope="col">Created (UTC)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.id }}"><code>{{ job.short_id }}</code></a></td>
+          {% if job.error %}
+          <td colspan="4" class="bad">Unreadable: {{ job.error }}</td>
+          {% else %}
+          <td>{{ job.generator }}</td>
+          <td>{{ job.mode }}</td>
+          <td>{{ job.done_count }}/{{ job.total_count }} steps</td>
+          <td>${{ "%.4f"|format(job.cost_usd) }}</td>
+          {% endif %}
+          <td><time datetime="{{ job.created_at }}">{{ job.created_at[:16]|replace("T", " ") }}</time></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card empty">
+    <h2>No jobs yet</h2>
+    <p>Prepare a clip in the terminal, then refresh this page:</p>
+    <pre><code>uv run charswap prepare &lt;video&gt;</code></pre>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}

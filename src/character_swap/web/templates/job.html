@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.short_id }}{% endblock %}
+{% block body %}
+<div class="job-head">
+  <h1>Job <code>{{ job.short_id }}</code></h1>
+  <p class="meta">
+    {{ job.generator }} · {{ job.mode }} mode ·
+    <span class="badge" id="job-status">{{ job.status }}</span> ·
+    estimated cost so far ≈ <strong>${{ "%.4f"|format(job.cost_usd) }}</strong>
+  </p>
+</div>
+<div class="layout" data-job-id="{{ job.id }}"
+     data-active="{{ 'true' if job.progress.active else 'false' }}"
+     data-stages="{{ stages_json }}">
+  <nav class="steps" aria-label="Steps">
+    <ol>
+      {% for item in job.nav %}
+      <li>
+        <a class="nav-link status-{{ item.status }}" href="#{{ item.id }}">
+          <span class="icon" aria-hidden="true">{{ item.icon }}</span>
+          <span class="label">{{ item.label }}</span>
+          <span class="sr-only">({{ item.status_text }})</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+  </nav>
+
+  <main id="main" class="content">
+    <p id="stalled" class="notice" role="status" hidden>
+      No progress for 10 minutes. The job may have stopped. Run
+      <code>charswap resume {{ job.id }}</code>.
+    </p>
+
+    {% for section in job.sections %}
+    <section id="{{ section.id }}" class="step" tabindex="-1" aria-labelledby="{{ section.id }}-title">
+      <header class="step-head">
+        <h2 id="{{ section.id }}-title"><span class="num">{{ section.number }}</span> {{ section.title }}</h2>
+        <span class="badge status-{{ section.status }}">
+          <span aria-hidden="true">{{ icons[section.status] }}</span> {{ status_words[section.status] }}
+        </span>
+        {% for link in section.links %}
+        <a class="ext" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.label }}</a>
+        {% endfor %}
+      </header>
+      <p class="why"><strong>Why this step?</strong> {{ section.why }}</p>
+
+      {% if section.error %}
+      <div class="error" role="alert">
+        <p>{{ section.error }}</p>
+        <p>Fix the issue, then run <code>charswap resume {{ job.id }}</code>.</p>
+      </div>
+      {% endif %}
+
+      {% if section.media %}
+      <div class="media-grid">
+        {% for item in section.media %}
+        <figure class="media media-{{ item.kind }}">
+          {% if item.state == "ready" %}
+            {% if item.kind == "video" %}
+            <video controls preload="metadata" playsinline src="{{ item.url }}"></video>
+            {% elif item.kind == "audio" %}
+            <audio controls preload="metadata" src="{{ item.url }}"></audio>
+            {% else %}
+            <img src="{{ item.url }}" alt="{{ item.label }}" loading="lazy">
+            {% endif %}
+          {% elif item.state == "missing" %}
+          <div class="placeholder missing">File missing</div>
+          {% else %}
+          <div class="placeholder">Waiting for this step…</div>
+          {% endif %}
+          <figcaption>{{ item.label }}</figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+      {% elif section.status != "done" and section.id != "review" %}
+      <div class="placeholder">Waiting for this step…</div>
+      {% endif %}
+
+      {% if section.texts %}
+      <dl class="facts">
+        {% for text in section.texts %}
+        <dt>{{ text.label }}</dt>
+        <dd>{% if text.code %}<code class="command">{{ text.value }}</code>{% else %}{{ text.value }}{% endif %}</dd>
+        {% endfor %}
+      </dl>
+      {% endif %}
+    </section>
+    {% endfor %}
+
+    <section id="costs" class="step" tabindex="-1" aria-labelledby="costs-title">
+      <header class="step-head">
+        <h2 id="costs-title"><span class="num" aria-hidden="true">$</span> Costs</h2>
+      </header>
+      {% if job.costs.rows %}
+      <div class="table-wrap">
+        <table class="costs">
+          <caption class="sr-only">Paid steps finished so far</caption>
+          <thead>
+            <tr><th scope="col">Step</th><th scope="col">Provider</th><th scope="col">Estimate</th><th scope="col">Run</th></tr>
+          </thead>
+          <tbody>
+            {% for row in job.costs.rows %}
+            <tr>
+              <td>{{ row.step }}</td>
+              <td>{{ row.provider }}</td>
+              <td>${{ "%.4f"|format(row.usd) }}</td>
+              <td>{% if row.link %}<a href="{{ row.link }}" target="_blank" rel="noopener noreferrer">run ↗</a>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="meta">No paid steps finished yet.</p>
+      {% endif %}
+      <dl class="facts totals">
+        <dt>This job, steps completed so far</dt><dd>≈ ${{ "%.4f"|format(job.costs.completed_usd) }}</dd>
+        <dt>Logged for this job</dt><dd>${{ "%.4f"|format(job.costs.logged_usd) }}</dd>
+        <dt>All jobs (spend log)</dt><dd>${{ "%.4f"|format(job.costs.all_jobs_usd) }}</dd>
+      </dl>
+      <p class="meta">Estimates. Exact charges: replicate.com billing.</p>
+    </section>
+  </main>
+</div>
+{% endblock %}
