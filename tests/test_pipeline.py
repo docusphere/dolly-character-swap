@@ -263,3 +263,109 @@ def test_clip_length_error_is_wrapped_but_readable(make_job, services):
     job = make_job("depth", frames=48)
     with pytest.raises(StageError, match="at least 4"):
         prepare(job, services, status=lambda _m: None)
+
+
+# ---- stage status tracking (viewer V6) -----------------------------------------
+def _direct_job(make_job, tmp_path):
+    face = tmp_path / "me.png"
+    face.write_bytes(b"png")
+    return make_job("direct", generator="wan", character=face)
+
+
+def test_stage_is_running_while_its_work_runs(make_job, services, tmp_path, monkeypatch):
+    job = _direct_job(make_job, tmp_path)
+    seen = {}
+    real = pipeline.normalize
+
+    def watching_normalize(*args, **kwargs):
+        seen.update(job.state["stages"]["normalize"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("character_swap.pipeline.normalize", watching_normalize)
+    prepare(job, services, status=lambda _m: None)
+    assert seen["status"] == "running" and seen["started_at"]
+    entry = job.state["stages"]["normalize"]
+    assert entry["status"] == "done" and entry["started_at"] == seen["started_at"]
+
+
+def test_failed_stage_records_its_error(make_job, services, tmp_path, monkeypatch):
+    job = _direct_job(make_job, tmp_path)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("character_swap.pipeline.normalize", broken)
+    with pytest.raises(StageError, match="disk full"):
+        prepare(job, services, status=lambda _m: None)
+    entry = job.state["stages"]["normalize"]
+    assert entry["status"] == "failed"
+    assert entry["error"] == "Normalizing video to 24 fps failed: disk full"
+    assert not job.stage_done("normalize")
+
+
+def test_interrupted_stage_is_marked_failed_and_reraised(make_job, services, tmp_path, monkeypatch):
+    job = _direct_job(make_job, tmp_path)
+
+    def stop(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("character_swap.pipeline.normalize", stop)
+    with pytest.raises(KeyboardInterrupt):
+        prepare(job, services, status=lambda _m: None)
+    entry = job.state["stages"]["normalize"]
+    assert entry["status"] == "failed" and entry["error"] == "interrupted"
+
+
+@pytest.mark.parametrize("leftover", ["running", "failed"])
+def test_resume_reruns_running_or_failed_stages(make_job, services, tmp_path, leftover):
+    job = _direct_job(make_job, tmp_path)
+    job.mark_stage("normalize", leftover, error="x")
+    prepare(job, services, status=lambda _m: None)
+    assert job.stage_done("normalize") and job.path("original.mp4").exists()
+
+
+def test_failed_stage_keeps_earlier_stages_done(make_job, services, monkeypatch):
+    job = make_job("face_mesh")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("whisper down")
+
+    monkeypatch.setattr("character_swap.pipeline.transcribe", broken)
+    with pytest.raises(StageError):
+        prepare(job, services, status=lambda _m: None)
+    stages = job.state["stages"]
+    assert [stages[n]["status"] for n in ("normalize", "separate", "pitch")] == ["done"] * 3
+    assert stages["transcribe"]["status"] == "failed" and "describe" not in stages
+
+
+def test_repair_failure_marks_composite_failed(make_job, services, monkeypatch):
+    job = make_job("depth")
+    prepare(job, services, status=lambda _m: None)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("sam down")
+
+    monkeypatch.setattr("character_swap.pipeline.segment", broken)
+    with pytest.raises(StageError, match="Repair: masks failed: sam down"):
+        repair_with_rgb(job, services, status=lambda _m: None)
+    stages = job.state["stages"]
+    assert stages["composite"]["status"] == "failed"
+    assert "sam down" in stages["composite"]["error"]
+    assert "embed" not in stages  # reset by repair, never started
+
+
+def test_repair_marks_running_then_done(make_job, services, monkeypatch):
+    job = make_job("depth_mesh")
+    prepare(job, services, status=lambda _m: None)
+    seen = []
+    real = pipeline.embed_samples
+
+    def watching_embed(*args, **kwargs):
+        seen.append(job.state["stages"]["embed"]["status"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("character_swap.pipeline.embed_samples", watching_embed)
+    repair_with_rgb(job, services, status=lambda _m: None)
+    assert seen == ["running"]
+    stages = job.state["stages"]
+    assert all(stages[n]["status"] == "done" for n in ("composite", "face_mesh", "embed"))

@@ -7,6 +7,7 @@ import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -79,15 +80,35 @@ def _wrap(label: str) -> Iterator[None]:
         raise StageError(f"{label} failed: {exc}") from exc
 
 
+@contextmanager
+def _tracked(job: Job, name: str) -> Iterator[None]:
+    """Record running -> done/failed in state.json so viewers can show live progress.
+
+    BaseException on purpose: Ctrl-C records "interrupted" instead of leaving the stage
+    "running". Only "done" counts for stage_done(), so resume re-runs running/failed stages.
+    """
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    job.mark_stage(name, "running", started_at=started_at)
+    try:
+        yield
+    except KeyboardInterrupt:
+        job.mark_stage(name, "failed", started_at=started_at, error="interrupted")
+        raise
+    except BaseException as exc:
+        error = str(exc) or type(exc).__name__
+        job.mark_stage(name, "failed", started_at=started_at, error=error)
+        raise
+    job.mark_stage(name, started_at=started_at)
+
+
 def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
     if job.stage_done(name):
         _notify(status, f"{label} · already done")
         return
     _notify(status, label)
     clear_review(job)  # any new work invalidates a previous approval
-    with _wrap(label):
+    with _tracked(job, name), _wrap(label):
         work()
-    job.mark_stage(name)
 
 
 def prepare(job: Job, services: Services, status: Status = print) -> None:
@@ -153,19 +174,17 @@ def repair_with_rgb(job: Job, services: Services, status: Status = print) -> Non
     if repair_dir.exists():
         # Deliberate: every repair is a fresh, confirmed, paid SAM run (~$0.002).
         shutil.rmtree(repair_dir)
-    with _wrap("Repair: masks"):
-        _masks(job, services.replicate, "original.mp4", folder="rgb-repair")
-    with _wrap("Repair: composite"):
-        _composite(job, folder="rgb-repair")
-    job.mark_stage("composite")
+    with _tracked(job, "composite"):  # the new SAM cut belongs to the composite it feeds
+        with _wrap("Repair: masks"):
+            _masks(job, services.replicate, "original.mp4", folder="rgb-repair")
+        with _wrap("Repair: composite"):
+            _composite(job, folder="rgb-repair")
     if job.mode == "depth_mesh":
-        with _wrap("Repair: mesh"):
+        with _tracked(job, "face_mesh"), _wrap("Repair: mesh"):
             job.path("depth-composite-silent.mp4").unlink(missing_ok=True)
             _mesh(job, services)
-        job.mark_stage("face_mesh")
-    with _wrap("Repair: embed"):
+    with _tracked(job, "embed"), _wrap("Repair: embed"):
         _embed(job)
-    job.mark_stage("embed")
     clear_review(job)
     job.update(mask_source="rgb")
     _notify(status, "Repaired. Review the whole clip again.")
