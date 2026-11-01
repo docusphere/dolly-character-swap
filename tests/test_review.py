@@ -1,6 +1,7 @@
 import pytest
 
 from character_swap.jobs import Job
+from character_swap.pipeline import PREP_STAGES_BY_MODE
 from character_swap.review import (
     ReviewError,
     clear,
@@ -19,6 +20,8 @@ def depth_job(runs_dir, tmp_path):
     job = Job.create(runs_dir, video, generator="seedance", mode="depth")
     for name in review_files(job):
         job.path(name).write_bytes(name.encode())
+    for stage in PREP_STAGES_BY_MODE["depth"]:
+        job.mark_stage(stage)
     return job
 
 
@@ -104,3 +107,20 @@ def test_deleted_reviewed_file_is_unavailable(depth_job):
     assert status(depth_job)["status"] == "unavailable"
     with pytest.raises(ReviewError, match="Review required"):
         require_approved(depth_job)
+
+
+@pytest.mark.parametrize("stage_status", ["failed", "running"])
+def test_unfinished_preparation_blocks_review(depth_job, stage_status):
+    full = fingerprint(depth_job)
+    depth_job.mark_stage("composite", stage_status)
+    result = status(depth_job)
+    assert result["status"] == "unavailable" and "fingerprint" not in result
+    with pytest.raises(ReviewError, match="Preparation isn't finished"):
+        decide(depth_job, approved=True, note="x", fingerprint=full)
+
+
+def test_missing_stage_entry_blocks_review(depth_job):
+    state = depth_job.state
+    del state["stages"]["embed"]
+    depth_job._write(state)
+    assert status(depth_job)["status"] == "unavailable"

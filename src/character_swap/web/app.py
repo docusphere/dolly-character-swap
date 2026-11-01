@@ -23,6 +23,7 @@ from character_swap.web.view_model import (
     list_jobs,
     progress,
     read_state,
+    tilde,
 )
 
 HERE = Path(__file__).parent
@@ -59,7 +60,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def message(request: Request, title: str, text: str, status_code: int) -> Response:
-        context = {"title": title, "message": text}
+        context = {"title": title, "message": tilde(text)}
         return templates.TemplateResponse(request, "message.html", context, status_code=status_code)
 
     @app.exception_handler(HTTPException)

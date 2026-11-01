@@ -166,8 +166,11 @@ tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 45%, 
 .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
 .num { color: var(--text-muted); margin-right: var(--space-1); }
 .ext { margin-left: auto; font-size: var(--text-sm); white-space: nowrap; }
-.why { color: var(--text-muted); font-size: var(--text-lg); max-width: 60ch; margin: 0 0 var(--space-6); }
-.why strong { color: var(--text); }
+.why {
+  color: var(--text); font-size: var(--text-lg); max-width: 60ch; margin: 0 0 var(--space-6);
+  background: var(--surface-2); border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4);
+}
 
 .media-grid {
   display: grid;

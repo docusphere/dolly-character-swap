@@ -41,6 +41,14 @@ def review_files(job: Job) -> list[str]:
     return files
 
 
+def _preparation_finished(job: Job) -> bool:
+    """True when every stage of the job's mode is done (unknown modes fail in review_files)."""
+    from character_swap.pipeline import PREP_STAGES_BY_MODE  # lazy: pipeline imports review
+
+    names = PREP_STAGES_BY_MODE.get(job.mode)
+    return names is None or all(job.stage_done(name) for name in names)
+
+
 def _compute_fingerprint(job: Job) -> str:
     digest = hashlib.sha256(job.mode.encode())
     for name in review_files(job):
@@ -60,6 +68,8 @@ def fingerprint(job: Job) -> str:
 
 
 def status(job: Job) -> dict:
+    if not _preparation_finished(job):
+        return {"approved": False, "status": "unavailable", "note": "Prepare the video first."}
     try:
         current = _compute_fingerprint(job)
     except ReviewError:
@@ -75,6 +85,8 @@ def status(job: Job) -> dict:
 
 
 def decide(job: Job, *, approved: bool, note: str, fingerprint: str) -> dict:
+    if not _preparation_finished(job):
+        raise ReviewError("Preparation isn't finished — resume the job first.")
     current = _compute_fingerprint(job)
     if current != fingerprint:
         raise ReviewError("The prepared files changed since you looked. Reload and review again.")

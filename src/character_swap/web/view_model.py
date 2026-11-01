@@ -17,37 +17,10 @@ from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
-from character_swap.pipeline import PAID_STAGES
+from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE
 
-# Stage order per mode, exactly as pipeline.prepare() runs them.
-# test_viewer_stage_table_matches_what_prepare_runs (tests/test_pipeline.py) keeps them in sync.
-STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
-    "depth": (
-        "normalize",
-        "separate",
-        "pitch",
-        "transcribe",
-        "describe",
-        "depth",
-        "masks",
-        "composite",
-        "embed",
-    ),
-    "depth_mesh": (
-        "normalize",
-        "separate",
-        "pitch",
-        "transcribe",
-        "describe",
-        "depth",
-        "masks",
-        "composite",
-        "face_mesh",
-        "embed",
-    ),
-    "face_mesh": ("normalize", "separate", "pitch", "transcribe", "describe", "face_mesh", "embed"),
-    "direct": ("normalize",),
-}
+# Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
+STAGES_BY_MODE = PREP_STAGES_BY_MODE
 SEEDANCE_PREP = ("depth", "face_mesh", "depth_mesh")
 ALL_MODES = (*SEEDANCE_PREP, "direct")
 ICONS = {"done": "✓", "pending": "◻", "running": "⟳", "failed": "✕"}
@@ -257,6 +230,7 @@ class SectionView:
     texts: tuple[TextItem, ...]
     links: tuple[Link, ...]
     error: str | None = None
+    stopped: bool = False  # Ctrl-C: show the resume hint instead of an error
 
 
 @dataclass(frozen=True)
@@ -405,6 +379,11 @@ def _media(job: Job, state: dict[str, Any], asset: Asset) -> MediaItem:
     return MediaItem(asset.label, asset.kind, file_url(job.id, name), "ready")
 
 
+def tilde(text: str) -> str:
+    """Hide the user's home directory in text shown on screen."""
+    return text.replace(str(Path.home()), "~")
+
+
 def _size_text(path: Path) -> str:
     size = path.stat().st_size
     return f"{size / 1_000_000:.1f} MB" if size >= 100_000 else f"{size / 1000:.0f} KB"
@@ -413,10 +392,14 @@ def _size_text(path: Path) -> str:
 def video_facts(path: Path) -> str:
     """'8.0 s · 1.2 MB'; a damaged or partial file is reported, never raised."""
     try:
+        size = _size_text(path)
+    except OSError:
+        return "file missing"  # vanished since the folder scan
+    try:
         seconds = stream_seconds(path, "video")
     except (OSError, ValueError, av.error.FFmpegError):
-        return f"unreadable video · {_size_text(path)}"
-    return f"{seconds:.1f} s · {_size_text(path)}"
+        return f"unreadable video · {size}"
+    return f"{seconds:.1f} s · {size}"
 
 
 def _upload_texts(job: Job, state: dict[str, Any]) -> list[TextItem]:
@@ -502,11 +485,14 @@ def _links(job: Job, state: dict[str, Any], section: Section) -> list[Link]:
     return links
 
 
+INTERRUPTED = "interrupted"  # what pipeline._tracked records on Ctrl-C
+
+
 def _error(state: dict[str, Any], section: Section) -> str | None:
     for name in section.stages:
         entry = state["stages"].get(name)
         if isinstance(entry, dict) and entry.get("status") == "failed":
-            return str(entry.get("error") or "This step failed.")
+            return tilde(str(entry.get("error") or "This step failed."))
     return None
 
 
@@ -581,6 +567,7 @@ def _section_view(
             texts = _transcript_texts(state)
         elif section.id == "face-mesh":
             texts = _tracking_texts(job, state)
+    error = _error(state, section)
     return SectionView(
         id=section.id,
         number=number,
@@ -590,7 +577,8 @@ def _section_view(
         media=tuple(_media(job, state, asset) for asset in section.assets),
         texts=tuple(texts),
         links=tuple(_links(job, state, section)),
-        error=_error(state, section),
+        error=error,
+        stopped=error == INTERRUPTED,
     )
 
 
@@ -640,7 +628,9 @@ def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
     try:
         state = read_state(job)
     except ViewError as exc:
-        return JobSummary(job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), str(exc))
+        return JobSummary(
+            job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), tilde(str(exc))
+        )
     info = progress(state)
     return JobSummary(
         id=job.id,

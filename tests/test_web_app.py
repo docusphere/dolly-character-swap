@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -296,3 +297,40 @@ def test_job_page_has_refresh_banner_and_empty_stall_notice(client, runs_dir, me
     assert 'id="new-results"' in text and 'id="refresh-button"' in text
     assert "New results are ready" in text
     assert 'id="stalled"' in text and 'role="status"' in text
+
+
+def test_failed_repair_job_offers_no_approve_command(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    job.mark_stage("composite", "failed", error="repair failed")
+    text = client.get(f"/jobs/{job.id}").text
+    assert "--approve" not in text and "Failed" in text
+
+
+def test_home_directory_is_hidden_in_errors(client, runs_dir, media):
+    home = str(Path.home())
+    job = make_job(runs_dir, media, "depth", done=3, failed=f"cannot read {home}/clips/a.mp4")
+    text = client.get(f"/jobs/{job.id}").text
+    assert home not in text and "cannot read ~/clips/a.mp4" in text
+    job.path("state.json").write_text(f"[] {home}")
+    broken = client.get(f"/jobs/{job.id}")
+    assert home not in broken.text
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "word"),
+    [
+        ({"done": 3, "failed": "boom"}, "status-failed"),
+        ({"done": 3, "running": True}, "status-running"),
+        ({}, "status-done"),
+    ],
+)
+def test_header_badge_has_status_class(client, runs_dir, media, kwargs, word):
+    job = make_job(runs_dir, media, "depth", **kwargs)
+    assert f'class="badge {word}" id="job-status"' in client.get(f"/jobs/{job.id}").text
+
+
+def test_interrupted_stage_says_stopped(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=3, failed="interrupted")
+    text = client.get(f"/jobs/{job.id}").text
+    assert f"Stopped (Ctrl-C). Run <code>charswap resume {job.id}</code> to continue." in text
+    assert "interrupted" not in text and "Fix the issue" not in text

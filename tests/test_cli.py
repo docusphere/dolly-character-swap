@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from character_swap import cli
 from character_swap.config import Settings
 from character_swap.jobs import Job
+from character_swap.pipeline import PREP_STAGES_BY_MODE
 from character_swap.stages import StageError
 from helpers import solid, write_video
 
@@ -88,10 +89,27 @@ def test_prepare_stage_error_is_friendly(settings, video, monkeypatch):
     assert not any(settings.runs_dir.glob("spend-log.csv"))  # nothing logged on failure
 
 
+def _finish_stages(job):
+    for name in PREP_STAGES_BY_MODE[job.mode]:
+        job.mark_stage(name)
+
+
+def test_unfinished_preparation_cannot_be_approved(settings, video):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="face_mesh")
+    for name in ["original.mp4", "face-landmarks.json", "composite-silent.mp4", "prepared.mp4"]:
+        job.path(name).write_bytes(name.encode())
+    assert json.loads(run(["status", job.id], settings)[1].text)["review"]["status"] == (
+        "unavailable"
+    )
+    code, out = run(["review", job.id, "--approve", "--note", "x", "--fingerprint", "f"], settings)
+    assert code == 2 and "Preparation isn't finished" in out.err.text
+
+
 def test_status_review_prompt_flow(settings, video):
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="face_mesh")
     for name in ["original.mp4", "face-landmarks.json", "composite-silent.mp4", "prepared.mp4"]:
         job.path(name).write_bytes(name.encode())
+    _finish_stages(job)
     job.update(transcript="hi", scene="A room.")
 
     code, out = run(["status", job.id], settings)
@@ -113,6 +131,7 @@ def test_review_reject(settings, video):
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="face_mesh")
     for name in ["original.mp4", "face-landmarks.json", "composite-silent.mp4", "prepared.mp4"]:
         job.path(name).write_bytes(name.encode())
+    _finish_stages(job)
     fingerprint = json.loads(run(["status", job.id], settings)[1].text)["review"]["fingerprint"]
     code, out = run(
         ["review", job.id, "--reject", "--note", "bad", "--fingerprint", fingerprint], settings
@@ -124,6 +143,7 @@ def test_review_stale_fingerprint_is_friendly(settings, video):
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="face_mesh")
     for name in ["original.mp4", "face-landmarks.json", "composite-silent.mp4", "prepared.mp4"]:
         job.path(name).write_bytes(name.encode())
+    _finish_stages(job)
     code, out = run(
         ["review", job.id, "--approve", "--note", "x", "--fingerprint", "stale"], settings
     )

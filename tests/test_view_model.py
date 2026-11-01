@@ -475,3 +475,10 @@ def test_folder_removed_mid_scan_is_skipped(runs_dir, media, monkeypatch):
 
     monkeypatch.setattr(vm, "_mtime_iso", flaky)
     assert [s.id for s in vm.list_jobs(runs_dir)] == [keep.id]
+
+
+def test_video_facts_treats_a_vanished_file_as_missing(tmp_path, monkeypatch):
+    gone = tmp_path / "gone.mp4"
+    assert vm.video_facts(gone) == "file missing"
+    monkeypatch.setattr(vm, "stream_seconds", lambda *_a: 1.0)
+    assert vm.video_facts(gone) == "file missing"

@@ -35,6 +35,36 @@ PAID_STAGES = {
     "direct": [],
 }
 
+# Stage order per mode, exactly as prepare() runs them (the viewer and review gate read this).
+# test_viewer_stage_table_matches_what_prepare_runs keeps it in sync.
+PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
+    "depth": (
+        "normalize",
+        "separate",
+        "pitch",
+        "transcribe",
+        "describe",
+        "depth",
+        "masks",
+        "composite",
+        "embed",
+    ),
+    "depth_mesh": (
+        "normalize",
+        "separate",
+        "pitch",
+        "transcribe",
+        "describe",
+        "depth",
+        "masks",
+        "composite",
+        "face_mesh",
+        "embed",
+    ),
+    "face_mesh": ("normalize", "separate", "pitch", "transcribe", "describe", "face_mesh", "embed"),
+    "direct": ("normalize",),
+}
+
 
 def remaining_paid_stages(job: Job) -> list[str]:
     """Paid stages this job's mode needs that are not finished yet."""

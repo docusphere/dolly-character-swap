@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Job {{ job.short_id }}{% endblock %}
 {% block body %}
+{% set badge_class = {"Failed": "status-failed", "Rejected": "status-failed", "Preparing": "status-running", "Ready for review": "status-done", "Approved": "status-done"} %}
 <div class="job-head">
   <h1>Job <code>{{ job.short_id }}</code></h1>
   <p class="meta">
     {{ job.generator }} · {{ job.mode }} mode ·
-    <span class="badge" id="job-status">{{ job.status }}</span> ·
+    <span class="badge {{ badge_class[job.status] }}" id="job-status">{{ job.status }}</span> ·
     estimated cost so far ≈ <strong>${{ "%.4f"|format(job.cost_usd) }}</strong>
   </p>
 </div>
@@ -48,8 +49,12 @@
 
       {% if section.error %}
       <div class="error" role="alert">
+        {% if section.stopped %}
+        <p>Stopped (Ctrl-C). Run <code>charswap resume {{ job.id }}</code> to continue.</p>
+        {% else %}
         <p>{{ section.error }}</p>
         <p>Fix the issue, then run <code>charswap resume {{ job.id }}</code>.</p>
+        {% endif %}
       </div>
       {% endif %}
 
