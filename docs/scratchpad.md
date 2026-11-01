@@ -2,6 +2,7 @@
 
 ## Active work
 - [x] S1 — Plan 1: foundation + preparation pipeline (239 tests, 96.3 % coverage; branch feat/plan-1-foundation)
+- [x] Job viewer (read-only, `charswap view`; 389 tests, 97 % coverage; branch feat/job-viewer)
 - [ ] Plan 2 — generation (hosting, PiAPI, Wan, face check, audio restore)
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
@@ -12,7 +13,8 @@
 - [ ] `providers/errors.py` (ProviderError, OutputExpired) + app-wide `CharSwapError` base; drop class-name matching in `stages/__init__.py`; catch prompt `ValueError` in CLI.
 - [ ] Single `modes.py` table (mode → generator, paid stages, review files, uses_depth); generator limits come from generator classes; stage error messages read prices from costs.
 - [ ] Rename `original.mp4` → `normalized.mp4`; depth_mesh composite writes `depth-composite-silent.mp4` directly (remove the copy trick).
-- [ ] Stage status "running"/"failed" in state + per-job file lock (or documented single-writer rule).
+- [x] Stage status "running"/"failed" in state (done with the viewer)
+- [ ] Per-job file lock (or documented single-writer rule).
 
 ## Before Plan 3 (UI + skill)
 - Stat-keyed fingerprint cache for `review.status()` polling (full hash stays on approve/generate).
@@ -28,6 +30,9 @@
 - Consent/ToS/EU AI Act deepfake labeling; charge rejected runs (Higgsfield-style).
 
 ## Backlog
+- Stale "running" after a hard kill (SIGKILL/power loss): needs worker heartbeat/pid (Plan 3)
+- Viewer: browser open uses a fixed 1 s delay; switch to a readiness check
+- Viewer: macOS wildcard-listener detection fixed (connect_ex); nothing to do
 - BytePlus direct provider (if enterprise access granted)
 - Hosted demo inside Dolly (separate spec) → unified API + MCP + credits
 - Multi-person face mesh

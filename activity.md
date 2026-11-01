@@ -16,3 +16,14 @@
   - Repair resets composite/embed(/face_mesh) marks before touching files so a crash can't leave a stale prepared video to be approved.
   - CLI is agent-safe: errors on stderr, Ctrl-C → resume hint (exit 130), resume confirms remaining paid steps.
 - **Lessons:** Writing complete code in the plan + two-stage review caught ~40 real defects before any live API call. Subagents often skip "watch the test fail"; ask reviewers to verify with mutation checks.
+
+## 2026-11-01 — Job viewer (read-only, `charswap view`)
+- **Goal:** Let Frank watch a job's steps and review its results in a browser without touching the CLI flow.
+- **Built:** `web/` (FastAPI + Jinja2): jobs list, job page with fixed navigator and tall sections, costs, live polling; `_tracked()` in the pipeline now records running/done/failed per stage (repair SAM tracked under composite). 389 tests, 97 % coverage, ruff clean. Smoke start passed (home/job 200, Range 206, API JSON, foreign Host 400, SIGINT exit 0 with "Viewer stopped.").
+- **Decisions:**
+  - Localhost-only bind plus a trusted-host guard (foreign Host header gets 400); GET routes only, so the viewer can never change state or spend money.
+  - Hardening beyond the plan: best-effort failed-mark in the pipeline; view-model guards for corrupt state, PAID_RECORD, URL quoting; security headers (nosniff, CSP, no-referrer), no-store caching, NUL rejection in paths.
+  - viewer.js does not reload while media plays; shows a "New results are ready - Refresh" banner. Step bar follows on phones.
+  - CLI catches uvicorn's SystemExit on bind failure (exit 2) and detects wildcard listeners via connect_ex.
+  - Browser opens after a fixed 1 s delay (readiness check is a backlog item).
+- **Not done:** live prepare check and the manual browser checklist are Frank's steps.

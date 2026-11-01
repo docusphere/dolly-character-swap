@@ -3,17 +3,19 @@
 Local app + CLI that swaps a person in a short video for a chosen character, keeping motion, timing and the original soundtrack. Generators: PiAPI Seedance 2.5 (real faces, 1080p) and Wan 2.2 Animate on Replicate (open source).
 
 ## Stack
-Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · pytest (+cov ≥ 85 %) · ruff. FastAPI UI arrives in Plan 3.
+Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (read-only job viewer: `charswap view`) · pytest (+cov ≥ 85 %) · ruff.
 
 ## Commands
 - Install: `uv sync`
 - Tests (with coverage gate): `uv run pytest`
 - Lint/format: `uv run ruff format src tests && uv run ruff check --fix src tests`
 - CLI: `uv run charswap --help`
+- Viewer: `uv run charswap view`
 
 ## Layout
 - `src/character_swap/providers/` is the ONLY code that calls the network.
 - `stages/` = one pipeline step per file; `media/` = local video/audio work.
+- `web/` = read-only job viewer (FastAPI + Jinja2, localhost only; GET routes only, never changes job state).
 - Jobs live in `runs/<id>/` with `state.json` (resumable).
 
 ## Hard rules
