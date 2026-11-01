@@ -302,6 +302,10 @@ def _doctor(args, settings, env) -> int:
 def _port_free(port: int) -> bool:
     """Same bind uvicorn will do (SO_REUSEADDR), so a just-stopped viewer is not 'busy'."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        if probe.connect_ex((VIEW_HOST, port)) == 0:
+            return False  # something already answers (e.g. a 0.0.0.0 listener we could shadow)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((VIEW_HOST, port))
@@ -329,6 +333,11 @@ def _view(args, settings, env) -> int:
         env.serve(app, host=VIEW_HOST, port=port)
     except KeyboardInterrupt:
         pass  # Ctrl-C is how the viewer is meant to stop; no resume hint here
+    except SystemExit as error:  # uvicorn exits with status 1 when it cannot bind
+        if error.code in (None, 0):
+            raise
+        env.err(f"Port {port} is busy; try `charswap view --port {port + 1}`")
+        return 2
     finally:
         if opener is not None:
             opener.cancel()

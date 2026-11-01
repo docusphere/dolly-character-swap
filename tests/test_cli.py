@@ -407,12 +407,19 @@ def test_view_port_check_binds_localhost_only(settings, monkeypatch):
         def setsockopt(self, *args):
             pass
 
+        def settimeout(self, seconds):
+            pass
+
+        def connect_ex(self, address):
+            binds.append(address)
+            return 1  # nothing listening
+
         def bind(self, address):
             binds.append(address)
 
     monkeypatch.setattr(cli.socket, "socket", SpySocket)
     assert cli._port_free(8123) is True
-    assert binds == [("127.0.0.1", 8123)]
+    assert binds == [("127.0.0.1", 8123)] * 2  # connect probe, then bind
 
 
 def test_view_default_port(settings, monkeypatch):
@@ -456,10 +463,27 @@ def test_view_does_not_open_the_browser_if_the_server_fails(settings, monkeypatc
 
 
 def test_view_ctrl_c_stops_cleanly(settings):
+    # real uvicorn normally handles SIGINT itself and returns, so "Viewer stopped." prints via
+    # the normal path; this test covers the fallback.
     server = FakeServer(raise_on_start=KeyboardInterrupt())
     code, out = run(["view", "--port", str(free_port()), "--no-browser"], settings, serve=server)
     assert code == 0 and "Viewer stopped." in out.text
     assert "Interrupted" not in out.err.text and "resume" not in out.err.text
+
+
+def test_view_bind_failure_at_startup_is_explained(settings, monkeypatch):
+    monkeypatch.setattr(cli, "_port_free", lambda port: True)  # lost the race after the check
+    server = FakeServer(raise_on_start=SystemExit(1))  # what real uvicorn raises on bind failure
+    code, out = run(["view", "--port", "8771", "--no-browser"], settings, serve=server)
+    assert code == 2 and "Viewer stopped." not in out.text
+    assert "Port 8771 is busy; try `charswap view --port 8772`" in out.err.text
+
+
+def test_port_free_sees_a_wildcard_listener():
+    with socket.socket() as wide:
+        wide.bind(("0.0.0.0", 0))
+        wide.listen()
+        assert cli._port_free(wide.getsockname()[1]) is False
 
 
 def test_view_busy_port_is_explained(settings):
