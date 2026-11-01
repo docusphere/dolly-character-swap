@@ -416,3 +416,62 @@ def test_list_jobs_newest_first_with_progress(runs_dir, media):
 
 def test_list_jobs_without_runs_folder(tmp_path):
     assert vm.list_jobs(tmp_path / "missing") == []
+
+
+# ---- hardening ---------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"mode": [], "stages": {}},
+        {"mode": {"a": 1}, "stages": {}},
+        {"mode": None, "stages": {}},
+        {"mode": "depth", "stages": "oops"},
+        {"mode": "depth", "stages": None},
+    ],
+)
+def test_corrupt_mode_or_stages_never_break_the_home_list(runs_dir, media, content):
+    bad = make_job(runs_dir, media, "depth", done=0)
+    good = make_job(runs_dir, media, "direct")
+    bad.path("state.json").write_text(json.dumps(content))
+    with pytest.raises(vm.ViewError):
+        vm.job_view(bad, runs_dir)
+    summaries = {s.id: s for s in vm.list_jobs(runs_dir)}
+    assert summaries[bad.id].error and summaries[good.id].error is None
+
+
+def test_cost_row_links_match_section_links(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    view = vm.job_view(job, runs_dir)
+    section_links = {link.url for section in view.sections for link in section.links}
+    assert {row.link for row in view.costs.rows} <= section_links
+    assert all(row.link for row in view.costs.rows)
+
+
+def test_file_url_quotes_names(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    job.path("my face.png").write_bytes(b"x")
+    job.update(character_primary="my face.png")
+    item = sections(vm.job_view(job, runs_dir))["source"].media[1]
+    assert item.url == f"/jobs/{job.id}/files/my%20face.png"
+    assert vm.file_url("j", "sam/a b.json") == "/jobs/j/files/sam/a%20b.json"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", float("nan"), float("-inf")])
+def test_non_finite_logged_costs_count_as_zero(value):
+    state = {"costs": [{"usd": value}, {"usd": 0.5}]}
+    assert vm.logged_cost(state) == 0.5
+
+
+def test_folder_removed_mid_scan_is_skipped(runs_dir, media, monkeypatch):
+    keep = make_job(runs_dir, media, "direct")
+    gone = make_job(runs_dir, media, "direct")
+    gone.update(created_at=None)  # forces the mtime fallback
+    real = vm._mtime_iso
+
+    def flaky(path):
+        if path.name == gone.id:
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr(vm, "_mtime_iso", flaky)
+    assert [s.id for s in vm.list_jobs(runs_dir)] == [keep.id]

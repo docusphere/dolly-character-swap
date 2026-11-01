@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import av
 
@@ -17,7 +19,8 @@ from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.pipeline import PAID_STAGES
 
-# Stage order per mode, exactly as pipeline.prepare() runs them (a test keeps them in sync).
+# Stage order per mode, exactly as pipeline.prepare() runs them.
+# test_viewer_stage_table_matches_what_prepare_runs (tests/test_pipeline.py) keeps them in sync.
 STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
     "depth": (
         "normalize",
@@ -76,6 +79,7 @@ class Asset:
 class Record:
     label: str
     name: str  # saved prediction record inside the job folder
+    stage: str  # the paid stage that wrote it
 
 
 @dataclass(frozen=True)
@@ -121,7 +125,7 @@ SECTIONS: tuple[Section, ...] = (
             Asset("Isolated vocals", "vocals.wav", "audio", "separate"),
             Asset("Vocals +3 semitones (what the AI hears)", "vocals-plus3.wav", "audio", "pitch"),
         ),
-        records=(Record(ON_REPLICATE, "demucs-prediction.json"),),
+        records=(Record(ON_REPLICATE, "demucs-prediction.json", "separate"),),
     ),
     Section(
         id="transcript",
@@ -134,8 +138,8 @@ SECTIONS: tuple[Section, ...] = (
         stages=("transcribe", "describe"),
         assets=(Asset("Frame used for the description", "scene.jpg", "image", "describe"),),
         records=(
-            Record("Transcript on Replicate ↗", "whisper-prediction.json"),
-            Record("Scene on Replicate ↗", "describe-prediction.json"),
+            Record("Transcript on Replicate ↗", "whisper-prediction.json", "transcribe"),
+            Record("Scene on Replicate ↗", "describe-prediction.json", "describe"),
         ),
     ),
     Section(
@@ -148,7 +152,7 @@ SECTIONS: tuple[Section, ...] = (
         modes=("depth", "depth_mesh"),
         stages=("depth",),
         assets=(Asset("Depth video", "depth.mp4", "video", "depth"),),
-        records=(Record(ON_REPLICATE, "depth-prediction.json"),),
+        records=(Record(ON_REPLICATE, "depth-prediction.json", "depth"),),
     ),
     Section(
         id="mask",
@@ -163,7 +167,7 @@ SECTIONS: tuple[Section, ...] = (
             Asset("Mask", "mask.mp4", "video", "composite"),
             Asset("Composite", "@composite", "video", "composite"),
         ),
-        records=(Record(ON_REPLICATE, "sam/sam-prediction.json"),),
+        records=(Record(ON_REPLICATE, "sam/sam-prediction.json", "masks"),),
     ),
     Section(
         id="face-mesh",
@@ -212,6 +216,13 @@ SECTIONS: tuple[Section, ...] = (
         stages=(),
     ),
 )
+
+
+# stage -> saved prediction record, derived from SECTIONS so links and cost rows cannot drift
+PAID_RECORD: dict[str, str] = {
+    record.stage: record.name for section in SECTIONS for record in section.records
+}
+RGB_REPAIR_RECORD = "rgb-repair/sam-prediction.json"
 
 
 @dataclass(frozen=True)
@@ -309,7 +320,8 @@ def read_state(job: Job) -> dict[str, Any]:
         raise ViewError(f"state.json could not be read: {exc}") from exc
     if not isinstance(state, dict):
         raise ViewError("state.json is not a JSON object.")
-    if state.get("mode") not in STAGES_BY_MODE:
+    mode = state.get("mode")
+    if not isinstance(mode, str) or mode not in STAGES_BY_MODE:
         raise ViewError(f"state.json has an unknown mode: {state.get('mode')!r}.")
     if not isinstance(state.get("stages"), dict):
         raise ViewError("state.json has no stages table.")
@@ -356,7 +368,7 @@ def prediction_url(job: Job, record: str) -> str | None:
 
 
 def file_url(job_id: str, name: str) -> str:
-    return f"/jobs/{job_id}/files/{name}"
+    return f"/jobs/{job_id}/files/{quote(name)}"
 
 
 def composite_name(job: Job, state: dict[str, Any]) -> str:
@@ -477,8 +489,8 @@ def _review_section_status(decision: dict[str, Any]) -> str:
 def _links(job: Job, state: dict[str, Any], section: Section) -> list[Link]:
     if section.id == "mask" and state.get("mask_source") == "rgb":
         pairs = [
-            ("First attempt ↗", "sam/sam-prediction.json"),
-            ("Repair ↗", "rgb-repair/sam-prediction.json"),
+            ("First attempt ↗", PAID_RECORD["masks"]),
+            ("Repair ↗", RGB_REPAIR_RECORD),
         ]
     else:
         pairs = [(record.label, record.name) for record in section.records]
@@ -499,20 +511,12 @@ def _error(state: dict[str, Any], section: Section) -> str | None:
 
 
 # ---- costs -------------------------------------------------------------------
-_PAID_RECORD = {
-    "separate": "demucs-prediction.json",
-    "transcribe": "whisper-prediction.json",
-    "describe": "describe-prediction.json",
-    "depth": "depth-prediction.json",
-    "masks": "sam/sam-prediction.json",
-}
-
-
 def _usd(value: Any) -> float:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
@@ -526,7 +530,7 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
             continue
         usd = estimate_stages([stage], ESTIMATE_SECONDS).total
         rows.append(
-            CostRow(STEP_NAMES[stage], "Replicate", usd, prediction_url(job, _PAID_RECORD[stage]))
+            CostRow(STEP_NAMES[stage], "Replicate", usd, prediction_url(job, PAID_RECORD[stage]))
         )
     return tuple(rows)
 
@@ -628,6 +632,28 @@ def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
 
 
+def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
+    try:
+        job = Job.load(runs_dir, folder.name)
+    except JobError:
+        return None  # not a job folder (spend log, stray files, half-created jobs)
+    try:
+        state = read_state(job)
+    except ViewError as exc:
+        return JobSummary(job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), str(exc))
+    info = progress(state)
+    return JobSummary(
+        id=job.id,
+        short_id=job.id[:8],
+        generator=str(state.get("generator", "?")),
+        mode=state["mode"],
+        done_count=info["done_count"],
+        total_count=info["total_count"],
+        cost_usd=completed_cost(cost_rows(job, state)),
+        created_at=str(state.get("created_at") or _mtime_iso(folder)),
+    )
+
+
 def list_jobs(runs_dir: Path) -> list[JobSummary]:
     """Every job folder, newest first. Never hashes files (no review status here)."""
     runs_dir = Path(runs_dir)
@@ -636,27 +662,9 @@ def list_jobs(runs_dir: Path) -> list[JobSummary]:
     summaries = []
     for folder in runs_dir.iterdir():
         try:
-            job = Job.load(runs_dir, folder.name)
-        except JobError:
-            continue  # not a job folder (spend log, stray files, half-created jobs)
-        try:
-            state = read_state(job)
-        except ViewError as exc:
-            summaries.append(
-                JobSummary(job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), str(exc))
-            )
-            continue
-        info = progress(state)
-        summaries.append(
-            JobSummary(
-                id=job.id,
-                short_id=job.id[:8],
-                generator=str(state.get("generator", "?")),
-                mode=state["mode"],
-                done_count=info["done_count"],
-                total_count=info["total_count"],
-                cost_usd=completed_cost(cost_rows(job, state)),
-                created_at=str(state.get("created_at") or _mtime_iso(folder)),
-            )
-        )
+            summary = _summarize(runs_dir, folder)
+        except OSError:
+            continue  # folder removed or unreadable mid-scan
+        if summary:
+            summaries.append(summary)
     return sorted(summaries, key=lambda summary: summary.created_at, reverse=True)
