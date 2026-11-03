@@ -972,3 +972,48 @@ def test_stale_final_is_remade_from_a_new_draft(settings, video, tmp_path, monke
     assert code == 0 and seen == ["draft"] and "already done" not in out.text
     assert [p.read_bytes() for p in job.root.glob("final-old-*")] == [b"old final"]
     assert "final" not in job.state["stages"]
+
+
+def _wan_args(video, character, *extra):
+    return ["prepare", str(video), "--generator", "wan", "--character", str(character), *extra]
+
+
+def test_prepare_wan_direct_is_free_asks_nothing_and_logs_no_cost(tmp_path, video, monkeypatch):
+    empty = Settings.load(root=tmp_path, environ={})
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    ids = []
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: ids.append(job.id))
+
+    def never(_q):
+        raise AssertionError("must not ask")
+
+    code, out = run(
+        _wan_args(video, character), empty, confirm=never, services_factory=lambda s: object()
+    )
+    assert code == 0 and "free for this mode" in out.text
+    assert Job.load(empty.runs_dir, ids[0]).state.get("costs", []) == []
+
+
+def test_prepare_seedance_still_asks(settings, video):
+    asked = []
+    code, _ = run(
+        ["prepare", str(video), "--mode", "depth"],
+        settings,
+        confirm=lambda q: asked.append(q) or False,
+    )
+    assert code == 1 and asked
+
+
+def test_prepare_language_rejected_for_direct_mode(tmp_path, video):
+    empty = Settings.load(root=tmp_path, environ={})
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    asked = []
+    code, out = run(
+        _wan_args(video, character, "--language", "es"),
+        empty,
+        confirm=lambda q: asked.append(q) or True,
+    )
+    assert code == 2 and "--language only matters for Seedance modes" in out.err.text
+    assert not asked and not empty.runs_dir.exists()

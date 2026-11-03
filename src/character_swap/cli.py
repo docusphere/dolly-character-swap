@@ -255,12 +255,18 @@ def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth")
     if args.generator == "wan" and args.character is None:
         raise JobError("Wan needs --character IMAGE (your face or character picture).")
+    if mode == "direct" and args.language != "auto":
+        raise JobError("--language only matters for Seedance modes (Wan has no transcript step).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     estimate = estimate_prepare(mode, seconds=30)
-    env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
-    if not args.yes and not env.proceed():
-        return 1
+    free = estimate.total == 0
+    if free:
+        env.out("Preparing is free for this mode (nothing is sent to a paid service).")
+    else:
+        env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
+        if not args.yes and not env.proceed():
+            return 1
     job = Job.create(
         settings.runs_dir,
         args.video,
@@ -274,7 +280,8 @@ def _prepare(args, settings, env) -> int:
     env.track(job, "resume {id}")
     env.out(f"JOB {job.id}")
     prepare_job(job, env.services_factory(settings), status=env.out)
-    record_spend(job, "prepare", estimate, settings.runs_dir)
+    if not free:
+        record_spend(job, "prepare", estimate, settings.runs_dir)
     watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
     env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
     return 0
