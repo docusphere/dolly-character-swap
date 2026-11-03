@@ -10,6 +10,7 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Tests (with coverage gate): `uv run pytest`
 - Lint/format: `uv run ruff format src tests && uv run ruff check --fix src tests`
 - CLI: `uv run charswap --help`
+- Generate (paid, asks first): `uv run charswap generate <job> --draft|--final`
 - Viewer: `uv run charswap view`
 
 ## Layout

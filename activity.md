@@ -35,3 +35,18 @@
   - Proposed: Plan 2 builds Wan 2.2 Animate (Replicate) first, Seedance 2.5 (PiAPI) second. Why: Wan only needs the Replicate account Frank already has, so the first end-to-end swap comes days sooner; Seedance needs a PiAPI Creator plan (~$15/month) and face-library setup before anything works. Seedance stays the 1080p "YouTube quality" path. Frank hasn't objected yet.
 - **Lessons:** Frank expected "give a video, get my face" to work already. Say plainly which half (disguise vs generate) exists when reporting status. Don't leave local servers running; stop them after his check.
 - **Next:** Frank picks a test clip (under 15 s, one person talking). Run a live prep (~$0.06) only after he confirms, and watch it in the viewer. Then start Plan 2 (prerequisites in scratchpad first).
+
+## 2026-11-03 — Session 3: Plan 2a (Wan generation) built
+- **Goal:** First end-to-end swap path: Wan 2.2 Animate on Replicate, draft then final, original soundtrack restored.
+- **Completed:** `charswap prepare ... --generator wan --mode direct --character <photo> [--language]` and `charswap generate <id> --draft|--final [--yes]` with cost confirmation; `status` shows `next`. Generator interface and Wan generator, one mode table (`modes.py`), neutral provider errors, spend log with provider/model/task id, 429 create retry, polling backoff 5 to 30 s, empty-input guard, soundtrack pre-flight and atomic original-audio restore, stale draft/final remake (old files kept as draft-old-*/final-old-*), viewer Draft/Final sections with Generating / Draft ready / Finished / Out of date and slow-polling of failed/waiting/stale jobs, Whisper fixes (condition_on_previous_text false, language allowlist checked before the cost question). 568 tests, 97.56 % coverage, ruff clean. README has a "Try it with Wan" section.
+- **Decisions:**
+  - Wan first. Why: it only needs the Replicate account Frank already has; Seedance needs a PiAPI plan and face-library setup.
+  - Colour depth kept, grey deferred. Why: colour is the proven input; grey only if results look wrong.
+  - 429 on create is retried (exception to "never retry a paid request"). Why safe: Replicate throttles before creating anything, so nothing exists or is billed; the run releases its "creating" marker, waits, and re-claims it exclusively, so two runs can never both POST.
+  - The draft stores the review fingerprint and the final is refused unless it matches. Why: ties the final to the draft Frank actually watched.
+  - Hosting moved to 2b. Why: Wan uses Replicate's own file upload; only PiAPI needs public URLs.
+- **Lessons:**
+  - Low-balance Replicate accounts are rate-limited (~6 requests/min); fixed 5 s polling starved the next create.
+  - Whisper on Replicate needs condition_on_previous_text false for rap/fast speech, or it returns a few words.
+  - Reviewers found double-charge paths again, so keep adversarial money reviews on every paid change.
+- **Not done:** live Wan test (Task 15, needs Frank's OK); Wan price still unconfirmed ($0.02/s 480p, $0.05/s 720p are estimates). Leftovers are in docs/scratchpad.md "Deferred from Plan 2a".
