@@ -349,3 +349,34 @@ def test_viewer_script_polls_by_mode(client):
     assert "slow: 10000" in script and "fast: 3000" in script
     assert "data.generation" in script
     assert 'pollMode === "fast" && !generating' in script  # no stall notice while generating
+
+
+def test_failed_draft_page_names_the_generate_command(client, runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    job.mark_stage("draft", "failed", error="boom")
+    text = client.get(f"/jobs/{job.id}").text
+    assert f"Fix the issue, then run <code>charswap generate {job.id} --draft</code>" in text
+    assert 'class="badge status-failed" id="job-status"' in text
+
+
+def test_finished_wan_job_page(client, runs_dir, media):
+    from viewer_jobs import finish_stage
+
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'class="badge status-done" id="job-status">Finished' in text
+    assert f"/jobs/{job.id}/files/final.mp4" in text and 'data-poll="off"' in text
+
+
+def test_stale_final_page_badge(client, runs_dir, media):
+    from viewer_jobs import finish_stage
+
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    job.mark_stage("final", fingerprint="old")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'class="badge status-failed" id="job-status">Out of date' in text
+    assert f"charswap generate {job.id} --draft" in text

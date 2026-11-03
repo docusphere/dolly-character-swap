@@ -3,10 +3,11 @@ import json
 import pytest
 
 from character_swap.costs import Estimate, Line, estimate_prepare, estimate_stages, record_spend
+from character_swap.modes import GENERATION_STAGES
 from character_swap.pipeline import PAID_STAGES
 from character_swap.review import decide, fingerprint
 from character_swap.web import view_model as vm
-from viewer_jobs import make_job, write_record
+from viewer_jobs import finish_stage, make_job, write_record
 
 SECTION_IDS = {
     "depth": ["upload", "vocals", "transcript", "depth", "mask", "prepared", "review"],
@@ -21,7 +22,7 @@ SECTION_IDS = {
         "review",
     ],
     "face_mesh": ["upload", "vocals", "transcript", "face-mesh", "prepared", "review"],
-    "direct": ["upload", "source", "review"],
+    "direct": ["upload", "source", "review", "draft", "final"],
 }
 
 
@@ -44,7 +45,7 @@ def test_stage_counts_match_spec(mode, count):
 @pytest.mark.parametrize("mode", list(SECTION_IDS))
 def test_sections_cover_every_stage_of_the_mode(mode):
     covered = {stage for section in vm.sections_for(mode) for stage in section.stages}
-    assert covered == set(vm.STAGES_BY_MODE[mode])
+    assert covered - set(GENERATION_STAGES) == set(vm.STAGES_BY_MODE[mode])
 
 
 @pytest.mark.parametrize("mode", list(SECTION_IDS))
@@ -140,7 +141,9 @@ def test_finished_job_page(runs_dir, media, mode):
     view = vm.job_view(job, runs_dir)
     assert [s.id for s in view.sections] == SECTION_IDS[mode]
     assert [s.number for s in view.sections] == list(range(1, len(SECTION_IDS[mode]) + 1))
-    for section in view.sections[:-1]:
+    for section in view.sections:
+        if section.id in ("review", "draft", "final"):
+            continue  # waiting for the user, not part of preparation
         assert section.status == "done", section.id
         assert all(item.state == "ready" for item in section.media), section.id
     assert view.nav[-1] == vm.NavItem("costs", "Costs", "costs", "$", "summary")
@@ -508,3 +511,90 @@ def test_video_facts_treats_a_vanished_file_as_missing(tmp_path, monkeypatch):
     assert vm.video_facts(gone) == "file missing"
     monkeypatch.setattr(vm, "stream_seconds", lambda *_a: 1.0)
     assert vm.video_facts(gone) == "file missing"
+
+
+# ---- generation sections (Plan 2a) ---------------------------------------------------
+def test_direct_job_shows_draft_and_final(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    view = vm.job_view(job, runs_dir)
+    draft = sections(view)["draft"]
+    assert draft.status == "pending" and draft.media[0].state == "waiting" and draft.links == ()
+    assert view.status == "Ready for review"
+    finish_stage(job, media, "draft")
+    job.append_cost({"step": "draft", "usd": 0.08, "at": "x", "task_id": "pred-draft"})
+    view = vm.job_view(job, runs_dir)
+    draft = sections(view)["draft"]
+    assert draft.status == "done" and draft.media[0].url == f"/jobs/{job.id}/files/draft.mp4"
+    assert [link.url for link in draft.links] == ["https://replicate.com/p/pred-draft"]
+    assert view.status == "Draft ready"
+    rows = [(row.step, row.provider, row.usd, row.link) for row in view.costs.rows]
+    assert rows == [("Draft (480p)", "Replicate", 0.08, "https://replicate.com/p/pred-draft")]
+    assert view.costs.completed_usd == pytest.approx(0.08)
+
+
+def test_generating_and_finished_statuses(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    job.mark_stage("draft", "running")
+    assert vm.job_view(job, runs_dir).status == "Generating"
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    view = vm.job_view(job, runs_dir)
+    assert view.status == "Finished" and sections(view)["final"].status == "done"
+    assert not any(t.label == "Out of date" for t in sections(view)["final"].texts)
+
+
+def test_failed_draft_says_which_command_to_run(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    job.mark_stage("draft", "failed", error="Generating the 480p draft failed: boom")
+    view = vm.job_view(job, runs_dir)
+    draft = sections(view)["draft"]
+    assert view.status == "Failed"
+    assert draft.error == "Generating the 480p draft failed: boom"
+    assert draft.retry == f"charswap generate {job.id} --draft"
+    assert sections(view)["upload"].retry == f"charswap resume {job.id}"
+
+
+def test_seedance_jobs_have_no_generation_sections_yet():
+    for mode in ("depth", "face_mesh", "depth_mesh"):
+        assert not {"draft", "final"} & {s.id for s in vm.sections_for(mode)}
+
+
+def test_stale_final_says_make_a_new_draft(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    job.mark_stage("final", fingerprint="made-from-older-inputs")
+    view = vm.job_view(job, runs_dir)
+    assert view.status == "Out of date"  # never presented as finished
+    texts = {t.label: t for t in sections(view)["final"].texts}
+    assert "no longer approved" in texts["Out of date"].value
+    assert texts["Make a new draft"].value == f"charswap generate {job.id} --draft"
+    assert texts["Make a new draft"].code
+    assert "Out of date" not in {t.label for t in sections(view)["draft"].texts}
+
+
+def test_damaged_generation_entry_is_not_called_stale(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    state = job.state
+    state["stages"]["draft"] = "garbage"
+    job.path("state.json").write_text(json.dumps(state))
+    view = vm.job_view(job, runs_dir)  # never raises
+    assert sections(view)["draft"].texts == ()
+
+
+def test_remade_draft_row_counts_only_the_current_prediction(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    job.append_cost({"step": "draft", "usd": 0.08, "at": "x", "task_id": "pred-old"})
+    job.append_cost({"step": "draft", "usd": 0.08, "at": "y", "task_id": "pred-draft"})
+    costs = vm.job_view(job, runs_dir).costs
+    assert [row.usd for row in costs.rows] == [0.08]
+    assert costs.logged_usd == pytest.approx(0.16)  # every charge is still logged
+
+
+def test_draft_cost_without_task_ids_falls_back_to_the_step(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    job.append_cost({"step": "draft", "usd": 0.05, "at": "x"})
+    assert [row.usd for row in vm.job_view(job, runs_dir).costs.rows] == [0.05]

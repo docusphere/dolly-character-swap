@@ -17,13 +17,15 @@ from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
-from character_swap.modes import GENERATION_STAGES
-from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE
+from character_swap.modes import GENERATION_STAGES, MODES
+from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE, stale_generation
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
 STAGES_BY_MODE = PREP_STAGES_BY_MODE
 SEEDANCE_PREP = ("depth", "face_mesh", "depth_mesh")
 ALL_MODES = (*SEEDANCE_PREP, "direct")
+# Modes whose draft/final can be generated in this version (Seedance joins in Plan 2b).
+GENERATING_MODES = tuple(name for name, mode in MODES.items() if mode.generates)
 ICONS = {"done": "✓", "pending": "◻", "running": "⟳", "failed": "✕"}
 STATUS_WORDS = {"done": "done", "pending": "waiting", "running": "running", "failed": "failed"}
 ESTIMATE_SECONDS = 30  # per-run prices ignore length; matches the CLI's "up to 30 s" estimate
@@ -33,6 +35,8 @@ STEP_NAMES = {
     "describe": "Scene description",
     "depth": "Depth video",
     "masks": "SAM 3 mask",
+    "draft": "Draft (480p)",
+    "final": "Final (720p)",
 }
 _PREDICTION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
@@ -65,6 +69,7 @@ class Section:
     stages: tuple[str, ...]
     assets: tuple[Asset, ...] = ()
     records: tuple[Record, ...] = ()
+    retry: str = "resume {id}"  # after `charswap`; {id} = job id (one form: generate <id> --draft)
 
 
 ON_REPLICATE = "View on Replicate ↗"
@@ -189,6 +194,32 @@ SECTIONS: tuple[Section, ...] = (
         modes=ALL_MODES,
         stages=(),
     ),
+    Section(
+        id="draft",
+        title="Draft (480p)",
+        why=(
+            "A cheaper 480p test run on Replicate. Wan copies the motion of your clip onto "
+            "the character, then your original soundtrack is put back unchanged."
+        ),
+        modes=GENERATING_MODES,
+        stages=("draft",),
+        assets=(Asset("Draft with the original sound", "draft.mp4", "video", "draft"),),
+        records=(Record(ON_REPLICATE, "draft-prediction.json", "draft"),),
+        retry="generate {id} --draft",
+    ),
+    Section(
+        id="final",
+        title="Final (720p)",
+        why=(
+            "The same request with the same seed at 720p, so it matches the draft you liked. "
+            "The original soundtrack is restored again."
+        ),
+        modes=GENERATING_MODES,
+        stages=("final",),
+        assets=(Asset("Final with the original sound", "final.mp4", "video", "final"),),
+        records=(Record(ON_REPLICATE, "final-prediction.json", "final"),),
+        retry="generate {id} --final",
+    ),
 )
 
 
@@ -232,6 +263,7 @@ class SectionView:
     links: tuple[Link, ...]
     error: str | None = None
     stopped: bool = False  # Ctrl-C: show the resume hint instead of an error
+    retry: str = ""  # the full command to show, e.g. `charswap generate <id> --draft`
 
 
 @dataclass(frozen=True)
@@ -349,16 +381,22 @@ def progress(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def prediction_url(job: Job, record: str) -> str | None:
-    """Link to a saved Replicate prediction; None when there is no confirmed prediction id."""
+def prediction_id(job: Job, record: str) -> str | None:
+    """The confirmed id in a saved prediction record; None when there is none."""
     try:
         data = json.loads(job.path(record).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    prediction_id = data.get("id") if isinstance(data, dict) else None
-    if not isinstance(prediction_id, str) or not _PREDICTION_ID.fullmatch(prediction_id):
+    found = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(found, str) or not _PREDICTION_ID.fullmatch(found):
         return None  # includes the {"status": "creating"} marker written before a paid POST
-    return f"https://replicate.com/p/{prediction_id}"
+    return found
+
+
+def prediction_url(job: Job, record: str) -> str | None:
+    """Link to a saved Replicate prediction; None when there is no confirmed prediction id."""
+    found = prediction_id(job, record)
+    return f"https://replicate.com/p/{found}" if found else None
 
 
 def file_url(job_id: str, name: str) -> str:
@@ -525,6 +563,26 @@ def _usd(value: Any) -> float:
     return number if math.isfinite(number) else 0.0
 
 
+def _cost_entries(state: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = state.get("costs", [])
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
+    """The estimate logged when this stage's current prediction was created.
+
+    Matched by prediction id, so a draft remade after new inputs is not counted twice
+    (every charge still shows in "Logged for this job"). Entries without an id fall back
+    to the stage name.
+    """
+    entries = [entry for entry in _cost_entries(state) if entry.get("step") == stage]
+    current = prediction_id(job, PAID_RECORD[stage])
+    matching = [entry for entry in entries if current and entry.get("task_id") == current]
+    return round(sum(_usd(entry.get("usd")) for entry in matching or entries), 4)
+
+
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     """One row per paid stage that is done. Derived from state, never stored."""
     rows = []
@@ -538,6 +596,17 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
         rows.append(
             CostRow(STEP_NAMES[stage], "Replicate", usd, prediction_url(job, PAID_RECORD[stage]))
         )
+    for stage in GENERATION_STAGES:  # priced by length: use the estimate logged at creation
+        if stage_status(state, stage) != "done":
+            continue
+        rows.append(
+            CostRow(
+                STEP_NAMES[stage],
+                "Replicate",
+                _generation_cost(job, state, stage),
+                prediction_url(job, PAID_RECORD[stage]),
+            )
+        )
     return tuple(rows)
 
 
@@ -546,10 +615,7 @@ def completed_cost(rows: tuple[CostRow, ...]) -> float:
 
 
 def logged_cost(state: dict[str, Any]) -> float:
-    entries = state.get("costs", [])
-    if not isinstance(entries, list):
-        return 0.0
-    return round(sum(_usd(entry.get("usd")) for entry in entries if isinstance(entry, dict)), 4)
+    return round(sum(_usd(entry.get("usd")) for entry in _cost_entries(state)), 4)
 
 
 def costs_view(job: Job, state: dict[str, Any], runs_dir: Path) -> CostsView:
@@ -562,18 +628,55 @@ def sections_for(mode: str) -> tuple[Section, ...]:
     return tuple(section for section in SECTIONS if mode in section.modes)
 
 
-def overall_status(state_progress: dict[str, Any], decision: dict[str, Any]) -> str:
-    if "failed" in state_progress["stages"].values():
+def overall_status(
+    state_progress: dict[str, Any], decision: dict[str, Any], *, stale: bool = False
+) -> str:
+    generation = state_progress["generation"]
+    if "failed" in state_progress["stages"].values() or "failed" in generation.values():
         return "Failed"
+    if "running" in generation.values():
+        return "Generating"
     if state_progress["active"]:
         return "Preparing"
+    if stale:  # a draft/final made from inputs that are no longer approved is never "done"
+        return "Out of date"
+    if generation["final"] == "done":
+        return "Finished"
+    if generation["draft"] == "done":
+        return "Draft ready"
     return {"approved": "Approved", "rejected": "Rejected"}.get(
         str(decision.get("status")), "Ready for review"
     )
 
 
+def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
+    """Finished draft/final made from inputs that are no longer the approved ones."""
+    stale = set()
+    for stage in GENERATION_STAGES:
+        if stage_status(state, stage) != "done":
+            continue
+        try:
+            if stale_generation(job, stage):
+                stale.add(stage)
+        except (OSError, ValueError):
+            continue  # a damaged entry is shown as it is; the CLI reports it
+    return frozenset(stale)
+
+
+def _stale_texts(job: Job) -> list[TextItem]:
+    return [
+        TextItem("Out of date", "Made from inputs that are no longer approved."),
+        TextItem("Make a new draft", f"charswap generate {job.id} --draft", code=True),
+    ]
+
+
 def _section_view(
-    job: Job, state: dict[str, Any], section: Section, number: int, decision: dict[str, Any]
+    job: Job,
+    state: dict[str, Any],
+    section: Section,
+    number: int,
+    decision: dict[str, Any],
+    stale: frozenset[str] = frozenset(),
 ) -> SectionView:
     if section.id == "review":
         status = _review_section_status(decision)
@@ -587,6 +690,8 @@ def _section_view(
             texts = _transcript_texts(state)
         elif section.id == "face-mesh":
             texts = _tracking_texts(job, state)
+        elif section.id in stale:
+            texts = _stale_texts(job)
     error = _error(state, section)
     return SectionView(
         id=section.id,
@@ -599,6 +704,7 @@ def _section_view(
         links=tuple(_links(job, state, section)),
         error=error,
         stopped=error == INTERRUPTED,
+        retry="charswap " + section.retry.format(id=job.id),
     )
 
 
@@ -606,8 +712,9 @@ def job_view(job: Job, runs_dir: Path) -> JobView:
     state = read_state(job)
     mode = state["mode"]
     decision = review_status(job)
+    stale = stale_stages(job, state) if MODES[mode].generates else frozenset()
     sections = tuple(
-        _section_view(job, state, section, number, decision)
+        _section_view(job, state, section, number, decision, stale)
         for number, section in enumerate(sections_for(mode), start=1)
     )
     nav = tuple(
@@ -627,7 +734,7 @@ def job_view(job: Job, runs_dir: Path) -> JobView:
         short_id=job.id[:8],
         generator=str(state.get("generator", "?")),
         mode=mode,
-        status=overall_status(state_progress, decision),
+        status=overall_status(state_progress, decision, stale=bool(stale)),
         cost_usd=costs.completed_usd,
         nav=nav,
         sections=sections,
