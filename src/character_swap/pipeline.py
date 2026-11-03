@@ -379,9 +379,14 @@ def _stale(job: Job, stage: str) -> bool:
     return current is None or saved != current
 
 
+def stale_generation(job: Job, stage: str) -> bool:
+    """Saved draft/final work exists, but not for the inputs approved now."""
+    return _stale(job, stage)
+
+
 def stale_draft(job: Job) -> bool:
-    """A draft (finished or saved) exists, but not for the inputs approved now."""
-    return _stale(job, "draft")
+    """A new draft is needed: the draft, or a final made from an old draft, is stale."""
+    return any(_stale(job, stage) for stage in GENERATION_STAGES)
 
 
 def archive_stale_draft(job: Job) -> list[Path]:

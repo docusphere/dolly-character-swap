@@ -330,6 +330,18 @@ def test_next_step_asks_for_a_new_draft_when_the_inputs_changed(wan_job, service
     assert next_step(wan_job, approved=True) == f"charswap generate {wan_job.id} --draft"
 
 
+def test_next_step_asks_for_a_new_draft_when_the_final_is_stale(wan_job, services, runs_dir):
+    approve(wan_job, services)
+    generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    generate(wan_job, services, "final", runs_dir=runs_dir, **QUIET)
+    for name in pipeline.generation_files("draft"):
+        wan_job.path(name).unlink(missing_ok=True)  # draft files removed by hand
+    final = wan_job.state["stages"]["final"]
+    wan_job.mark_stage("final", **{**final, "fingerprint": "an older approval"})
+    assert pipeline.stale_generation(wan_job, "final")
+    assert next_step(wan_job, approved=True) == f"charswap generate {wan_job.id} --draft"
+
+
 def test_next_step_for_seedance_waits_for_the_next_version(runs_dir, tmp_path):
     upload = write_video(tmp_path / "s.mp4", [solid((1, 1, 1))] * 96, audio_seconds=4)
     job = Job.create(runs_dir, upload, generator="seedance", mode="face_mesh")

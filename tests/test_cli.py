@@ -932,3 +932,43 @@ def test_real_services_reach_the_wan_generator(settings):
 
     services = cli.build_services(settings)
     assert isinstance(services.generators["wan"], WanGenerator)
+
+
+def _stale_final(job):
+    """A finished final from older inputs; the draft's files were removed by hand."""
+    job.mark_stage("draft", fingerprint=review_fingerprint(job))
+    job.path("final.mp4").write_bytes(b"old final")
+    job.mark_stage("final", fingerprint="an older approval")
+
+
+def test_stale_final_is_not_presented_as_done(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_final(job)
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--final"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and seen == [] and "already done" not in out.text
+    assert (
+        "This final was made from inputs that are no longer approved; run "
+        f"`charswap generate {job.id} --draft` to make a new draft first."
+    ) in out.err.text
+    status = json.loads(run(["status", job.id], settings)[1].text)
+    assert status["next"] == f"charswap generate {job.id} --draft"
+
+
+def test_stale_final_is_remade_from_a_new_draft(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_final(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 0 and seen == ["draft"] and "already done" not in out.text
+    assert [p.read_bytes() for p in job.root.glob("final-old-*")] == [b"old final"]
+    assert "final" not in job.state["stages"]

@@ -39,6 +39,7 @@ from character_swap.pipeline import (
     resumes_without_charge,
     saved_request_unconfirmed,
     stale_draft,
+    stale_generation,
 )
 from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
@@ -347,6 +348,12 @@ def _generate(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     stage = "final" if args.final else "draft"
     remake = stage == "draft" and stale_draft(job)  # approved inputs changed since that draft
+    if stage == "final" and stale_generation(job, "final"):
+        env.err(
+            "This final was made from inputs that are no longer approved; run "
+            f"`charswap generate {job.id} --draft` to make a new draft first."
+        )
+        return 2
     if job.stage_done(stage) and not remake:
         env.out(f"The {stage} is already done: {job.path(f'{stage}.mp4')}")
         return 0
