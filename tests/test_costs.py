@@ -152,3 +152,8 @@ def test_old_five_column_header_is_upgraded_once(runs_dir, tmp_path):
     assert rows[1][5:] == ["", "", "", ""]
     assert [row[7] for row in rows[2:]] == ["p9", "p10"]
     assert total_spend(runs_dir) == pytest.approx(0.36)
+
+
+def test_wan_prices_are_per_output_second():
+    assert PRICES["wan-480"].unit == PRICES["wan-720"].unit == "second"
+    assert PRICES["wan-480"].usd < PRICES["wan-720"].usd

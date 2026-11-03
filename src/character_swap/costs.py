@@ -44,6 +44,22 @@ PRICES: dict[str, Price] = {
         "Depth video", 0.04, "run", "2026-10-22", "replicate.com/lucataco/depth-anything-video"
     ),
     "sam3": Price("SAM 3 masks", 0.002, "run", "2026-10-22", "replicate.com/lucataco/sam3-video"),
+    # Wan is billed per second of output video. Not shown on the model page on 2026-11-03;
+    # these are the 2026-10-22 figures. Confirm against replicate.com billing after a run.
+    "wan-480": Price(
+        "Wan draft (480p)",
+        0.02,
+        "second",
+        "2026-10-22",
+        "replicate.com/wan-video/wan-2.2-animate-replace (per output second)",
+    ),
+    "wan-720": Price(
+        "Wan final (720p)",
+        0.05,
+        "second",
+        "2026-10-22",
+        "replicate.com/wan-video/wan-2.2-animate-replace (per output second)",
+    ),
 }
 
 STAGE_PRICE = {
@@ -80,22 +96,22 @@ class Estimate:
         return "\n".join(rows)
 
 
-def _cost(key: str, seconds: float) -> Line:
+def cost_line(key: str, seconds: float) -> Line:
     price = PRICES[key]
     usd = price.usd * seconds if price.unit == "second" else price.usd
     return Line(price.item, round(usd, 4))
 
 
 def estimate_prepare(mode: str, seconds: float) -> Estimate:
-    return Estimate(lines=tuple(_cost(key, seconds) for key in PREP_STEPS[mode]))
+    return Estimate(lines=tuple(cost_line(key, seconds) for key in PREP_STEPS[mode]))
 
 
 def estimate_stages(stage_names: list[str], seconds: float) -> Estimate:
-    return Estimate(lines=tuple(_cost(STAGE_PRICE[name], seconds) for name in stage_names))
+    return Estimate(lines=tuple(cost_line(STAGE_PRICE[name], seconds) for name in stage_names))
 
 
 def estimate_repair() -> Estimate:
-    return Estimate(lines=(_cost("sam3", 0),))
+    return Estimate(lines=(cost_line("sam3", 0),))
 
 
 # New columns go at the end: old logs keep their 5-column header and still add up.
