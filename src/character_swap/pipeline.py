@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+import av
+
+from character_swap.costs import record_spend
 from character_swap.jobs import Job
-from character_swap.media.audio import embed_samples, read_audio
+from character_swap.media.audio import FIT_LIMIT, add_original_soundtrack, embed_samples, read_audio
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize, stream_seconds
-from character_swap.modes import GENERATOR_LIMITS, MODES
+from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES
+from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
 from character_swap.review import clear as clear_review
+from character_swap.review import require_approved
 from character_swap.stages import StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene
@@ -32,6 +38,7 @@ PAID_STAGES: dict[str, list[str]] = {name: list(mode.paid_stages) for name, mode
 PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
     name: mode.prep_stages for name, mode in MODES.items()
 }
+GENERATION_LABELS = {"draft": "Generating the 480p draft", "final": "Generating the 720p final"}
 
 
 def remaining_paid_stages(job: Job) -> list[str]:
@@ -71,6 +78,7 @@ class Services:
     face_detector: Callable[[], FaceDetector]
     rubberband: str = "rubberband"
     hf_token: str | None = None
+    generators: dict[str, Generator] = field(default_factory=dict)
 
 
 def _notify(status: Status, message: str) -> None:
@@ -256,3 +264,152 @@ def _embed(job: Job) -> None:
         read_audio(job.path("vocals-plus3.wav")),
         job.path("prepared.mp4"),
     )
+
+
+# ---- generation (paid, after review) ---------------------------------------------
+def generation_files(stage: str) -> tuple[str, str, str]:
+    """(saved provider record, downloaded raw video, video with the original soundtrack)."""
+    return f"{stage}-prediction.json", f"{stage}-raw.mp4", f"{stage}.mp4"
+
+
+def check_can_generate(job: Job, stage: str) -> None:
+    """Refuse before any cost question: right mode, approved review, and a draft first."""
+    if stage not in GENERATION_STAGES:
+        raise StageError(f"Unknown generation step {stage!r}; use draft or final.")
+    if not MODES[job.mode].generates:
+        raise StageError(
+            "Generating Seedance jobs arrives in the next version; Wan jobs can generate now."
+        )
+    require_approved(job)
+    if stage == "final" and not job.stage_done("draft"):
+        raise StageError(f"Make and watch the draft first: charswap generate {job.id} --draft")
+    _check_soundtrack_fits(job)
+
+
+def _readable_clip_seconds(job: Job) -> float:
+    """clip_seconds, but a damaged or missing normalized clip becomes a plain StageError."""
+    try:
+        return clip_seconds(job)
+    except (OSError, ValueError, av.error.FFmpegError) as exc:
+        raise StageError(
+            f"Could not read the length of the prepared clip ({exc}). Prepare a new job. "
+            "Nothing was charged."
+        ) from exc
+
+
+def _check_soundtrack_fits(job: Job) -> None:
+    """Free pre-flight: refuse to pay for a video whose original sound can't be put back."""
+    upload = job.path("upload.mp4")
+    try:
+        with av.open(str(upload)) as probe:
+            has_audio = bool(probe.streams.audio)
+    except (OSError, ValueError, av.error.FFmpegError) as exc:
+        raise StageError(
+            f"Could not read the clip's sound ({exc}), so the original soundtrack might not "
+            "be put back. Re-export the clip and prepare a new job. Nothing was charged."
+        ) from exc
+    if not has_audio:
+        return  # no audio stream at all: the result will simply be silent
+    try:
+        sound = stream_seconds(upload, "audio")
+    except (OSError, ValueError, av.error.FFmpegError) as exc:
+        # Has audio, but its length is unknown: we can't promise to restore it.
+        raise StageError(
+            f"Could not read the length of the clip's sound ({exc}), so the original "
+            "soundtrack might not be put back. Re-export the clip and prepare a new job. "
+            "Nothing was charged."
+        ) from exc
+    picture = _readable_clip_seconds(job)
+    if abs(sound - picture) > FIT_LIMIT - 0.1:  # leave 0.1 s for the generator's rounding
+        raise StageError(
+            f"The clip's sound lasts {sound:.1f} s but its picture {picture:.1f} s, so the "
+            "original soundtrack could not be put back after generating. Trim the clip so "
+            "both have the same length and prepare a new job. Nothing was charged."
+        )
+
+
+def saved_request_unconfirmed(job: Job, stage: str) -> bool:
+    """True when the saved record is only the "creating" marker (POST never confirmed)."""
+    record, _, _ = generation_files(stage)
+    try:
+        data = json.loads(job.path(record).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False  # missing, or damaged: the client reports damage with its own message
+    return isinstance(data, dict) and data.get("status") == "creating"
+
+
+def needs_new_charge(job: Job, stage: str) -> bool:
+    """False when a saved provider request or a downloaded result exists (resume is free)."""
+    record, raw, _ = generation_files(stage)
+    return not job.path(record).exists() and not job.path(raw).exists()
+
+
+def generator_for(job: Job, services: Services) -> Generator:
+    try:
+        return services.generators[job.generator]
+    except KeyError:
+        raise StageError(f"No {job.generator} generator is set up.") from None
+
+
+def build_request(job: Job) -> GenerationRequest:
+    state = job.state
+    character = state.get("character_primary")
+    if not character:
+        raise StageError("This job has no character image. Prepare a new job with --character.")
+    return GenerationRequest(
+        video=job.path("original.mp4"),
+        primary=CharacterRef(job.path(character)),
+        seconds=_readable_clip_seconds(job),
+        seed=int(state["seed"]),
+    )
+
+
+def generate(
+    job: Job, services: Services, stage: str, *, runs_dir: Path, status: Status = print
+) -> Path:
+    """Make the draft or final video. Paid: the caller showed the estimate and got a yes."""
+    check_can_generate(job, stage)
+    label = GENERATION_LABELS[stage]
+    record, raw, result = (job.path(name) for name in generation_files(stage))
+    if job.stage_done(stage):
+        _notify(status, f"{label} · already done")
+        return result
+    generator = generator_for(job, services)
+    request = build_request(job)
+    estimate = generator.estimate(request, stage)
+
+    def log_charge(prediction: dict) -> None:
+        record_spend(
+            job,
+            stage,
+            estimate,
+            runs_dir,
+            provider=generator.provider,
+            model=generator.model,
+            task_id=str(prediction.get("id", "")),
+            units=f"{request.seconds:.1f}s",
+        )
+
+    _notify(status, label)
+    with _tracked(job, stage), _wrap(label):  # no clear_review: generating changes no input
+        if not raw.exists():  # downloaded already: never ask the provider again
+            generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
+        _notify(status, "Putting the original soundtrack back")
+        add_original_soundtrack(raw, job.path("upload.mp4"), result)
+    _notify(status, f"{stage.capitalize()} ready: {result}")
+    return result
+
+
+def next_step(job: Job, *, approved: bool) -> str:
+    """The one thing to do next (shown by `charswap status`)."""
+    mode = MODES[job.mode]
+    if not all(job.stage_done(name) for name in mode.prep_stages):
+        return f"charswap resume {job.id}"
+    if not approved:
+        return "watch the prepared files, then run charswap review with the fingerprint above"
+    if not mode.generates:
+        return "generating this mode arrives in the next version"
+    for stage in GENERATION_STAGES:
+        if not job.stage_done(stage):
+            return f"charswap generate {job.id} --{stage}"
+    return f"done: {job.path('final.mp4')}"
