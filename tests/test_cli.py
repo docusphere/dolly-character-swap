@@ -4,6 +4,7 @@ import threading
 import time
 
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from character_swap import cli
@@ -623,6 +624,11 @@ def _mark_draft_done(job):
     job.mark_stage("draft", fingerprint=review_fingerprint(job))
 
 
+def _interrupted_draft(job):
+    """What a stopped draft run leaves in state: not done, its approved inputs recorded."""
+    job.mark_stage("draft", "failed", fingerprint=review_fingerprint(job))
+
+
 def _fake_generate(seen):
     def fake(job, services, stage, *, runs_dir, status):
         seen.append(stage)
@@ -674,6 +680,7 @@ def test_generate_needs_approval_before_any_cost_question(settings, video, tmp_p
 def test_generate_resume_does_not_ask_again(settings, video, tmp_path, monkeypatch):
     job = _approved_wan_job(settings, video, tmp_path)
     job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": "processing"}))
+    _interrupted_draft(job)
     asked, seen = [], []
     monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
     code, out = run(
@@ -689,7 +696,8 @@ def test_generate_on_an_unconfirmed_marker_gives_guidance_not_comfort(
     settings, video, tmp_path, monkeypatch
 ):
     job = _approved_wan_job(settings, video, tmp_path)
-    job.path("draft-prediction.json").write_text(json.dumps({"status": "creating"}))
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
     asked, seen = [], []
     monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
     code, out = run(
@@ -698,11 +706,109 @@ def test_generate_on_an_unconfirmed_marker_gives_guidance_not_comfort(
         confirm=asked.append,
         services_factory=wan_services,
     )
-    assert asked == [] and "no new charge" not in out.text
+    assert code == 2 and asked == [] and seen == [] and "no new charge" not in out.text
     assert (
         "A request for this step was sent but never confirmed. It may have been charged; "
         "follow the steps below before running again."
     ) in out.text
+    assert "replicate.com/predictions" in out.err.text and str(record) in out.err.text
+    assert "draft" not in job.state["stages"]  # not marked failed
+
+
+def test_generate_unconfirmed_marker_end_to_end_makes_no_request(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
+    asked = []
+    with respx.mock(assert_all_called=False):  # no routes: any request would fail the test
+        code, out = run(["generate", job.id, "--draft"], settings, confirm=asked.append)
+    assert code == 2 and asked == []
+    assert "replicate.com/predictions" in out.err.text and str(record) in out.err.text
+    assert json.loads(record.read_text()) == {"status": "creating"}
+    assert "draft" not in job.state["stages"]  # not marked failed
+
+
+def test_generate_after_a_failed_prediction_does_not_promise_a_free_resume(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": "failed"}))
+    _interrupted_draft(job)
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert asked == [] and seen == ["draft"] and "no new charge" not in out.text
+
+
+def _stale_draft(job):
+    for name, data in [
+        ("draft-prediction.json", b'{"id": "old", "status": "succeeded"}'),
+        ("draft-raw.mp4", b"old raw"),
+        ("draft.mp4", b"old draft"),
+    ]:
+        job.path(name).write_bytes(data)
+    job.mark_stage("draft", fingerprint="an older approval")
+
+
+def test_stale_draft_can_be_remade_after_a_new_cost_question(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_draft(job)
+    status = json.loads(run(["status", job.id], settings)[1].text)
+    assert status["next"] == f"charswap generate {job.id} --draft"
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=wan_services,
+    )
+    assert code == 0 and asked and seen == ["draft"]
+    assert "approved inputs changed" in out.text and "$0.0800" in out.text
+    kept = sorted(p.name for p in job.root.glob("draft-old-*"))
+    assert len(kept) == 3
+    assert sorted(job.path(n).read_bytes() for n in kept) == [
+        b"old draft",
+        b"old raw",
+        (b'{"id": "old", "status": "succeeded"}'),
+    ]
+    assert not job.path("draft-raw.mp4").exists() and "draft" not in job.state["stages"]
+
+
+def test_declining_a_stale_draft_remake_changes_nothing(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_draft(job)
+    before = json.dumps(job.state["stages"], sort_keys=True)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: False,
+        services_factory=wan_services,
+    )
+    assert code == 1 and seen == [] and "Nothing was charged" in out.err.text
+    assert job.path("draft-raw.mp4").read_bytes() == b"old raw"
+    assert job.path("draft.mp4").read_bytes() == b"old draft"
+    assert not list(job.root.glob("draft-old-*"))
+    assert json.dumps(job.state["stages"], sort_keys=True) == before
+
+
+def test_generate_refusals_do_not_hint_the_wrong_command(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    code, out = run(["generate", job.id, "--final"], settings, services_factory=wan_services)
+    assert code == 2 and f"charswap generate {job.id} --draft" in out.err.text
+    assert "--final" not in out.err.text and "Fix the issue" not in out.err.text
+    seedance = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+    code, out = run(["generate", seedance.id, "--draft"], settings)
+    assert code == 2 and "Fix the issue" not in out.err.text
 
 
 def test_generate_refuses_a_clip_whose_sound_cannot_be_restored(settings, video, tmp_path):

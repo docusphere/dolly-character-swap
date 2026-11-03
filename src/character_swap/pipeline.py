@@ -102,14 +102,14 @@ def _wrap(label: str) -> Iterator[None]:
 
 
 @contextmanager
-def _tracked(job: Job, name: str, **done_info: object) -> Iterator[None]:
+def _tracked(job: Job, name: str, **info: object) -> Iterator[None]:
     """Record running -> done/failed in state.json so viewers can show live progress.
 
     BaseException on purpose: Ctrl-C records "interrupted" instead of leaving the stage
     "running". Only "done" counts for stage_done(), so resume re-runs running/failed stages.
     """
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
-    job.mark_stage(name, "running", started_at=started_at)
+    job.mark_stage(name, "running", started_at=started_at, **info)
     try:
         yield
     except BaseException as exc:
@@ -117,13 +117,13 @@ def _tracked(job: Job, name: str, **done_info: object) -> Iterator[None]:
             "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc) or type(exc).__name__
         )
         try:
-            job.mark_stage(name, "failed", started_at=started_at, error=error)
+            job.mark_stage(name, "failed", started_at=started_at, error=error, **info)
         except Exception as mark_exc:
             # Best-effort: the primary error matters more than recording it, so never let a
             # failing state write (disk full, ...) replace the exception being raised.
             warnings.warn(f"Could not record failure of stage {name}: {mark_exc}", stacklevel=2)
         raise
-    job.mark_stage(name, started_at=started_at, **done_info)
+    job.mark_stage(name, started_at=started_at, **info)
 
 
 def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
@@ -347,6 +347,65 @@ def saved_request_unconfirmed(job: Job, stage: str) -> bool:
     return isinstance(data, dict) and data.get("status") == "creating"
 
 
+RESUMABLE = ("starting", "processing", "succeeded")  # a saved request that can be re-checked free
+
+
+def resumes_without_charge(job: Job, stage: str) -> bool:
+    """True when a downloaded result or a live/finished saved request can be picked up free."""
+    record, raw, _ = generation_files(stage)
+    if job.path(raw).exists():
+        return True
+    try:
+        data = json.loads(job.path(record).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "id" in data and data.get("status") in RESUMABLE
+
+
+def _has_outputs(job: Job, stage: str) -> bool:
+    record, raw, result = generation_files(stage)
+    return job.stage_done(stage) or any(job.path(n).exists() for n in (record, raw, result))
+
+
+def _stale(job: Job, stage: str) -> bool:
+    """True when this step has saved work made from inputs that are not the approved ones."""
+    if not _has_outputs(job, stage):
+        return False
+    try:
+        current = fingerprint(job)
+    except ReviewError:
+        current = None  # the reviewed files are gone: nothing saved can be proven current
+    saved = job.state["stages"].get(stage, {}).get("fingerprint")
+    return current is None or saved != current
+
+
+def stale_draft(job: Job) -> bool:
+    """A draft (finished or saved) exists, but not for the inputs approved now."""
+    return _stale(job, "draft")
+
+
+def archive_stale_draft(job: Job) -> list[Path]:
+    """Move the old draft (and any final made from it) aside, never deleting, and reset them.
+
+    Files become e.g. draft-old-20261103T120000Z-raw.mp4. Called only after the user agreed
+    to pay for a new draft.
+    """
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    moves = []
+    for stage in GENERATION_STAGES:
+        for name in generation_files(stage):
+            source = job.path(name)
+            if source.exists():
+                target = job.path(f"{stage}-old-{stamp}{name[len(stage) :]}")
+                if target.exists():
+                    raise StageError(f"{target} already exists; wait a second and try again.")
+                moves.append((source, target))
+    for source, target in moves:
+        source.rename(target)
+    job.reset_stages(*GENERATION_STAGES)
+    return [target for _, target in moves]
+
+
 def needs_new_charge(job: Job, stage: str) -> bool:
     """False when a saved provider request or a downloaded result exists (resume is free)."""
     record, raw, _ = generation_files(stage)
@@ -378,6 +437,12 @@ def generate(
 ) -> Path:
     """Make the draft or final video. Paid: the caller showed the estimate and got a yes."""
     check_can_generate(job, stage)
+    if _stale(job, stage):  # never relabel an old video with the newly approved inputs
+        raise ReviewError(
+            f"The saved {stage} was made from inputs that are no longer approved. Make a new "
+            f"draft: charswap generate {job.id} --draft (it costs money; the old files are "
+            "kept). Nothing was charged."
+        )
     label = GENERATION_LABELS[stage]
     record, raw, result = (job.path(name) for name in generation_files(stage))
     if job.stage_done(stage):
@@ -433,9 +498,7 @@ def next_step(job: Job, *, approved: bool) -> str:
         return "watch the prepared files, then run charswap review with the fingerprint above"
     if not mode.generates:
         return "generating this mode arrives in the next version"
-    draft = job.state["stages"].get("draft", {})
-    if job.stage_done("draft") and draft.get("fingerprint") != fingerprint(job):
-        # The final would be refused: the approved inputs changed since this draft.
+    if stale_draft(job):  # the final would be refused: the approved inputs changed
         return f"charswap generate {job.id} --draft"
     for stage in GENERATION_STAGES:
         if not job.stage_done(stage):

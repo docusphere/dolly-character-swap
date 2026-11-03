@@ -166,7 +166,7 @@ class ReplicateClient:
                 prediction = None  # removed since the check; the exclusive claim still guards
         if prediction is not None:
             if prediction["status"] == "creating":
-                raise ReplicateError(_unconfirmed(record))
+                raise ReplicateError(unconfirmed_message(record))
             if prediction["status"] == "succeeded":
                 return prediction.get("output")
             if prediction["status"] in ("failed", "canceled"):
@@ -237,7 +237,7 @@ class ReplicateClient:
         try:
             marker = self._claim(record)
         except FileExistsError as error:
-            raise ReplicateError(_unconfirmed(record)) from error
+            raise ReplicateError(unconfirmed_message(record)) from error
         response, marker = self._post_create(url, body, record, marker)
         code = response.status_code
         if 400 <= code < 500 and code != 408:
@@ -245,7 +245,7 @@ class ReplicateClient:
             self._release(record, marker, rejection)
             raise ReplicateError(rejection)
         if response.is_error:
-            raise ReplicateError(_unconfirmed(record))
+            raise ReplicateError(unconfirmed_message(record))
         try:
             prediction = response.json()
             if (
@@ -255,7 +255,7 @@ class ReplicateClient:
             ):
                 raise ValueError("not a prediction")
         except ValueError as error:
-            raise ReplicateError(_unconfirmed(record)) from error
+            raise ReplicateError(unconfirmed_message(record)) from error
         try:
             self._save(record, prediction)
         except OSError as error:
@@ -329,7 +329,7 @@ class ReplicateClient:
             try:
                 response = self._http.post(url, headers=self._headers, json=body)
             except httpx.HTTPError as error:
-                raise ReplicateError(_unconfirmed(record)) from error
+                raise ReplicateError(unconfirmed_message(record)) from error
             if response.status_code != 429 or attempt == CREATE_429_RETRIES:
                 return response, marker
             busy = "Replicate was busy (rate limit, 429); nothing was charged."
@@ -400,7 +400,8 @@ class ReplicateClient:
 TOKEN_MESSAGE = "Your REPLICATE_API_TOKEN was rejected — check .env"
 
 
-def _unconfirmed(record: Path) -> str:
+def unconfirmed_message(record: Path) -> str:
+    """Guidance when a record holds only our \"creating\" marker (POST never confirmed)."""
     return (
         "The request was sent but not confirmed — it may have been charged, or another "
         "charswap command for this job is still sending it. First make sure no other "

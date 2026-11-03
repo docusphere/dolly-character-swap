@@ -27,18 +27,23 @@ from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import (
     GENERATION_LABELS,
     Services,
+    archive_stale_draft,
     build_request,
     check_can_generate,
+    generation_files,
     generator_for,
     needs_new_charge,
     next_step,
     remaining_paid_stages,
     repair_with_rgb,
+    resumes_without_charge,
     saved_request_unconfirmed,
+    stale_draft,
 )
 from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.prompts import build_prompt
+from character_swap.providers.replicate import unconfirmed_message
 from character_swap.review import decide
 from character_swap.review import status as review_status
 from character_swap.stages import StageError
@@ -341,11 +346,12 @@ def _repair(args, settings, env) -> int:
 def _generate(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     stage = "final" if args.final else "draft"
-    env.track(job, f"generate {{id}} --{stage}")
-    if job.stage_done(stage):
+    remake = stage == "draft" and stale_draft(job)  # approved inputs changed since that draft
+    if job.stage_done(stage) and not remake:
         env.out(f"The {stage} is already done: {job.path(f'{stage}.mp4')}")
         return 0
     check_can_generate(job, stage)  # mode, approved review, draft first: before any cost
+    env.track(job, f"generate {{id}} --{stage}")  # after the refusals: their text says what to do
     settings.require("REPLICATE_API_TOKEN")
     services = env.services_factory(settings)
     if saved_request_unconfirmed(job, stage):
@@ -353,14 +359,23 @@ def _generate(args, settings, env) -> int:
             "A request for this step was sent but never confirmed. It may have been charged; "
             "follow the steps below before running again."
         )
-    elif needs_new_charge(job, stage):
+        env.err(unconfirmed_message(job.path(generation_files(stage)[0])))
+        return 2
+    if remake or needs_new_charge(job, stage):
         estimate = generator_for(job, services).estimate(build_request(job), stage)
         env.out(f"{GENERATION_LABELS[stage]} (paid):\n" + estimate.describe())
+        if remake:
+            env.out(
+                "This makes a new draft because the approved inputs changed since the last "
+                "one, and it costs money. The old draft files are kept as draft-old-*."
+            )
         if stage == "final":
             env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")
         if not args.yes and not env.proceed():
             return 1
-    else:
+        if remake:
+            archive_stale_draft(job)
+    elif resumes_without_charge(job, stage):
         env.out(f"Found a saved {stage} request; resuming it (no new charge).")
     result = generate_stage(job, services, stage, runs_dir=settings.runs_dir, status=env.out)
     env.out(f"Watch: {result}")

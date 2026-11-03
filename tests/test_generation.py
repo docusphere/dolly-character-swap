@@ -125,6 +125,8 @@ def test_downloaded_result_is_never_requested_again(wan_job, services, runs_dir)
     approve(wan_job, services)
     fake = services.generators["wan"]
     wan_job.path("draft-raw.mp4").write_bytes(fake.video.read_bytes())
+    # what an interrupted run leaves: the step failed, its approved inputs recorded
+    wan_job.mark_stage("draft", "failed", fingerprint=fingerprint(wan_job))
     generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert fake.calls == [] and wan_job.stage_done("draft")
 
@@ -213,6 +215,83 @@ def test_unconfirmed_saved_request_is_detected(wan_job):
     assert not pipeline.saved_request_unconfirmed(wan_job, "draft")
     wan_job.path("draft-prediction.json").write_text("{")
     assert not pipeline.saved_request_unconfirmed(wan_job, "draft")  # run() reports damage
+
+
+def _make_stale(job, services, runs_dir):
+    """A finished draft whose inputs no longer match the approved ones."""
+    approve(job, services)
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    draft = job.state["stages"]["draft"]
+    job.mark_stage("draft", **{**draft, "fingerprint": "an older approval"})
+
+
+def test_stale_draft_is_detected(wan_job, services, runs_dir):
+    assert not pipeline.stale_draft(wan_job)
+    approve(wan_job, services)
+    generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert not pipeline.stale_draft(wan_job)
+    draft = wan_job.state["stages"]["draft"]
+    wan_job.mark_stage("draft", **{k: v for k, v in draft.items() if k != "fingerprint"})
+    assert pipeline.stale_draft(wan_job)  # no fingerprint: cannot prove it matches
+
+
+def test_generate_never_reuses_a_stale_draft(wan_job, services, runs_dir):
+    _make_stale(wan_job, services, runs_dir)
+    old = wan_job.path("draft-raw.mp4").read_bytes()
+    with pytest.raises(ReviewError, match="new draft"):
+        generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    wan_job.mark_stage("draft", "failed", fingerprint="an older approval")  # not done, raw kept
+    with pytest.raises(ReviewError, match="new draft"):
+        generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert len(services.generators["wan"].calls) == 1  # only the first, real draft
+    assert wan_job.path("draft-raw.mp4").read_bytes() == old
+
+
+def test_a_failed_generation_remembers_its_inputs(wan_job, services, runs_dir):
+    approve(wan_job, services)
+    generator = services.generators["wan"]
+
+    def boom(request, stage, *, record, dest, on_created=None):
+        record.write_text(json.dumps({"id": "p", "status": "processing"}))
+        raise RuntimeError("network down")
+
+    generator.generate = boom
+    with pytest.raises(StageError):
+        generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    draft = wan_job.state["stages"]["draft"]
+    assert draft["status"] == "failed" and draft["fingerprint"] == fingerprint(wan_job)
+    assert not pipeline.stale_draft(wan_job)  # resuming that saved request stays allowed
+
+
+def test_archive_stale_draft_keeps_the_old_files(wan_job, services, runs_dir):
+    _make_stale(wan_job, services, runs_dir)
+    old = {name: wan_job.path(name).read_bytes() for name in pipeline.generation_files("draft")}
+    moved = pipeline.archive_stale_draft(wan_job)
+    assert len(moved) == 3 and all(path.name.startswith("draft-old-") for path in moved)
+    assert sorted(path.read_bytes() for path in moved) == sorted(old.values())
+    assert not any(wan_job.path(name).exists() for name in old)
+    assert "draft" not in wan_job.state["stages"]
+    generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert len(services.generators["wan"].calls) == 2 and not pipeline.stale_draft(wan_job)
+
+
+def test_resumes_without_charge(wan_job):
+    record = wan_job.path("draft-prediction.json")
+    assert not pipeline.resumes_without_charge(wan_job, "draft")
+    for status, free in [
+        ("starting", True),
+        ("processing", True),
+        ("succeeded", True),
+        ("failed", False),
+        ("canceled", False),
+        ("creating", False),
+    ]:
+        record.write_text(json.dumps({"id": "p", "status": status}))
+        assert pipeline.resumes_without_charge(wan_job, "draft") is free, status
+    record.write_text("{")
+    assert not pipeline.resumes_without_charge(wan_job, "draft")
+    wan_job.path("draft-raw.mp4").write_bytes(b"video")
+    assert pipeline.resumes_without_charge(wan_job, "draft")
 
 
 def test_needs_new_charge(wan_job):
