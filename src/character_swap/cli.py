@@ -43,7 +43,10 @@ def build_services(settings: Settings) -> Services:  # pragma: no cover - wires 
 
     model_dir = settings.root / "models"
     return Services(
-        replicate=ReplicateClient(settings.require("REPLICATE_API_TOKEN")),
+        replicate=ReplicateClient(
+            settings.require("REPLICATE_API_TOKEN"),
+            on_wait=lambda *wait: _stderr(rate_limit_message(*wait)),
+        ),
         face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),
         hf_token=settings.get("HF_TOKEN") or None,
     )
@@ -57,6 +60,13 @@ def run_server(app, *, host: str, port: int) -> None:  # pragma: no cover - real
 
 def _stderr(text: str = "") -> None:
     print(text, file=sys.stderr)
+
+
+def rate_limit_message(seconds: float, attempt: int, max_attempts: int) -> str:
+    return (
+        f"Replicate is busy (rate limit); waiting {seconds:.0f} s before retrying "
+        f"({attempt}/{max_attempts}). Nothing charged yet."
+    )
 
 
 def _ask(question: str, err: Out = _stderr) -> bool:

@@ -551,3 +551,11 @@ def test_prompt_errors_are_friendly(settings, video, monkeypatch):
     monkeypatch.setattr(cli, "build_prompt", too_long)
     code, out = run(["prompt", job.id], settings)
     assert code == 2 and "the limit is 4000" in out.err.text
+
+
+def test_rate_limit_wait_message():
+    from character_swap.cli import rate_limit_message
+
+    assert rate_limit_message(7.4, 1, 3) == (
+        "Replicate is busy (rate limit); waiting 7 s before retrying (1/3). Nothing charged yet."
+    )

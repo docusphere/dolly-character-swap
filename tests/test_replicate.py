@@ -575,3 +575,146 @@ def test_retry_after_parsing(header, wait):
     from character_swap.providers.replicate import _retry_after
 
     assert _retry_after(httpx.Response(429, headers={"Retry-After": header})) == wait
+
+
+# ---- 429 hardening: only our own marker is ever removed ------------------------
+OTHER = {"status": "creating", "created_at": "x", "owner": "someone-else"}
+
+
+@respx.mock
+@pytest.mark.parametrize("code", [429, 422])
+def test_record_replaced_during_the_post_is_never_deleted(tmp_path, code):
+    record = tmp_path / "r.json"
+
+    def other_run_takes_over(_request):
+        record.write_text(json.dumps(OTHER))
+        return httpx.Response(code)
+
+    route = respx.post(f"{API}/predictions").mock(side_effect=other_run_takes_over)
+    with pytest.raises(ReplicateError, match="Another charswap run"):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 1
+    assert json.loads(record.read_text()) == OTHER
+
+
+@respx.mock
+def test_final_429_with_record_replaced_is_never_deleted(tmp_path):
+    record = tmp_path / "r.json"
+    answers = iter([httpx.Response(429)] * 3)
+
+    def answer(_request):
+        try:
+            return next(answers)
+        except StopIteration:
+            record.write_text(json.dumps(OTHER))
+            return httpx.Response(429)
+
+    route = respx.post(f"{API}/predictions").mock(side_effect=answer)
+    with pytest.raises(ReplicateError, match="Another charswap run"):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 4
+    assert json.loads(record.read_text()) == OTHER
+
+
+@respx.mock
+def test_marker_records_an_owner(tmp_path):
+    record = tmp_path / "r.json"
+    seen = []
+
+    def answer(_request):
+        seen.append(json.loads(record.read_text()))
+        return httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 1})
+
+    respx.post(f"{API}/predictions").mock(side_effect=answer)
+    client().run(version="v1", input={}, record=record)
+    assert seen[0]["status"] == "creating" and seen[0]["owner"] and seen[0]["created_at"]
+
+
+@respx.mock
+def test_on_wait_is_told_about_each_429_wait(tmp_path):
+    respx.post(f"{API}/predictions").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(429),
+            httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 1}),
+        ]
+    )
+    waits = []
+    ReplicateClient(
+        "tok", poll_seconds=0, sleep=lambda _s: None, on_wait=lambda *a: waits.append(a)
+    ).run(version="v1", input={}, record=tmp_path / "r.json")
+    assert waits == [(7.0, 1, 3), (10.0, 2, 3)]
+
+
+@respx.mock
+def test_marker_that_cannot_be_released_on_429_is_reported(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(return_value=httpx.Response(429))
+
+    def stuck(_self, missing_ok=False):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr("pathlib.Path.unlink", stuck)
+    with pytest.raises(ReplicateError, match="nothing was charged.*could not be removed"):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 1 and record.exists()
+
+
+@respx.mock
+def test_marker_that_cannot_be_reclaimed_after_429_is_reported(tmp_path):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(return_value=httpx.Response(429))
+
+    def lock_the_folder(_seconds):
+        tmp_path.chmod(0o500)
+
+    try:
+        with pytest.raises(ReplicateError, match="nothing was charged"):
+            ReplicateClient("tok", sleep=lock_the_folder).run(version="v1", input={}, record=record)
+    finally:
+        tmp_path.chmod(0o700)
+    assert route.call_count == 1 and not record.exists()
+
+
+@respx.mock
+def test_record_vanishing_between_exists_and_read_falls_back_to_a_claimed_create(
+    tmp_path, monkeypatch
+):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 5})
+    )
+    real_exists = type(record).exists
+    monkeypatch.setattr(
+        "pathlib.Path.exists", lambda self: True if self == record else real_exists(self)
+    )
+    assert client().run(version="v1", input={}, record=record) == 5
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_marker_already_gone_on_rejection_still_reports_the_rejection(tmp_path):
+    record = tmp_path / "r.json"
+
+    def deleted_meanwhile(_request):
+        record.unlink()
+        return httpx.Response(422, text="bad field")
+
+    respx.post(f"{API}/predictions").mock(side_effect=deleted_meanwhile)
+    with pytest.raises(ReplicateError, match="rejected the input"):
+        client().run(version="v1", input={}, record=record)
+    assert not record.exists()
+
+
+@respx.mock
+def test_unreadable_record_after_429_is_left_alone(tmp_path):
+    record = tmp_path / "r.json"
+
+    def half_written(_request):
+        record.write_text("{")
+        return httpx.Response(429)
+
+    route = respx.post(f"{API}/predictions").mock(side_effect=half_written)
+    with pytest.raises(ReplicateError, match="Another charswap run"):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 1 and record.read_text() == "{"

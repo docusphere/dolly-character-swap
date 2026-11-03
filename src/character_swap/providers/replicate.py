@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ class ReplicateClient:
         max_poll_seconds: float = 30.0,
         max_polls: int = 720,
         sleep: Callable[[float], None] = time.sleep,
+        on_wait: Callable[[float, int, int], None] | None = None,
     ):
         self._http = http or httpx.Client(timeout=httpx.Timeout(180, connect=15))
         self._headers = {"Authorization": f"Bearer {token}"}
@@ -49,6 +51,7 @@ class ReplicateClient:
         self._max_poll_seconds = max_poll_seconds
         self._max_polls = max_polls
         self._sleep = sleep
+        self._on_wait = on_wait  # told (seconds, attempt, max attempts) before each 429 wait
 
     # ---- free calls (retried) -------------------------------------------------
     def _retry(self, call: Callable[[], Any], attempts: int = 3) -> Any:
@@ -146,8 +149,13 @@ class ReplicateClient:
         never lead to a second charge. If `record` exists, resume it instead.
         """
         record = Path(record)
+        prediction = None
         if record.exists():
-            prediction = self._load(record)
+            try:
+                prediction = self._load(record)
+            except FileNotFoundError:
+                prediction = None  # removed since the check; the exclusive claim still guards
+        if prediction is not None:
             if prediction["status"] == "creating":
                 raise ReplicateError(_unconfirmed(record))
             if prediction["status"] == "succeeded":
@@ -171,6 +179,8 @@ class ReplicateClient:
         )
         try:
             data = json.loads(record.read_text())
+        except FileNotFoundError:
+            raise
         except (OSError, ValueError) as error:
             raise damaged from error
         if not isinstance(data, dict) or "status" not in data:
@@ -199,14 +209,15 @@ class ReplicateClient:
             raise ValueError("Pass a version or a model.")
         record.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._claim(record)
+            marker = self._claim(record)
         except FileExistsError as error:
             raise ReplicateError(_unconfirmed(record)) from error
-        response = self._post_create(url, body, record)
+        response, marker = self._post_create(url, body, record, marker)
         code = response.status_code
         if 400 <= code < 500 and code != 408:
-            record.unlink(missing_ok=True)
-            raise ReplicateError(_rejection(code, response.text))
+            rejection = _rejection(code, response.text)
+            self._release(record, marker, rejection)
+            raise ReplicateError(rejection)
         if response.is_error:
             raise ReplicateError(_unconfirmed(record))
         try:
@@ -229,9 +240,17 @@ class ReplicateClient:
         return prediction
 
     @staticmethod
-    def _claim(record: Path) -> None:
-        """Write the "creating" marker exclusively; FileExistsError if anyone else has it."""
-        marker = {"status": "creating", "created_at": datetime.now(UTC).isoformat()}
+    def _claim(record: Path) -> dict:
+        """Write our "creating" marker exclusively and return it.
+
+        FileExistsError if anyone else has the record. The random owner lets this run
+        recognize its own marker later, so it never deletes another run's.
+        """
+        marker = {
+            "status": "creating",
+            "created_at": datetime.now(UTC).isoformat(),
+            "owner": uuid.uuid4().hex,
+        }
         with open(record, "x") as file:  # exclusive: a second runner cannot also pay
             try:
                 json.dump(marker, file)
@@ -239,8 +258,37 @@ class ReplicateClient:
                 file.close()
                 record.unlink(missing_ok=True)  # POST was never sent
                 raise
+        return marker
 
-    def _post_create(self, url: str, body: dict, record: Path) -> httpx.Response:
+    @staticmethod
+    def _release(record: Path, marker: dict, nothing_charged: str) -> None:
+        """Delete the record only if it is still exactly our marker.
+
+        Only called when Replicate confirmed nothing was created (`nothing_charged` says
+        why). If another run replaced the record, it is left alone and we stop.
+        """
+        try:
+            current = json.loads(record.read_text())
+        except FileNotFoundError:
+            return  # already gone; nothing of ours to remove
+        except (OSError, ValueError) as error:
+            raise ReplicateError(_taken_over(record)) from error
+        if current != marker:
+            raise ReplicateError(_taken_over(record))
+        try:
+            record.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise ReplicateError(
+                f"{nothing_charged} But the marker {record} could not be removed ({error}), "
+                "so it is still there. Make sure no other charswap command is running for "
+                "this job, then delete it and run again."
+            ) from error
+
+    def _post_create(
+        self, url: str, body: dict, record: Path, marker: dict
+    ) -> tuple[httpx.Response, dict]:
         """POST the paid create. Repeat it only after a 429, and only if we re-claim the marker.
 
         A 429 means Replicate throttled the request before creating anything: nothing exists
@@ -255,16 +303,21 @@ class ReplicateClient:
             except httpx.HTTPError as error:
                 raise ReplicateError(_unconfirmed(record)) from error
             if response.status_code != 429 or attempt == CREATE_429_RETRIES:
-                return response
-            record.unlink(missing_ok=True)  # ours, and the 429 means nothing was created
-            self._sleep(_retry_after(response))
+                return response, marker
+            busy = "Replicate was busy (rate limit, 429); nothing was charged."
+            self._release(record, marker, busy)  # only ours; the 429 means nothing exists
+            wait = _retry_after(response)
+            if self._on_wait:
+                self._on_wait(wait, attempt + 1, CREATE_429_RETRIES)
+            self._sleep(wait)
             try:
-                self._claim(record)
+                marker = self._claim(record)
             except FileExistsError as error:
+                raise ReplicateError(_taken_over(record)) from error
+            except OSError as error:
                 raise ReplicateError(
-                    f"Another charswap run started this request while this one waited for "
-                    f"Replicate's rate limit; this run sent nothing more. Let the other run "
-                    f"finish, or run the command again to resume what it saved in {record}."
+                    f"{busy} This run could not write its marker {record} to try again "
+                    f"({error}) and sent nothing more. Fix the folder and run again."
                 ) from error
         raise AssertionError("unreachable")
 
@@ -325,6 +378,14 @@ def _unconfirmed(record: Path) -> str:
         "charswap command for this job is still sending it. First make sure no other "
         "charswap command is running for this job. Then check https://replicate.com/predictions; "
         f"if nothing is there, delete {record} and run again."
+    )
+
+
+def _taken_over(record: Path) -> str:
+    return (
+        f"Another charswap run took over {record} while this one was talking to Replicate; "
+        "this run sent nothing more and was not charged for it. Let the other run finish, "
+        "or run the command again to resume what it saved."
     )
 
 
