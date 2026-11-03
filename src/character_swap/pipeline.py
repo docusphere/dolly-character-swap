@@ -15,6 +15,7 @@ from character_swap.jobs import Job
 from character_swap.media.audio import embed_samples, read_audio
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize
+from character_swap.modes import GENERATOR_LIMITS, MODES
 from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
@@ -25,44 +26,11 @@ from character_swap.stages.pitch import pitch_vocals
 from character_swap.stages.separate import separate_vocals
 from character_swap.stages.transcribe import transcribe
 
-# (min_seconds, max_seconds) per generator; see docs/research/2026-10-22-provider-api-facts.md.
-GENERATOR_LIMITS = {"seedance": (4, 30), "wan": (1, 30)}
 Status = Callable[[str], None]
-PAID_STAGES = {
-    "depth": ["separate", "transcribe", "describe", "depth", "masks"],
-    "depth_mesh": ["separate", "transcribe", "describe", "depth", "masks"],
-    "face_mesh": ["separate", "transcribe", "describe"],
-    "direct": [],
-}
-
-# Stage order per mode, exactly as prepare() runs them (the viewer and review gate read this).
-# test_viewer_stage_table_matches_what_prepare_runs keeps it in sync.
+# Derived from modes.MODES (the one table); kept under these names for callers and tests.
+PAID_STAGES: dict[str, list[str]] = {name: list(mode.paid_stages) for name, mode in MODES.items()}
 PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
-    "depth": (
-        "normalize",
-        "separate",
-        "pitch",
-        "transcribe",
-        "describe",
-        "depth",
-        "masks",
-        "composite",
-        "embed",
-    ),
-    "depth_mesh": (
-        "normalize",
-        "separate",
-        "pitch",
-        "transcribe",
-        "describe",
-        "depth",
-        "masks",
-        "composite",
-        "face_mesh",
-        "embed",
-    ),
-    "face_mesh": ("normalize", "separate", "pitch", "transcribe", "describe", "face_mesh", "embed"),
-    "direct": ("normalize",),
+    name: mode.prep_stages for name, mode in MODES.items()
 }
 
 
@@ -175,7 +143,7 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
     _stage(job, "transcribe", "Transcribing speech", lambda: transcribe(job, r), status)
     _stage(job, "describe", "Describing the setting", lambda: describe_scene(job, r), status)
 
-    if job.mode in ("depth", "depth_mesh"):
+    if MODES[job.mode].uses_depth:
         _stage(job, "depth", "Generating depth video", lambda: _depth(job, services), status)
         _stage(
             job,
@@ -191,7 +159,7 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
             lambda: _composite(job),
             status,
         )
-    if job.mode in ("face_mesh", "depth_mesh"):
+    if MODES[job.mode].uses_mesh:
         _stage(job, "face_mesh", "Tracking the face mesh", lambda: _mesh(job, services), status)
     _stage(job, "embed", "Embedding pitched vocals", lambda: _embed(job), status)
     _notify(status, "Ready for review")
@@ -199,7 +167,7 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
 
 def repair_with_rgb(job: Job, services: Services, status: Status = print) -> None:
     """Re-segment on the original colors (depth can lose detail), keep depth colors, re-review."""
-    if job.mode not in ("depth", "depth_mesh"):
+    if not MODES[job.mode].uses_depth:
         raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
     redo = ["composite", "embed", *(["face_mesh"] if job.mode == "depth_mesh" else [])]
     job.reset_stages(*redo)  # a crash below leaves these un-done so prepare() heals the job

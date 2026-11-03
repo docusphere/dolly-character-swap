@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from character_swap.errors import CharSwapError
+from character_swap.modes import MODES_BY_GENERATOR
 
-MODES_BY_GENERATOR = {"seedance": ("depth", "face_mesh", "depth_mesh"), "wan": ("direct",)}
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()

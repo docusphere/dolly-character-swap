@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from character_swap.jobs import Job
+from character_swap.modes import MODES
 
 _LOG_LOCK = threading.Lock()
 
@@ -52,11 +53,8 @@ STAGE_PRICE = {
     "masks": "sam3",
 }
 
-PREP_STEPS = {
-    "depth": ["demucs", "whisper", "describe", "depth", "sam3"],
-    "face_mesh": ["demucs", "whisper", "describe"],
-    "depth_mesh": ["demucs", "whisper", "describe", "depth", "sam3"],
-    "direct": [],
+PREP_STEPS: dict[str, list[str]] = {
+    name: [STAGE_PRICE[stage] for stage in mode.paid_stages] for name, mode in MODES.items()
 }
 
 
