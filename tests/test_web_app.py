@@ -348,7 +348,10 @@ def test_viewer_script_polls_by_mode(client):
     script = client.get("/static/viewer.js").text
     assert "slow: 10000" in script and "fast: 3000" in script
     assert "data.generation" in script
-    assert 'pollMode === "fast" && !generating' in script  # no stall notice while generating
+    assert 'mode === "fast" && !generating' in script  # no stall notice while generating
+    assert "data.poll" in script and "POLL_MS[mode]" in script  # follows the server's mode
+    assert "startedWaiting = Date.now()" in script.split("async function tick")[1]
+    assert 'startMode === "slow"' in script  # a page that started slow keeps watching
 
 
 def test_failed_draft_page_names_the_generate_command(client, runs_dir, media):

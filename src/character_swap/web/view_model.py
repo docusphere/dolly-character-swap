@@ -18,7 +18,8 @@ from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.modes import GENERATION_STAGES, MODES
-from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE, stale_generation
+from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE
+from character_swap.review import ReviewError, fingerprint
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
 STAGES_BY_MODE = PREP_STAGES_BY_MODE
@@ -573,14 +574,16 @@ def _cost_entries(state: dict[str, Any]) -> list[dict[str, Any]]:
 def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
     """The estimate logged when this stage's current prediction was created.
 
-    Matched by prediction id, so a draft remade after new inputs is not counted twice
-    (every charge still shows in "Logged for this job"). Entries without an id fall back
-    to the stage name.
+    Matched by prediction id, so a draft remade after new inputs never counts the old
+    charges (every charge still shows in "Logged for this job"). When nothing matches, only
+    older log lines without an id are used.
     """
     entries = [entry for entry in _cost_entries(state) if entry.get("step") == stage]
     current = prediction_id(job, PAID_RECORD[stage])
     matching = [entry for entry in entries if current and entry.get("task_id") == current]
-    return round(sum(_usd(entry.get("usd")) for entry in matching or entries), 4)
+    if not matching:
+        matching = [entry for entry in entries if not entry.get("task_id")]
+    return round(sum(_usd(entry.get("usd")) for entry in matching), 4)
 
 
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
@@ -649,23 +652,38 @@ def overall_status(
     )
 
 
+_UNKNOWN = object()  # the inputs could not be read this time: say nothing about staleness
+
+
 def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
-    """Finished draft/final made from inputs that are no longer the approved ones."""
-    stale = set()
-    for stage in GENERATION_STAGES:
-        if stage_status(state, stage) != "done":
-            continue
-        try:
-            if stale_generation(job, stage):
-                stale.add(stage)
-        except (OSError, ValueError):
-            continue  # a damaged entry is shown as it is; the CLI reports it
-    return frozenset(stale)
+    """Finished draft/final made from inputs that are no longer the approved ones.
+
+    Same rule as pipeline.stale_generation, but the inputs are hashed once per page.
+    """
+    done = [stage for stage in GENERATION_STAGES if stage_status(state, stage) == "done"]
+    if not done:
+        return frozenset()
+    try:
+        current: object = fingerprint(job)
+    except ReviewError:
+        current = None  # the reviewed files are gone: nothing saved can be proven current
+    except (OSError, ValueError):
+        current = _UNKNOWN
+    if current is _UNKNOWN:
+        return frozenset()
+    return frozenset(
+        stage
+        for stage in done
+        if current is None or state["stages"][stage].get("fingerprint") != current
+    )
 
 
-def _stale_texts(job: Job) -> list[TextItem]:
+def _stale_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
+    note = "Made from inputs that are no longer approved."
+    if decision.get("status") != "approved":
+        note += f" Review the new files (charswap review {job.id}), then run:"
     return [
-        TextItem("Out of date", "Made from inputs that are no longer approved."),
+        TextItem("Out of date", note),
         TextItem("Make a new draft", f"charswap generate {job.id} --draft", code=True),
     ]
 
@@ -691,7 +709,7 @@ def _section_view(
         elif section.id == "face-mesh":
             texts = _tracking_texts(job, state)
         elif section.id in stale:
-            texts = _stale_texts(job)
+            texts = _stale_texts(job, decision)
     error = _error(state, section)
     return SectionView(
         id=section.id,
@@ -729,6 +747,8 @@ def job_view(job: Job, runs_dir: Path) -> JobView:
     ) + (NavItem("costs", "Costs", "costs", "$", "summary"),)
     costs = costs_view(job, state, runs_dir)
     state_progress = progress(state)
+    if stale and state_progress["poll"] == "off":
+        state_progress["poll"] = "slow"  # a new draft (from the terminal) still shows up live
     return JobView(
         id=job.id,
         short_id=job.id[:8],

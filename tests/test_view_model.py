@@ -598,3 +598,68 @@ def test_draft_cost_without_task_ids_falls_back_to_the_step(runs_dir, media):
     finish_stage(job, media, "draft")
     job.append_cost({"step": "draft", "usd": 0.05, "at": "x"})
     assert [row.usd for row in vm.job_view(job, runs_dir).costs.rows] == [0.05]
+
+
+def test_unmatched_current_prediction_never_counts_old_charges(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")  # current prediction: pred-draft
+    job.append_cost({"step": "draft", "usd": 0.08, "at": "x", "task_id": "pred-old"})
+    assert [row.usd for row in vm.job_view(job, runs_dir).costs.rows] == [0.0]
+    job.append_cost({"step": "draft", "usd": 0.05, "at": "y"})  # older log line without an id
+    assert [row.usd for row in vm.job_view(job, runs_dir).costs.rows] == [0.05]
+
+
+def test_job_page_hashes_the_inputs_once(runs_dir, media, monkeypatch):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    calls = []
+    real = vm.fingerprint
+
+    def counting(target):
+        calls.append(target.id)
+        return real(target)
+
+    monkeypatch.setattr(vm, "fingerprint", counting)
+    assert vm.job_view(job, runs_dir).status == "Finished"
+    assert len(calls) == 1
+
+
+def test_missing_reviewed_files_make_finished_work_stale(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    job.path("original.mp4").unlink()  # nothing saved can be proven current (as the CLI says)
+    assert vm.job_view(job, runs_dir).status == "Out of date"
+
+
+def test_stale_check_read_error_renders_without_a_note(runs_dir, media, monkeypatch):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+
+    def broken(target):
+        raise OSError("disk hiccup")
+
+    monkeypatch.setattr(vm, "fingerprint", broken)
+    view = vm.job_view(job, runs_dir)
+    assert view.status == "Draft ready" and sections(view)["draft"].texts == ()
+
+
+def test_stale_hint_asks_for_a_review_first_when_not_approved(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    job.mark_stage("draft", fingerprint="old")
+    texts = {t.label: t.value for t in sections(vm.job_view(job, runs_dir))["draft"].texts}
+    assert f"Review the new files (charswap review {job.id}), then run" in texts["Out of date"]
+    decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
+    texts = {t.label: t.value for t in sections(vm.job_view(job, runs_dir))["draft"].texts}
+    assert texts["Out of date"] == "Made from inputs that are no longer approved."
+    assert texts["Make a new draft"] == f"charswap generate {job.id} --draft"
+
+
+def test_stale_final_keeps_slow_polling(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    assert vm.job_view(job, runs_dir).progress["poll"] == "off"
+    job.mark_stage("final", fingerprint="old")
+    assert vm.job_view(job, runs_dir).progress["poll"] == "slow"
