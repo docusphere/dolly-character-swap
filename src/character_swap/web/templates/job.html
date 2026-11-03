@@ -12,6 +12,7 @@
 </div>
 <div class="layout" data-job-id="{{ job.id }}"
      data-active="{{ 'true' if job.progress.active else 'false' }}"
+     data-poll="{{ job.progress.poll }}"
      data-stages="{{ stages_json }}">
   <nav class="steps" aria-label="Steps">
     <ol>

@@ -90,8 +90,10 @@ def test_live_job_page_polls_and_shows_running_step(client, runs_dir, media):
     job = make_job(runs_dir, media, "depth", done=5, running=True)  # depth running
     text = client.get(f"/jobs/{job.id}").text
     assert 'data-active="true"' in text
-    stages = json.loads(text.split('data-stages="')[1].split('"')[0].replace("&#34;", '"'))
-    assert stages["depth"] == "running" and stages["normalize"] == "done"
+    shown = json.loads(text.split('data-stages="')[1].split('"')[0].replace("&#34;", '"'))
+    assert shown["stages"]["depth"] == "running" and shown["stages"]["normalize"] == "done"
+    assert shown["generation"] == {"draft": "pending", "final": "pending"}
+    assert 'data-poll="fast"' in text
     assert "Waiting for this step…" in text and "⟳" in text
 
 
@@ -190,7 +192,7 @@ def test_api_progress_shape(client, runs_dir, media):
     response = client.get(f"/api/jobs/{job.id}")
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     data = response.json()
-    assert set(data) == {"stages", "done_count", "total_count", "active"}
+    assert set(data) == {"stages", "generation", "done_count", "total_count", "active", "poll"}
     assert list(data["stages"]) == [
         "normalize",
         "separate",
@@ -334,3 +336,16 @@ def test_interrupted_stage_says_stopped(client, runs_dir, media):
     text = client.get(f"/jobs/{job.id}").text
     assert f"Stopped (Ctrl-C). Run <code>charswap resume {job.id}</code> to continue." in text
     assert "interrupted" not in text and "Fix the issue" not in text
+
+
+def test_failed_job_page_slow_polls_for_a_resume(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=3, failed="boom")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'data-active="false"' in text and 'data-poll="slow"' in text
+
+
+def test_viewer_script_polls_by_mode(client):
+    script = client.get("/static/viewer.js").text
+    assert "slow: 10000" in script and "fast: 3000" in script
+    assert "data.generation" in script
+    assert 'pollMode === "fast" && !generating' in script  # no stall notice while generating

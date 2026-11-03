@@ -79,10 +79,36 @@ def test_progress_of_fresh_job_is_active(runs_dir, media):
     info = vm.progress(job.state)
     assert info == {
         "stages": dict.fromkeys(vm.STAGES_BY_MODE["depth"], "pending"),
+        "generation": {"draft": "pending", "final": "pending"},
         "done_count": 0,
         "total_count": 9,
         "active": True,
+        "poll": "fast",
     }
+
+
+def test_progress_keeps_generation_apart_from_preparation(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    info = vm.progress(job.state)
+    assert info["stages"] == {"normalize": "done"}
+    assert info["generation"] == {"draft": "pending", "final": "pending"}
+    assert info["active"] is False and info["poll"] == "slow"  # waiting for the user
+    job.mark_stage("draft", "running")
+    info = vm.progress(job.state)
+    assert info["active"] is True and info["poll"] == "fast"
+    assert (info["done_count"], info["total_count"]) == (1, 1)
+    job.mark_stage("draft")
+    job.mark_stage("final")
+    assert vm.progress(job.state)["poll"] == "off"
+
+
+def test_failed_jobs_keep_slow_polling(runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=2, failed="boom")
+    info = vm.progress(job.state)
+    assert info["active"] is False and info["poll"] == "slow"
+    wan = make_job(runs_dir, media, "direct")
+    wan.mark_stage("draft", "failed", error="boom")
+    assert vm.progress(wan.state)["poll"] == "slow"
 
 
 def test_progress_running_and_finished(runs_dir, media):

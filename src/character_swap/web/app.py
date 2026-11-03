@@ -92,7 +92,8 @@ def create_app(settings: Settings) -> FastAPI:
             view = job_view(job, runs_dir)
         except ViewError as exc:
             return message(request, f"Job {job_id[:8]} cannot be shown", str(exc), 500)
-        context = {"job": view, "stages_json": json.dumps(view.progress["stages"])}
+        shown = {"stages": view.progress["stages"], "generation": view.progress["generation"]}
+        context = {"job": view, "stages_json": json.dumps(shown)}
         return templates.TemplateResponse(request, "job.html", context)
 
     @app.get("/jobs/{job_id}/files/{name:path}")

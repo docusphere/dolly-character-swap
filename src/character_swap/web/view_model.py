@@ -17,6 +17,7 @@ from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
+from character_swap.modes import GENERATION_STAGES
 from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
@@ -320,13 +321,32 @@ def combine(statuses: list[str]) -> str:
 
 
 def progress(state: dict[str, Any]) -> dict[str, Any]:
-    """The cheap polling payload: reads state only (no hashing, no review)."""
+    """The cheap polling payload: reads state only (no hashing, no review).
+
+    Generation (draft/final) is reported apart from preparation: a prepared job that has
+    not been generated is waiting for the user, not running.
+    """
     stages = {name: stage_status(state, name) for name in STAGES_BY_MODE[state["mode"]]}
+    generation = {name: stage_status(state, name) for name in GENERATION_STAGES}
     values = list(stages.values())
     done = values.count("done")
-    failed = "failed" in values
-    active = "running" in values or (done < len(values) and not failed)
-    return {"stages": stages, "done_count": done, "total_count": len(values), "active": active}
+    failed = "failed" in values or "failed" in generation.values()
+    preparing = "running" in values or (done < len(values) and "failed" not in values)
+    active = preparing or "running" in generation.values()
+    if active:
+        poll = "fast"
+    elif generation["final"] == "done" and not failed:
+        poll = "off"
+    else:
+        poll = "slow"  # failed or waiting for the user: a resume/generate still shows up live
+    return {
+        "stages": stages,
+        "generation": generation,
+        "done_count": done,
+        "total_count": len(values),
+        "active": active,
+        "poll": poll,
+    }
 
 
 def prediction_url(job: Job, record: str) -> str | None:
