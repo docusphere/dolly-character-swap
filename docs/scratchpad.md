@@ -45,7 +45,7 @@ From the plan's Deferred table:
 - [ ] (Plan 3) Re-encode to AAC fallback when upload audio can't be stream-copied into mp4 (e.g. PCM in .mov)
 - [ ] (Plan 3) depth_mesh writes `depth-composite-silent.mp4` directly; stage messages read prices from `costs`
 - [ ] (Plan 3) SAM arm-leak item in the review checklist (Seedance depth modes only)
-- [ ] (Plan 3, with run lock) Owner uuid in the "creating" marker so a 429 retry only removes its own marker
+- [x] S3 — Owner uuid in the "creating" marker so a 429 retry only removes its own marker (commit 661a3ad)
 - [ ] (Plan 3, with run lock) A run that loses the 429 re-claim race marks the stage "failed" while the winner still runs (cosmetic, no money risk)
 - [ ] (Backlog) `charswap cancel <job>` for a running prediction
 

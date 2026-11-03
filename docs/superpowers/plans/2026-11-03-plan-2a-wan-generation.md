@@ -41,7 +41,7 @@
 
 ## Conventions for every task
 
-- Run commands from the repo root: `/Users/franciscojosejimeneznillardkam/Documents/Frank DOCS/Frank Projects/youtube/hf-genjutsu/character-swap` (quote it: the path has spaces).
+- Run commands from the repo root: the repo root (the path contains spaces; quote it).
 - Tests: `uv run pytest <path> -q --no-cov` while iterating (the coverage gate applies to the full suite); full suite `uv run pytest`.
 - Lint/format before every commit: `uv run ruff format src tests && uv run ruff check --fix src tests`.
 - Stage files **by name**. Never `git add -A` / `git add .`. No attribution / Co-Authored-By lines in commit messages. Never commit `_legacy/`, `.env`, `runs/`, `models/`, `inputs/`, `.superpowers/`. Frank commits only after his OK: if the session rules say "never auto-commit", stop at the `git add` line and ask.
