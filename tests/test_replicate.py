@@ -434,3 +434,144 @@ def test_polling_backs_off_to_a_ceiling(tmp_path):
     slow = ReplicateClient("tok", poll_seconds=5, max_poll_seconds=20, sleep=sleeps.append)
     assert slow.run(version="v1", input={}, record=record) == 1
     assert sleeps == [5, 7.5, 11.25, 16.875, 20, 20]
+
+
+@respx.mock
+def test_create_429_waits_and_retries(tmp_path):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(429),
+            httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 3}),
+        ]
+    )
+    sleeps = []
+    patient = ReplicateClient("tok", poll_seconds=0, sleep=sleeps.append)
+    assert patient.run(version="v1", input={}, record=record) == 3
+    assert route.call_count == 3 and sleeps == [7.0, 10.0]
+    assert json.loads(record.read_text())["id"] == "p"
+
+
+@respx.mock
+def test_every_create_post_happens_while_this_run_holds_the_marker(tmp_path):
+    record = tmp_path / "r.json"
+    answers = iter(
+        [
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 1}),
+        ]
+    )
+    held = []
+
+    def answer(_request):
+        held.append(json.loads(record.read_text())["status"])
+        return next(answers)
+
+    respx.post(f"{API}/predictions").mock(side_effect=answer)
+    client().run(version="v1", input={}, record=record)
+    assert held == ["creating", "creating", "creating"]
+
+
+@respx.mock
+def test_marker_is_released_while_waiting_on_429(tmp_path):
+    record = tmp_path / "r.json"
+    seen = []
+    respx.post(f"{API}/predictions").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(201, json={"id": "p", "status": "succeeded", "output": 1}),
+        ]
+    )
+
+    def sleep(_seconds):
+        seen.append(record.exists())
+
+    ReplicateClient("tok", poll_seconds=0, sleep=sleep).run(version="v1", input={}, record=record)
+    assert seen == [False]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "other", [{"status": "creating", "created_at": "x"}, {"id": "p2", "status": "processing"}]
+)
+def test_run_started_elsewhere_during_the_wait_is_never_posted_twice(tmp_path, other):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(return_value=httpx.Response(429))
+
+    def another_run_claims_it(_seconds):
+        record.write_text(json.dumps(other))
+
+    with pytest.raises(ReplicateError, match="Another charswap run"):
+        ReplicateClient("tok", poll_seconds=0, sleep=another_run_claims_it).run(
+            version="v1", input={}, record=record
+        )
+    assert route.call_count == 1
+    assert json.loads(record.read_text()) == other  # the other run's marker/record is untouched
+
+
+@respx.mock
+def test_create_429_gives_up_after_three_retries(tmp_path):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "999"})
+    )
+    sleeps = []
+    with pytest.raises(ReplicateError, match="Rate limited, nothing was charged"):
+        ReplicateClient("tok", poll_seconds=0, sleep=sleeps.append).run(
+            version="v1", input={}, record=record
+        )
+    assert route.call_count == 4 and sleeps == [60.0, 60.0, 60.0]
+    assert not record.exists()
+
+
+@respx.mock
+def test_ctrl_c_while_waiting_on_429_leaves_no_marker(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(return_value=httpx.Response(429))
+
+    def stop(_seconds):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        ReplicateClient("tok", sleep=stop).run(version="v1", input={}, record=record)
+    assert not record.exists()
+
+
+@respx.mock
+def test_5xx_after_a_429_still_keeps_the_marker(tmp_path):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        side_effect=[httpx.Response(429), httpx.Response(502)]
+    )
+    with pytest.raises(ReplicateError, match=UNCONFIRMED):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 2
+    assert json.loads(record.read_text())["status"] == "creating"
+
+
+@respx.mock
+def test_timeout_after_a_429_keeps_the_marker_and_never_reposts(tmp_path):
+    record = tmp_path / "r.json"
+    route = respx.post(f"{API}/predictions").mock(
+        side_effect=[httpx.Response(429), httpx.ReadTimeout("slow")]
+    )
+    with pytest.raises(ReplicateError, match=UNCONFIRMED):
+        client().run(version="v1", input={}, record=record)
+    assert route.call_count == 2
+    assert json.loads(record.read_text())["status"] == "creating"
+
+
+def test_unconfirmed_message_warns_about_other_runs(tmp_path):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"status": "creating", "created_at": "x"}))
+    with pytest.raises(ReplicateError, match="no other charswap command is running"):
+        client().run(version="v1", input={}, record=record)
+
+
+@pytest.mark.parametrize(("header", "wait"), [("", 10.0), ("abc", 10.0), ("0", 1.0), ("nan", 10.0)])
+def test_retry_after_parsing(header, wait):
+    from character_swap.providers.replicate import _retry_after
+
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": header})) == wait

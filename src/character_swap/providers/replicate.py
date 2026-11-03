@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -18,6 +19,9 @@ from character_swap.providers.errors import OutputExpired, ProviderError
 API = "https://api.replicate.com/v1"
 TERMINAL = {"succeeded", "failed", "canceled"}
 POLL_GROWTH = 1.5  # each wait is 1.5x the last, up to max_poll_seconds
+CREATE_429_RETRIES = 3  # a throttled create (429) was refused before anything was created
+RATE_LIMIT_WAIT = 10.0  # seconds, when Retry-After is missing or unreadable
+MAX_RATE_LIMIT_WAIT = 60.0
 
 
 class ReplicateError(ProviderError):
@@ -194,21 +198,11 @@ class ReplicateClient:
         else:
             raise ValueError("Pass a version or a model.")
         record.parent.mkdir(parents=True, exist_ok=True)
-        marker = {"status": "creating", "created_at": datetime.now(UTC).isoformat()}
         try:
-            with open(record, "x") as file:  # exclusive: a second runner cannot also pay
-                try:
-                    json.dump(marker, file)
-                except BaseException:
-                    file.close()
-                    record.unlink(missing_ok=True)  # POST was never sent
-                    raise
+            self._claim(record)
         except FileExistsError as error:
             raise ReplicateError(_unconfirmed(record)) from error
-        try:
-            response = self._http.post(url, headers=self._headers, json=body)
-        except httpx.HTTPError as error:
-            raise ReplicateError(_unconfirmed(record)) from error
+        response = self._post_create(url, body, record)
         code = response.status_code
         if 400 <= code < 500 and code != 408:
             record.unlink(missing_ok=True)
@@ -233,6 +227,46 @@ class ReplicateClient:
                 f"saved ({error}). Note this id; check https://replicate.com/predictions."
             ) from error
         return prediction
+
+    @staticmethod
+    def _claim(record: Path) -> None:
+        """Write the "creating" marker exclusively; FileExistsError if anyone else has it."""
+        marker = {"status": "creating", "created_at": datetime.now(UTC).isoformat()}
+        with open(record, "x") as file:  # exclusive: a second runner cannot also pay
+            try:
+                json.dump(marker, file)
+            except BaseException:
+                file.close()
+                record.unlink(missing_ok=True)  # POST was never sent
+                raise
+
+    def _post_create(self, url: str, body: dict, record: Path) -> httpx.Response:
+        """POST the paid create. Repeat it only after a 429, and only if we re-claim the marker.
+
+        A 429 means Replicate throttled the request before creating anything: nothing exists
+        and nothing was billed. We release our marker while we wait (so no waiting run holds
+        a marker that someone might delete), then claim it again exclusively. If another run
+        claimed it meanwhile, we stop without posting. Every other answer goes back to
+        _create() and is never re-sent.
+        """
+        for attempt in range(CREATE_429_RETRIES + 1):
+            try:
+                response = self._http.post(url, headers=self._headers, json=body)
+            except httpx.HTTPError as error:
+                raise ReplicateError(_unconfirmed(record)) from error
+            if response.status_code != 429 or attempt == CREATE_429_RETRIES:
+                return response
+            record.unlink(missing_ok=True)  # ours, and the 429 means nothing was created
+            self._sleep(_retry_after(response))
+            try:
+                self._claim(record)
+            except FileExistsError as error:
+                raise ReplicateError(
+                    f"Another charswap run started this request while this one waited for "
+                    f"Replicate's rate limit; this run sent nothing more. Let the other run "
+                    f"finish, or run the command again to resume what it saved in {record}."
+                ) from error
+        raise AssertionError("unreachable")
 
     def _wait(self, prediction: dict, record: Path) -> Any:
         polls, delay = 0, self._poll_seconds
@@ -287,10 +321,22 @@ TOKEN_MESSAGE = "Your REPLICATE_API_TOKEN was rejected — check .env"
 
 def _unconfirmed(record: Path) -> str:
     return (
-        "The request was sent but not confirmed — it may have been charged. "
-        f"Check https://replicate.com/predictions. If nothing is there, delete {record} "
-        "and run again."
+        "The request was sent but not confirmed — it may have been charged, or another "
+        "charswap command for this job is still sending it. First make sure no other "
+        "charswap command is running for this job. Then check https://replicate.com/predictions; "
+        f"if nothing is there, delete {record} and run again."
     )
+
+
+def _retry_after(response: httpx.Response) -> float:
+    """Seconds to wait after a 429: Retry-After when readable, else a default; capped."""
+    try:
+        seconds = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return RATE_LIMIT_WAIT
+    if not math.isfinite(seconds):
+        return RATE_LIMIT_WAIT
+    return min(max(seconds, 1.0), MAX_RATE_LIMIT_WAIT)
 
 
 def _rejection(code: int, body: str) -> str:
