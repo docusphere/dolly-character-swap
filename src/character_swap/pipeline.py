@@ -14,7 +14,7 @@ from typing import Protocol
 from character_swap.jobs import Job
 from character_swap.media.audio import embed_samples, read_audio
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
-from character_swap.media.video import normalize
+from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATOR_LIMITS, MODES
 from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
@@ -37,6 +37,14 @@ PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
 def remaining_paid_stages(job: Job) -> list[str]:
     """Paid stages this job's mode needs that are not finished yet."""
     return [name for name in PAID_STAGES[job.mode] if not job.stage_done(name)]
+
+
+def clip_seconds(job: Job) -> float:
+    """Length of the normalized clip: saved by normalize, measured for older jobs."""
+    facts = job.state.get("video")
+    if isinstance(facts, dict) and isinstance(facts.get("seconds"), int | float):
+        return float(facts["seconds"])
+    return stream_seconds(job.path("original.mp4"), "video")
 
 
 class ReplicateLike(Protocol):
@@ -120,8 +128,10 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
         job,
         "normalize",
         "Normalizing video to 24 fps",
-        lambda: normalize(
-            job.path("upload.mp4"), job.path("original.mp4"), min_seconds=low, max_seconds=high
+        lambda: job.update(
+            video=normalize(
+                job.path("upload.mp4"), job.path("original.mp4"), min_seconds=low, max_seconds=high
+            )
         ),
         status,
     )

@@ -407,3 +407,24 @@ def test_viewer_stage_table_matches_what_prepare_runs(make_job, services, tmp_pa
     job = _direct_job(make_job, tmp_path) if mode == "direct" else make_job(mode)
     prepare(job, services, status=lambda _m: None)
     assert tuple(job.state["stages"]) == STAGES_BY_MODE[mode]
+
+
+# ---- normalize facts (Plan 2a) ---------------------------------------------------
+def test_normalize_saves_the_clip_facts(make_job, services, tmp_path):
+    job = _direct_job(make_job, tmp_path)
+    prepare(job, services, status=lambda _m: None)
+    assert job.state["video"] == {
+        "frames": 96,
+        "fps": 24,
+        "width": 64,
+        "height": 64,
+        "seconds": 4.0,
+    }
+    assert pipeline.clip_seconds(job) == 4.0
+
+
+def test_clip_seconds_measures_jobs_without_saved_facts(make_job, services, tmp_path):
+    job = _direct_job(make_job, tmp_path)
+    prepare(job, services, status=lambda _m: None)
+    job.update(video=None)
+    assert pipeline.clip_seconds(job) == pytest.approx(4.0, abs=0.05)
