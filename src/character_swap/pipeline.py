@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import warnings
 from collections.abc import Callable, Iterator
@@ -21,8 +22,8 @@ from character_swap.media.composite import clean_border_fragments, composite_dep
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
+from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
-from character_swap.review import require_approved
 from character_swap.stages import StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene
@@ -101,7 +102,7 @@ def _wrap(label: str) -> Iterator[None]:
 
 
 @contextmanager
-def _tracked(job: Job, name: str) -> Iterator[None]:
+def _tracked(job: Job, name: str, **done_info: object) -> Iterator[None]:
     """Record running -> done/failed in state.json so viewers can show live progress.
 
     BaseException on purpose: Ctrl-C records "interrupted" instead of leaving the stage
@@ -122,7 +123,7 @@ def _tracked(job: Job, name: str) -> Iterator[None]:
             # failing state write (disk full, ...) replace the exception being raised.
             warnings.warn(f"Could not record failure of stage {name}: {mark_exc}", stacklevel=2)
         raise
-    job.mark_stage(name, started_at=started_at)
+    job.mark_stage(name, started_at=started_at, **done_info)
 
 
 def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
@@ -281,8 +282,16 @@ def check_can_generate(job: Job, stage: str) -> None:
             "Generating Seedance jobs arrives in the next version; Wan jobs can generate now."
         )
     require_approved(job)
-    if stage == "final" and not job.stage_done("draft"):
-        raise StageError(f"Make and watch the draft first: charswap generate {job.id} --draft")
+    if stage == "final":
+        if not job.stage_done("draft"):
+            raise StageError(f"Make and watch the draft first: charswap generate {job.id} --draft")
+        # The final must use exactly the inputs the watched draft was made from. A draft
+        # without a stored fingerprint (older jobs) cannot prove that, so it is refused too.
+        if job.state["stages"]["draft"].get("fingerprint") != fingerprint(job):
+            raise ReviewError(
+                "The approved inputs changed since the draft was made. Make a new draft "
+                "first; nothing was charged."
+            )
     _check_soundtrack_fits(job)
 
 
@@ -377,6 +386,7 @@ def generate(
     generator = generator_for(job, services)
     request = build_request(job)
     estimate = generator.estimate(request, stage)
+    inputs = fingerprint(job)  # what was approved; the final checks the draft used the same
 
     def log_charge(prediction: dict) -> None:
         record_spend(
@@ -391,13 +401,27 @@ def generate(
         )
 
     _notify(status, label)
-    with _tracked(job, stage), _wrap(label):  # no clear_review: generating changes no input
+    # No clear_review: generating changes no input.
+    with _tracked(job, stage, fingerprint=inputs), _wrap(label):
         if not raw.exists():  # downloaded already: never ask the provider again
             generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
         _notify(status, "Putting the original soundtrack back")
-        add_original_soundtrack(raw, job.path("upload.mp4"), result)
+        _write_atomically(
+            result, lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part)
+        )
     _notify(status, f"{stage.capitalize()} ready: {result}")
     return result
+
+
+def _write_atomically(dest: Path, write: Callable[[Path], object]) -> None:
+    """Write via a sibling temp file (keeps .mp4 so PyAV picks the muxer), then replace."""
+    part = dest.with_name(f"{dest.stem}.part{dest.suffix}")
+    try:
+        write(part)
+        os.replace(part, dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def next_step(job: Job, *, approved: bool) -> str:

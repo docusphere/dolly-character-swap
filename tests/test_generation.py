@@ -270,3 +270,38 @@ def test_unreadable_clip_length_is_a_plain_error(wan_job, services, runs_dir, mo
     with pytest.raises(StageError, match="Could not read the length of the prepared clip"):
         generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert services.generators["wan"].calls == [] and "costs" not in wan_job.state
+
+
+def test_final_refuses_when_inputs_changed_since_the_draft(wan_job, services, runs_dir):
+    approve(wan_job, services)
+    generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert wan_job.state["stages"]["draft"]["fingerprint"] == fingerprint(wan_job)
+    wan_job.path("character-primary.png").write_bytes(b"another character")
+    decide(wan_job, approved=True, note="new face", fingerprint=fingerprint(wan_job))
+    with pytest.raises(ReviewError, match="changed since the draft"):
+        generate(wan_job, services, "final", runs_dir=runs_dir, **QUIET)
+    assert [stage for stage, _ in services.generators["wan"].calls] == ["draft"]
+    assert "final" not in wan_job.state["stages"]
+
+
+def test_final_refuses_an_old_draft_without_a_fingerprint(wan_job, services, runs_dir):
+    approve(wan_job, services)
+    wan_job.mark_stage("draft")  # made before drafts recorded their inputs
+    with pytest.raises(ReviewError, match="Make a new draft first"):
+        check_can_generate(wan_job, "final")
+
+
+def test_failed_soundtrack_restore_leaves_no_partial_result(
+    wan_job, services, runs_dir, monkeypatch
+):
+    approve(wan_job, services)
+
+    def half_written(generated, upload, dst):
+        dst.write_bytes(b"partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pipeline, "add_original_soundtrack", half_written)
+    with pytest.raises(StageError, match="disk full"):
+        generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert not wan_job.path("draft.mp4").exists()
+    assert not wan_job.path("draft.part.mp4").exists()
