@@ -226,6 +226,13 @@ class ReplicateClient:
             url, body = f"{API}/models/{model}/predictions", {"input": input}
         else:
             raise ValueError("Pass a version or a model.")
+        if not input:
+            # Resumes pass {} because the record exists; if it vanished since, posting {}
+            # would buy a prediction with no input. Nothing sent, no marker written.
+            raise ReplicateError(
+                f"Refusing to create a paid prediction with no input; {record} vanished "
+                "during resume. Run the command again."
+            )
         record.parent.mkdir(parents=True, exist_ok=True)
         try:
             marker = self._claim(record)

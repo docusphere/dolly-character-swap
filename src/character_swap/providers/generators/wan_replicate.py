@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from character_swap.costs import Estimate, cost_line
 from character_swap.modes import GENERATOR_LIMITS
 from character_swap.providers.errors import OutputExpired, ProviderError
 from character_swap.providers.generators.base import GenerationRequest, OnCreated, Stage
+
+if TYPE_CHECKING:  # type only: pipeline will import this module (avoid an import cycle)
+    from character_swap.pipeline import ReplicateLike
 
 # Official model: called through the model endpoint (no version pin). Inputs verified
 # 2026-11-03; see docs/research/2026-10-22-provider-api-facts.md.
@@ -24,7 +28,7 @@ class WanGenerator:
     supports_real_faces = True  # open model, no face filter
     supports_secondary = False
 
-    def __init__(self, replicate) -> None:
+    def __init__(self, replicate: ReplicateLike) -> None:
         self._replicate = replicate
 
     def estimate(self, request: GenerationRequest, stage: Stage) -> Estimate:
