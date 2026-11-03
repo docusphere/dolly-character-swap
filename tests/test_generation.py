@@ -243,6 +243,14 @@ def test_next_step_walks_the_whole_flow(wan_job, services, runs_dir):
     assert next_step(wan_job, approved=True) == f"done: {wan_job.path('final.mp4')}"
 
 
+def test_next_step_asks_for_a_new_draft_when_the_inputs_changed(wan_job, services, runs_dir):
+    approve(wan_job, services)
+    generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
+    stages = wan_job.state["stages"]
+    wan_job.mark_stage("draft", **{**stages["draft"], "fingerprint": "an older approval"})
+    assert next_step(wan_job, approved=True) == f"charswap generate {wan_job.id} --draft"
+
+
 def test_next_step_for_seedance_waits_for_the_next_version(runs_dir, tmp_path):
     upload = write_video(tmp_path / "s.mp4", [solid((1, 1, 1))] * 96, audio_seconds=4)
     job = Job.create(runs_dir, upload, generator="seedance", mode="face_mesh")

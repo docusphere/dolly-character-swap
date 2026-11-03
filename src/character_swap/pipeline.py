@@ -433,6 +433,10 @@ def next_step(job: Job, *, approved: bool) -> str:
         return "watch the prepared files, then run charswap review with the fingerprint above"
     if not mode.generates:
         return "generating this mode arrives in the next version"
+    draft = job.state["stages"].get("draft", {})
+    if job.stage_done("draft") and draft.get("fingerprint") != fingerprint(job):
+        # The final would be refused: the approved inputs changed since this draft.
+        return f"charswap generate {job.id} --draft"
     for stage in GENERATION_STAGES:
         if not job.stage_done(stage):
             return f"charswap generate {job.id} --{stage}"

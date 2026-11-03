@@ -8,8 +8,11 @@ from fastapi.testclient import TestClient
 
 from character_swap import cli
 from character_swap.config import Settings
+from character_swap.costs import Estimate, Line
 from character_swap.jobs import Job
-from character_swap.pipeline import PREP_STAGES_BY_MODE
+from character_swap.pipeline import PREP_STAGES_BY_MODE, Services
+from character_swap.review import decide as approve_review
+from character_swap.review import fingerprint as review_fingerprint
 from character_swap.stages import StageError
 from helpers import solid, write_video
 
@@ -586,3 +589,240 @@ def test_prepare_rejects_an_unknown_language_before_the_cost_question(
     assert exit_info.value.code == 2 and asked == []
     assert "--language" in capsys.readouterr().err
     assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+# ---- generate (Plan 2a) ----------------------------------------------------------
+class FakeWan:
+    name, provider, model = "wan", "replicate", "fake/wan"
+
+    def estimate(self, request, stage):
+        return Estimate(lines=(Line(f"Wan {stage}", 0.08),))
+
+
+def wan_services(_settings):
+    return Services(replicate=None, face_detector=lambda: None, generators={"wan": FakeWan()})
+
+
+def _wan_job(settings, video, tmp_path):
+    face = tmp_path / "face.png"
+    face.write_bytes(b"x")
+    return Job.create(settings.runs_dir, video, generator="wan", mode="direct", character=face)
+
+
+def _approved_wan_job(settings, video, tmp_path):
+    job = _wan_job(settings, video, tmp_path)
+    job.path("original.mp4").write_bytes(b"normalized")
+    job.mark_stage("normalize")
+    job.update(video={"frames": 96, "fps": 24, "width": 64, "height": 64, "seconds": 4.0})
+    approve_review(job, approved=True, note="watched all", fingerprint=review_fingerprint(job))
+    return job
+
+
+def _mark_draft_done(job):
+    """A finished draft made from the currently approved inputs."""
+    job.mark_stage("draft", fingerprint=review_fingerprint(job))
+
+
+def _fake_generate(seen):
+    def fake(job, services, stage, *, runs_dir, status):
+        seen.append(stage)
+        return job.path(f"{stage}.mp4")
+
+    return fake
+
+
+def test_generate_draft_shows_the_cost_and_can_be_declined(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: False,
+        services_factory=wan_services,
+    )
+    assert code == 1 and "Wan draft" in out.text and "$0.0800" in out.text
+    assert "Cancelled. Nothing was charged." in out.err.text and seen == []
+
+
+def test_generate_draft_runs_after_confirmation(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: True,
+        services_factory=wan_services,
+    )
+    assert code == 0 and seen == ["draft"]
+    assert f"charswap generate {job.id} --final" in out.text
+
+
+def test_generate_needs_approval_before_any_cost_question(settings, video, tmp_path):
+    job = _wan_job(settings, video, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and "Review required" in out.err.text
+
+
+def test_generate_resume_does_not_ask_again(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": "processing"}))
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 0 and asked == [] and seen == ["draft"] and "no new charge" in out.text
+
+
+def test_generate_on_an_unconfirmed_marker_gives_guidance_not_comfort(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"status": "creating"}))
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert asked == [] and "no new charge" not in out.text
+    assert (
+        "A request for this step was sent but never confirmed. It may have been charged; "
+        "follow the steps below before running again."
+    ) in out.text
+
+
+def test_generate_refuses_a_clip_whose_sound_cannot_be_restored(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.update(video={"frames": 48, "fps": 24, "width": 64, "height": 64, "seconds": 2.0})
+    asked = []  # the upload has 4 s of sound, the clip 2 s of picture
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and "soundtrack" in out.err.text
+    assert "costs" not in job.state
+
+
+def test_repair_ctrl_c_does_not_promise_a_free_rerun(settings, video, monkeypatch):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+
+    def stop(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "repair_with_rgb", stop)
+    code, out = run(["repair", job.id, "--yes"], settings, services_factory=lambda s: object())
+    assert code == 130 and f"charswap resume {job.id}" in out.err.text
+    assert "not charged again" not in out.err.text and "buys a new SAM 3 cut" in out.err.text
+
+
+def test_generate_final_reminds_to_watch_the_draft(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _mark_draft_done(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 0 and seen == ["final"]
+    assert "Wan final" in out.text and str(job.path("draft.mp4")) in out.text
+
+
+def test_generate_finished_stage_is_a_no_op(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _mark_draft_done(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(["generate", job.id, "--draft"], settings, services_factory=wan_services)
+    assert code == 0 and seen == [] and "already done" in out.text
+
+
+def test_generate_failure_hints_the_generate_command(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+
+    def boom(*args, **kwargs):
+        raise StageError("Generating the 480p draft failed: boom")
+
+    monkeypatch.setattr(cli, "generate_stage", boom)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 2 and f"charswap generate {job.id} --draft" in out.err.text
+
+
+def test_generate_ctrl_c_hints_the_generate_command(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+
+    def stop(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "generate_stage", stop)
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 2 and "draft first" in out.err.text  # no draft yet: refused before Ctrl-C
+    _mark_draft_done(job)
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 130 and f"charswap generate {job.id} --final" in out.err.text
+
+
+def test_generate_needs_the_replicate_token(tmp_path, video):
+    empty = Settings.load(root=tmp_path, environ={})
+    job = _approved_wan_job(empty, video, tmp_path)
+    code, out = run(["generate", job.id, "--draft"], empty, services_factory=wan_services)
+    assert code == 2 and "REPLICATE_API_TOKEN" in out.err.text
+
+
+def test_seedance_jobs_cannot_generate_yet(settings, video):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+    code, out = run(["generate", job.id, "--draft"], settings)
+    assert code == 2 and "next version" in out.err.text
+
+
+def test_status_says_what_to_do_next(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    data = json.loads(run(["status", job.id], settings)[1].text)
+    assert data["next"] == f"charswap generate {job.id} --draft"
+
+
+def test_prepare_wan_points_at_the_normalized_clip(tmp_path, video, monkeypatch):
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
+    code, out = run(
+        ["prepare", str(video), "--generator", "wan", "--character", str(character), "--yes"],
+        Settings.load(root=tmp_path, environ={}),
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and "original.mp4" in out.text and "prepared.mp4" not in out.text
+
+
+def test_help_lists_generate(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    text = capsys.readouterr().out
+    assert "generate" in text and "charswap generate <id> --draft" in text
+
+
+def test_real_services_reach_the_wan_generator(settings):
+    from character_swap.providers.generators.wan_replicate import WanGenerator
+
+    services = cli.build_services(settings)
+    assert isinstance(services.generators["wan"], WanGenerator)
