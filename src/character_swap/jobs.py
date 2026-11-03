@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from character_swap.errors import CharSwapError
+
 MODES_BY_GENERATOR = {"seedance": ("depth", "face_mesh", "depth_mesh"), "wan": ("direct",)}
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
 _LOCKS: dict[str, threading.Lock] = {}
@@ -27,7 +29,7 @@ def _lock_for(job_id: str) -> threading.Lock:
         return _LOCKS.setdefault(job_id, threading.Lock())
 
 
-class JobError(ValueError):
+class JobError(CharSwapError, ValueError):
     """The job request or job folder is invalid."""
 
 

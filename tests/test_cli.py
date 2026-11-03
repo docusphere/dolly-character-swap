@@ -527,3 +527,27 @@ def test_help_lists_view(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert "open the read-only job viewer" in capsys.readouterr().out
+
+
+def test_provider_errors_are_friendly(settings, video, monkeypatch):
+    from character_swap.providers.replicate import ReplicateError
+
+    def throttled(job, services, status):
+        raise ReplicateError("Rate limited, nothing was charged; wait a minute and retry.")
+
+    monkeypatch.setattr(cli, "prepare_job", throttled)
+    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    assert code == 2 and "Error: Rate limited, nothing was charged" in out.err.text
+
+
+def test_prompt_errors_are_friendly(settings, video, monkeypatch):
+    from character_swap.prompts import PromptError
+
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+
+    def too_long(**kwargs):
+        raise PromptError("Prompt is 5000 characters; the limit is 4000.")
+
+    monkeypatch.setattr(cli, "build_prompt", too_long)
+    code, out = run(["prompt", job.id], settings)
+    assert code == 2 and "the limit is 4000" in out.err.text

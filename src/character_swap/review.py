@@ -9,6 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from character_swap.errors import CharSwapError
 from character_swap.jobs import Job
 
 DEPTH = ["original.mp4", "depth.mp4", "mask.mp4", "composite-silent.mp4", "prepared.mp4"]
@@ -24,7 +25,7 @@ DEPTH_MESH = [
 ]
 
 
-class ReviewError(ValueError):
+class ReviewError(CharSwapError, ValueError):
     """Generation is blocked until the current artifacts are approved."""
 
 

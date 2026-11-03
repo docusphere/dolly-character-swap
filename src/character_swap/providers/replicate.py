@@ -13,15 +13,17 @@ from typing import Any
 
 import httpx
 
+from character_swap.providers.errors import OutputExpired, ProviderError
+
 API = "https://api.replicate.com/v1"
 TERMINAL = {"succeeded", "failed", "canceled"}
 
 
-class ReplicateError(RuntimeError):
+class ReplicateError(ProviderError):
     """Replicate rejected, failed or has not finished a prediction."""
 
 
-class ReplicateOutputExpired(ReplicateError):
+class ReplicateOutputExpired(ReplicateError, OutputExpired):
     """The finished prediction's output link is gone; only a new (paid) run recovers it."""
 
 

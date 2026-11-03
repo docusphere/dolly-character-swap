@@ -15,18 +15,19 @@ from pathlib import Path
 
 import av
 
-from character_swap.config import MissingSettingError, Settings
+from character_swap.config import Settings
 from character_swap.costs import (
     estimate_prepare,
     estimate_repair,
     estimate_stages,
     record_spend,
 )
+from character_swap.errors import CharSwapError
 from character_swap.jobs import Job, JobError
 from character_swap.pipeline import Services, remaining_paid_stages, repair_with_rgb
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.prompts import build_prompt
-from character_swap.review import ReviewError, decide
+from character_swap.review import decide
 from character_swap.review import status as review_status
 from character_swap.stages import StageError
 
@@ -176,7 +177,7 @@ def main(
     )
     try:
         return COMMANDS[args.command](args, settings, env)
-    except (JobError, ReviewError, StageError, MissingSettingError) as error:
+    except CharSwapError as error:
         err(f"Error: {error}")
         _hint(env)
         return 2

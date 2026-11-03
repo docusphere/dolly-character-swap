@@ -4,9 +4,11 @@ import json
 import shutil
 from pathlib import Path
 
+from character_swap.providers.errors import OutputExpired
 
-class ReplicateOutputExpired(RuntimeError):
-    """Stands in for the real client's expiry error (matched by class name)."""
+
+class ReplicateOutputExpired(OutputExpired):
+    """Stands in for the real client's expiry error."""
 
 
 class FakeReplicate:
