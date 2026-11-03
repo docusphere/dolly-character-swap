@@ -132,3 +132,23 @@ def test_old_five_column_spend_logs_keep_adding_up(runs_dir, tmp_path):
     job = Job.create(runs_dir, video, generator="seedance", mode="depth")
     record_spend(job, "draft", Estimate(lines=(Line("x", 0.1),)), runs_dir, task_id="p9")
     assert total_spend(runs_dir) == pytest.approx(0.16)
+
+
+def test_old_five_column_header_is_upgraded_once(runs_dir, tmp_path):
+    from character_swap.costs import SPEND_LOG_COLUMNS, Line
+
+    (runs_dir / "spend-log.csv").write_text(
+        "at,job,step,usd_estimate,usd_micro\n2026-11-02T10:00:00+00:00,j,prepare,0.0600,60000\n"
+    )
+    video = tmp_path / "in.mp4"
+    video.write_bytes(b"v")
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    record_spend(job, "draft", Estimate(lines=(Line("x", 0.1),)), runs_dir, task_id="p9")
+    record_spend(job, "final", Estimate(lines=(Line("y", 0.2),)), runs_dir, task_id="p10")
+    rows = list(csv.reader((runs_dir / "spend-log.csv").open()))
+    assert tuple(rows[0]) == SPEND_LOG_COLUMNS
+    assert all(len(row) == len(SPEND_LOG_COLUMNS) for row in rows)
+    assert rows[1][:5] == ["2026-11-02T10:00:00+00:00", "j", "prepare", "0.0600", "60000"]
+    assert rows[1][5:] == ["", "", "", ""]
+    assert [row[7] for row in rows[2:]] == ["p9", "p10"]
+    assert total_spend(runs_dir) == pytest.approx(0.36)

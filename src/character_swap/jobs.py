@@ -20,7 +20,20 @@ from character_swap.errors import CharSwapError
 from character_swap.modes import MODES_BY_GENERATOR
 
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
-_LANGUAGE = re.compile(r"auto|[a-z]{2,3}")  # Whisper codes: en, es, haw, ...
+# The codes openai/whisper accepts (its `language` enum, checked 2026-11-03 via
+# GET /v1/models/openai/whisper/versions/8099696689d2...). It also takes names;
+# we keep codes only.
+# fmt: off
+WHISPER_LANGUAGES: tuple[str, ...] = (
+    "auto", "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs",
+    "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha",
+    "haw", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km",
+    "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms",
+    "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd",
+    "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk",
+    "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
+)
+# fmt: on
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -69,7 +82,7 @@ class Job:
             raise JobError(f"Video not found: {source}")
         if character is not None and not Path(character).is_file():
             raise JobError(f"Character image not found: {character}")
-        if not _LANGUAGE.fullmatch(language):
+        if language not in WHISPER_LANGUAGES:
             raise JobError(
                 f"{language!r} is not a Whisper language code (for example en, es, or auto)."
             )

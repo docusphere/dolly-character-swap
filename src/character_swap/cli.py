@@ -23,7 +23,7 @@ from character_swap.costs import (
     record_spend,
 )
 from character_swap.errors import CharSwapError
-from character_swap.jobs import Job, JobError
+from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import Services, remaining_paid_stages, repair_with_rgb
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.prompts import build_prompt
@@ -127,7 +127,9 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument(
         "--language",
         default="auto",
-        help="spoken language code for the transcript, e.g. en (default: detect it)",
+        choices=WHISPER_LANGUAGES,
+        metavar="CODE",
+        help="spoken language code for the transcript, e.g. en or es (default: auto, detect it)",
     )
     prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 

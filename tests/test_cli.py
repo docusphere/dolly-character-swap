@@ -570,3 +570,19 @@ def test_prepare_passes_the_language(settings, video, monkeypatch):
     )
     job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
     assert code == 0 and Job.load(settings.runs_dir, job_id).state["language"] == "en"
+
+
+@pytest.mark.parametrize("language", ["eng", "zz", "English"])
+def test_prepare_rejects_an_unknown_language_before_the_cost_question(
+    settings, video, language, capsys
+):
+    asked = []
+    with pytest.raises(SystemExit) as exit_info:
+        run(
+            ["prepare", str(video), "--mode", "depth", "--language", language],
+            settings,
+            confirm=lambda q: asked.append(q) or True,
+        )
+    assert exit_info.value.code == 2 and asked == []
+    assert "--language" in capsys.readouterr().err
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())

@@ -827,3 +827,24 @@ def test_on_created_still_logs_a_paid_prediction_whose_record_could_not_be_saved
     with pytest.raises(ReplicateError, match="paid42"):
         client().run(version="v1", input={}, record=record, on_created=seen.append)
     assert [prediction["id"] for prediction in seen] == ["paid42"]
+
+
+@respx.mock
+def test_failing_on_created_never_hides_an_unsaved_paid_prediction(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "paid42", "status": "starting"})
+    )
+
+    def boom(_record, _data):
+        raise OSError("disk full")
+
+    def broken(_prediction):
+        raise OSError("log full")
+
+    monkeypatch.setattr(ReplicateClient, "_save", staticmethod(boom))
+    with (
+        pytest.warns(UserWarning, match="paid42"),
+        pytest.raises(ReplicateError, match="paid42.*replicate.com/predictions"),
+    ):
+        client().run(version="v1", input={}, record=record, on_created=broken)

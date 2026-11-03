@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import threading
 import warnings
 from dataclasses import dataclass
@@ -111,6 +112,25 @@ SPEND_LOG_COLUMNS = (
 )
 
 
+_OLD_SPEND_LOG_COLUMNS = SPEND_LOG_COLUMNS[:5]
+
+
+def _upgrade_old_header(log: Path) -> None:
+    """Rewrite a 5-column log once with the full header, padding old rows. Hold _LOG_LOCK."""
+    with log.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.reader(file))
+    if not rows or tuple(rows[0]) != _OLD_SPEND_LOG_COLUMNS:
+        return
+    width = len(SPEND_LOG_COLUMNS)
+    body = [row + [""] * (width - len(row)) for row in rows[1:]]
+    part = log.with_suffix(log.suffix + ".part")
+    with part.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(SPEND_LOG_COLUMNS)
+        writer.writerows(body)
+    os.replace(part, log)
+
+
 def record_spend(
     job: Job,
     step: str,
@@ -130,6 +150,8 @@ def record_spend(
     log = Path(runs_dir) / "spend-log.csv"
     with _LOG_LOCK:
         new = not log.exists() or log.stat().st_size == 0
+        if not new:
+            _upgrade_old_header(log)
         with log.open("a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             if new:
