@@ -3,7 +3,9 @@
 ## Active work
 - [x] S1 — Plan 1: foundation + preparation pipeline (239 tests, 96.3 % coverage; branch feat/plan-1-foundation)
 - [x] Job viewer (read-only, `charswap view`; 389 tests, 97 % coverage; branch feat/job-viewer)
-- [ ] Plan 2 — generation (hosting, PiAPI, Wan, face check, audio restore)
+- [x] S2 — Replicate token set by Frank; `doctor` passes for prep (PIAPI_API_KEY still missing)
+- [x] S2 — First live prep on a real clip (COLORS 15 s, two people, depth mode): 9/9 steps, ~$0.06, job c0fcbc10…
+- [ ] Plan 2 — generation: **Wan (Replicate) first**, then Seedance 2.5 (PiAPI), hosting, face check, audio restore
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
@@ -18,6 +20,15 @@
 - [ ] (Viewer final review) `pipeline.py` owns stage order: `prepare()` loops over `PREP_STAGES_BY_MODE`; keep generation stages (draft/final) in a separate group so "active"/"Preparing" doesn't treat every prepared-but-not-generated job as running.
 - [ ] (Viewer final review) Move SECTIONS + "Why this step?" copy to `web/sections.py` with a per-section `texts` hook (remove id-string branching in view_model/job.html); generation sections plug in there.
 - [x] Review gate requires every prep stage done (status "unavailable", decide refuses) — done in viewer fixes.
+
+## Found in the first live run (S2) → Plan 2a
+- [ ] Rate limits: low-balance Replicate accounts get ~6 req/min; polling every 5 s burns it and the next create gets 429. Poll slower (backoff), and a 429 on create means nothing was created → wait (Retry-After) and retry safely.
+- [ ] Whisper on Replicate returned only "Let's get it." for rap; same vocals locally with language=en + condition_on_previous_text=False got the lyrics. Pass those inputs.
+- [ ] Viewer: failed jobs stop polling, so a resume isn't shown live → slow-poll failed jobs.
+- [ ] SAM leaked a real arm for a few frames (arm crossing body) — repair (RGB) exists; consider in the review checklist.
+
+## Backlog (decided S2)
+- Grey depth option (`--depth-color grey`): clearer on orange/warm backgrounds; colour kept as default because it is the proven input. Try only if results look wrong. A/B by eye in the viewer; pose-match score later.
 
 ## Before Plan 3 (UI + skill)
 - Stat-keyed fingerprint cache for `review.status()` polling (full hash stays on approve/generate).

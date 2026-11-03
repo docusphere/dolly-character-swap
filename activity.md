@@ -27,3 +27,11 @@
   - CLI catches uvicorn's SystemExit on bind failure (exit 2) and detects wildcard listeners via connect_ex.
   - Browser opens after a fixed 1 s delay (readiness check is a backlog item).
 - **Not done:** live prepare check and the manual browser checklist are Frank's steps.
+
+## 2026-11-02 — Session 2: viewer sign-off, Replicate connected, Plan 2 order
+- **Goal:** Get ready for the first real (paid) prep run and decide how Plan 2 starts.
+- **Completed:** Viewer review fixes pushed to main (400 tests, 97.08 % coverage; approve command hidden on failed jobs, home path shown as `~`, port bind race). Frank clicked through the demo jobs and approved the viewer ("looks good"). Viewer stopped. `.env` replaced with the project's own template (chmod 600, git-ignored). Frank created his Replicate account and put the token in `.env` himself; `charswap doctor` shows REPLICATE_API_TOKEN set, PIAPI_API_KEY missing, hosting = tmpfiles.
+- **Decisions:**
+  - Proposed: Plan 2 builds Wan 2.2 Animate (Replicate) first, Seedance 2.5 (PiAPI) second. Why: Wan only needs the Replicate account Frank already has, so the first end-to-end swap comes days sooner; Seedance needs a PiAPI Creator plan (~$15/month) and face-library setup before anything works. Seedance stays the 1080p "YouTube quality" path. Frank hasn't objected yet.
+- **Lessons:** Frank expected "give a video, get my face" to work already. Say plainly which half (disguise vs generate) exists when reporting status. Don't leave local servers running; stop them after his check.
+- **Next:** Frank picks a test clip (under 15 s, one person talking). Run a live prep (~$0.06) only after he confirms, and watch it in the viewer. Then start Plan 2 (prerequisites in scratchpad first).
