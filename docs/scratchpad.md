@@ -5,7 +5,7 @@
 - [x] Job viewer (read-only, `charswap view`; 389 tests, 97 % coverage; branch feat/job-viewer)
 - [x] S2 — Replicate token set by Frank; `doctor` passes for prep (PIAPI_API_KEY still missing)
 - [x] S2 — First live prep on a real clip (COLORS 15 s, two people, depth mode): 9/9 steps, ~$0.06, job c0fcbc10…
-- [x] S3 — Plan 2a — Wan generation (draft/final, original audio), live-run fixes, prerequisites (568 tests, 97.6 % coverage; branch feat/plan-2a-wan)
+- [x] S3 — Plan 2a — Wan generation (draft/final, original audio), live-run fixes, prerequisites (571 tests, 97.6 % coverage; merged to main)
 - [ ] Live Wan test (Task 15, needs Frank's OK; Wan price still unconfirmed)
 - [ ] Plan 2b — hosting (R2/tmpfiles), PiAPI Seedance 2.5 + face library, face check. Must cover two-person clips: `--subject` picks who gets disguised/replaced; primary + secondary face slots (@image1/@image2) to replace both; include a 'pick one of two people' live test.
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
