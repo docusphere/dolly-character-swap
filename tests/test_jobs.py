@@ -103,3 +103,26 @@ def test_path_must_stay_inside_job(runs_dir, video, name):
     job = Job.create(runs_dir, video, generator="seedance", mode="depth")
     with pytest.raises(JobError, match="outside"):
         job.path(name)
+
+
+def test_language_is_saved_and_checked(runs_dir, video):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth", language="en")
+    assert job.state["language"] == "en"
+    default = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    assert default.state["language"] == "auto"
+    with pytest.raises(JobError, match="language code"):
+        Job.create(runs_dir, video, generator="seedance", mode="depth", language="English please")
+
+
+@pytest.mark.parametrize("language", ["eng", "zz", "English", "EN"])
+def test_unknown_language_codes_are_rejected(runs_dir, video, language):
+    with pytest.raises(JobError, match="language code"):
+        Job.create(runs_dir, video, generator="seedance", mode="depth", language=language)
+
+
+def test_whisper_language_list_has_auto_and_three_letter_codes():
+    from character_swap.jobs import WHISPER_LANGUAGES
+
+    assert WHISPER_LANGUAGES[0] == "auto"
+    assert {"en", "es", "haw", "yue"} <= set(WHISPER_LANGUAGES)
+    assert len(WHISPER_LANGUAGES) == len(set(WHISPER_LANGUAGES)) == 101

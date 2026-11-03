@@ -11,7 +11,7 @@ import numpy as np
 from character_swap.media.video import VideoWriter, iter_frames, stream_seconds
 
 RATE = 44100
-HOLD_GAP = (0.25, 0.5)  # seconds: short provider rounding gaps fixed by holding the last frame
+FIT_LIMIT = 0.5  # seconds: provider length differences we fix by holding/dropping end frames
 MAX_MISMATCH = 0.25
 
 
@@ -75,8 +75,11 @@ def embed_samples(video: Path, samples: np.ndarray, dst: Path) -> Path:
     return Path(dst)
 
 
-def _hold_last_frame(generated: Path, seconds: float, dst: Path) -> Path:
-    """Re-encode `generated` to `seconds`, repeating its last frame (streamed, O(1) memory)."""
+def _fit_video(generated: Path, seconds: float, dst: Path) -> Path:
+    """Re-encode `generated` to `seconds` at its own frame rate (streamed, O(1) memory).
+
+    Extra frames at the end are dropped; a short video repeats its last frame.
+    """
     with av.open(str(generated)) as probe:
         rate = int(round(float(probe.streams.video[0].average_rate or 24)))
     target = round(seconds * rate)
@@ -84,6 +87,8 @@ def _hold_last_frame(generated: Path, seconds: float, dst: Path) -> Path:
     first = next(iter_frames(generated))
     with VideoWriter(dst, first.shape[1], first.shape[0], fps=rate) as writer:
         for last in iter_frames(generated):
+            if written == target:
+                break
             writer.write(last)
             written += 1
         while written < target:
@@ -100,8 +105,8 @@ def restore_original_audio(generated: Path, original: Path, dst: Path) -> Path:
     audio_seconds = stream_seconds(original, "audio")
     gap = audio_seconds - stream_seconds(generated, "video")
     with tempfile.TemporaryDirectory() as scratch:
-        if HOLD_GAP[0] < gap <= HOLD_GAP[1]:
-            generated = _hold_last_frame(generated, audio_seconds, Path(scratch) / "held.mp4")
+        if MAX_MISMATCH < abs(gap) <= FIT_LIMIT:
+            generated = _fit_video(generated, audio_seconds, Path(scratch) / "fitted.mp4")
             gap = audio_seconds - stream_seconds(generated, "video")
         if abs(gap) > MAX_MISMATCH:
             raise DurationMismatchError(
@@ -120,3 +125,19 @@ def restore_original_audio(generated: Path, original: Path, dst: Path) -> Path:
                     packet.stream = audio
                     output.mux(packet)
     return Path(dst)
+
+
+def copy_video_only(video: Path, dst: Path) -> Path:
+    """Copy the video stream untouched and leave every audio stream out."""
+    with av.open(str(video)) as source, av.open(str(dst), "w") as output:
+        _copy_video_packets(source, output)
+    return Path(dst)
+
+
+def add_original_soundtrack(generated: Path, upload: Path, dst: Path) -> Path:
+    """Generated pictures + the upload's untouched audio; silent if the upload had none."""
+    with av.open(str(upload)) as probe:
+        has_audio = bool(probe.streams.audio)
+    if not has_audio:
+        return copy_video_only(generated, dst)
+    return restore_original_audio(generated, upload, dst)

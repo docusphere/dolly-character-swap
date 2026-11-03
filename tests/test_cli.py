@@ -4,12 +4,16 @@ import threading
 import time
 
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from character_swap import cli
 from character_swap.config import Settings
+from character_swap.costs import Estimate, Line
 from character_swap.jobs import Job
-from character_swap.pipeline import PREP_STAGES_BY_MODE
+from character_swap.pipeline import PREP_STAGES_BY_MODE, Services
+from character_swap.review import decide as approve_review
+from character_swap.review import fingerprint as review_fingerprint
 from character_swap.stages import StageError
 from helpers import solid, write_video
 
@@ -527,3 +531,489 @@ def test_help_lists_view(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert "open the read-only job viewer" in capsys.readouterr().out
+
+
+def test_provider_errors_are_friendly(settings, video, monkeypatch):
+    from character_swap.providers.replicate import ReplicateError
+
+    def throttled(job, services, status):
+        raise ReplicateError("Rate limited, nothing was charged; wait a minute and retry.")
+
+    monkeypatch.setattr(cli, "prepare_job", throttled)
+    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    assert code == 2 and "Error: Rate limited, nothing was charged" in out.err.text
+
+
+def test_prompt_errors_are_friendly(settings, video, monkeypatch):
+    from character_swap.prompts import PromptError
+
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+
+    def too_long(**kwargs):
+        raise PromptError("Prompt is 5000 characters; the limit is 4000.")
+
+    monkeypatch.setattr(cli, "build_prompt", too_long)
+    code, out = run(["prompt", job.id], settings)
+    assert code == 2 and "the limit is 4000" in out.err.text
+
+
+def test_rate_limit_wait_message():
+    from character_swap.cli import rate_limit_message
+
+    assert rate_limit_message(7.4, 1, 3) == (
+        "Replicate is busy (rate limit); waiting 7 s before retrying (1/3). Nothing charged yet."
+    )
+
+
+def test_prepare_passes_the_language(settings, video, monkeypatch):
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
+    code, _ = run(
+        ["prepare", str(video), "--mode", "depth", "--language", "en", "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
+    assert code == 0 and Job.load(settings.runs_dir, job_id).state["language"] == "en"
+
+
+@pytest.mark.parametrize("language", ["eng", "zz", "English"])
+def test_prepare_rejects_an_unknown_language_before_the_cost_question(
+    settings, video, language, capsys
+):
+    asked = []
+    with pytest.raises(SystemExit) as exit_info:
+        run(
+            ["prepare", str(video), "--mode", "depth", "--language", language],
+            settings,
+            confirm=lambda q: asked.append(q) or True,
+        )
+    assert exit_info.value.code == 2 and asked == []
+    assert "--language" in capsys.readouterr().err
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+# ---- generate (Plan 2a) ----------------------------------------------------------
+class FakeWan:
+    name, provider, model = "wan", "replicate", "fake/wan"
+
+    def estimate(self, request, stage):
+        return Estimate(lines=(Line(f"Wan {stage}", 0.08),))
+
+
+def wan_services(_settings):
+    return Services(replicate=None, face_detector=lambda: None, generators={"wan": FakeWan()})
+
+
+def _wan_job(settings, video, tmp_path):
+    face = tmp_path / "face.png"
+    face.write_bytes(b"x")
+    return Job.create(settings.runs_dir, video, generator="wan", mode="direct", character=face)
+
+
+def _approved_wan_job(settings, video, tmp_path):
+    job = _wan_job(settings, video, tmp_path)
+    job.path("original.mp4").write_bytes(b"normalized")
+    job.mark_stage("normalize")
+    job.update(video={"frames": 96, "fps": 24, "width": 64, "height": 64, "seconds": 4.0})
+    approve_review(job, approved=True, note="watched all", fingerprint=review_fingerprint(job))
+    return job
+
+
+def _mark_draft_done(job):
+    """A finished draft made from the currently approved inputs."""
+    job.mark_stage("draft", fingerprint=review_fingerprint(job))
+
+
+def _interrupted_draft(job):
+    """What a stopped draft run leaves in state: not done, its approved inputs recorded."""
+    job.mark_stage("draft", "failed", fingerprint=review_fingerprint(job))
+
+
+def _fake_generate(seen):
+    def fake(job, services, stage, *, runs_dir, status):
+        seen.append(stage)
+        return job.path(f"{stage}.mp4")
+
+    return fake
+
+
+def test_generate_draft_shows_the_cost_and_can_be_declined(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: False,
+        services_factory=wan_services,
+    )
+    assert code == 1 and "Wan draft" in out.text and "$0.0800" in out.text
+    assert "Cancelled. Nothing was charged." in out.err.text and seen == []
+
+
+def test_generate_draft_runs_after_confirmation(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: True,
+        services_factory=wan_services,
+    )
+    assert code == 0 and seen == ["draft"]
+    assert f"charswap generate {job.id} --final" in out.text
+
+
+def test_generate_needs_approval_before_any_cost_question(settings, video, tmp_path):
+    job = _wan_job(settings, video, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and "Review required" in out.err.text
+
+
+def test_generate_resume_does_not_ask_again(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": "processing"}))
+    _interrupted_draft(job)
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 0 and asked == [] and seen == ["draft"] and "no new charge" in out.text
+
+
+def test_generate_on_an_unconfirmed_marker_gives_guidance_not_comfort(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and seen == [] and "no new charge" not in out.text
+    assert (
+        "A request for this step was sent but never confirmed. It may have been charged; "
+        "follow the steps below before running again."
+    ) in out.text
+    assert "replicate.com/predictions" in out.err.text and str(record) in out.err.text
+    assert "draft" not in job.state["stages"]  # not marked failed
+
+
+def test_generate_unconfirmed_marker_end_to_end_makes_no_request(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
+    asked = []
+    with respx.mock(assert_all_called=False):  # no routes: any request would fail the test
+        code, out = run(["generate", job.id, "--draft"], settings, confirm=asked.append)
+    assert code == 2 and asked == []
+    assert "replicate.com/predictions" in out.err.text and str(record) in out.err.text
+    assert json.loads(record.read_text()) == {"status": "creating"}
+    assert "draft" not in job.state["stages"]  # not marked failed
+
+
+def test_generate_after_a_failed_prediction_does_not_promise_a_free_resume(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": "failed"}))
+    _interrupted_draft(job)
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert asked == [] and seen == ["draft"] and "no new charge" not in out.text
+
+
+def _stale_draft(job):
+    for name, data in [
+        ("draft-prediction.json", b'{"id": "old", "status": "succeeded"}'),
+        ("draft-raw.mp4", b"old raw"),
+        ("draft.mp4", b"old draft"),
+    ]:
+        job.path(name).write_bytes(data)
+    job.mark_stage("draft", fingerprint="an older approval")
+
+
+def test_stale_draft_can_be_remade_after_a_new_cost_question(
+    settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_draft(job)
+    status = json.loads(run(["status", job.id], settings)[1].text)
+    assert status["next"] == f"charswap generate {job.id} --draft"
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=wan_services,
+    )
+    assert code == 0 and asked and seen == ["draft"]
+    assert "approved inputs changed" in out.text and "$0.0800" in out.text
+    kept = sorted(p.name for p in job.root.glob("draft-old-*"))
+    assert len(kept) == 3
+    assert sorted(job.path(n).read_bytes() for n in kept) == [
+        b"old draft",
+        b"old raw",
+        (b'{"id": "old", "status": "succeeded"}'),
+    ]
+    assert not job.path("draft-raw.mp4").exists() and "draft" not in job.state["stages"]
+
+
+def test_declining_a_stale_draft_remake_changes_nothing(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_draft(job)
+    before = json.dumps(job.state["stages"], sort_keys=True)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: False,
+        services_factory=wan_services,
+    )
+    assert code == 1 and seen == [] and "Nothing was charged" in out.err.text
+    assert job.path("draft-raw.mp4").read_bytes() == b"old raw"
+    assert job.path("draft.mp4").read_bytes() == b"old draft"
+    assert not list(job.root.glob("draft-old-*"))
+    assert json.dumps(job.state["stages"], sort_keys=True) == before
+
+
+def test_generate_refusals_do_not_hint_the_wrong_command(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    code, out = run(["generate", job.id, "--final"], settings, services_factory=wan_services)
+    assert code == 2 and f"charswap generate {job.id} --draft" in out.err.text
+    assert "--final" not in out.err.text and "Fix the issue" not in out.err.text
+    seedance = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+    code, out = run(["generate", seedance.id, "--draft"], settings)
+    assert code == 2 and "Fix the issue" not in out.err.text
+
+
+def test_generate_refuses_a_clip_whose_sound_cannot_be_restored(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    job.update(video={"frames": 48, "fps": 24, "width": 64, "height": 64, "seconds": 2.0})
+    asked = []  # the upload has 4 s of sound, the clip 2 s of picture
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and "soundtrack" in out.err.text
+    assert "costs" not in job.state
+
+
+def test_repair_ctrl_c_does_not_promise_a_free_rerun(settings, video, monkeypatch):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+
+    def stop(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "repair_with_rgb", stop)
+    code, out = run(["repair", job.id, "--yes"], settings, services_factory=lambda s: object())
+    assert code == 130 and f"charswap resume {job.id}" in out.err.text
+    assert "not charged again" not in out.err.text and "buys a new SAM 3 cut" in out.err.text
+
+
+def test_generate_final_reminds_to_watch_the_draft(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _mark_draft_done(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 0 and seen == ["final"]
+    assert "Wan final" in out.text and str(job.path("draft.mp4")) in out.text
+
+
+def test_generate_finished_stage_is_a_no_op(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _mark_draft_done(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(["generate", job.id, "--draft"], settings, services_factory=wan_services)
+    assert code == 0 and seen == [] and "already done" in out.text
+
+
+def test_generate_failure_hints_the_generate_command(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+
+    def boom(*args, **kwargs):
+        raise StageError("Generating the 480p draft failed: boom")
+
+    monkeypatch.setattr(cli, "generate_stage", boom)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 2 and f"charswap generate {job.id} --draft" in out.err.text
+
+
+def test_generate_ctrl_c_hints_the_generate_command(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+
+    def stop(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "generate_stage", stop)
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 2 and "draft first" in out.err.text  # no draft yet: refused before Ctrl-C
+    _mark_draft_done(job)
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 130 and f"charswap generate {job.id} --final" in out.err.text
+
+
+def test_generate_needs_the_replicate_token(tmp_path, video):
+    empty = Settings.load(root=tmp_path, environ={})
+    job = _approved_wan_job(empty, video, tmp_path)
+    code, out = run(["generate", job.id, "--draft"], empty, services_factory=wan_services)
+    assert code == 2 and "REPLICATE_API_TOKEN" in out.err.text
+
+
+def test_seedance_jobs_cannot_generate_yet(settings, video):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+    code, out = run(["generate", job.id, "--draft"], settings)
+    assert code == 2 and "next version" in out.err.text
+
+
+def test_status_says_what_to_do_next(settings, video, tmp_path):
+    job = _approved_wan_job(settings, video, tmp_path)
+    data = json.loads(run(["status", job.id], settings)[1].text)
+    assert data["next"] == f"charswap generate {job.id} --draft"
+
+
+def test_prepare_wan_points_at_the_normalized_clip(tmp_path, video, monkeypatch):
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
+    code, out = run(
+        ["prepare", str(video), "--generator", "wan", "--character", str(character), "--yes"],
+        Settings.load(root=tmp_path, environ={}),
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and "original.mp4" in out.text and "prepared.mp4" not in out.text
+
+
+def test_help_lists_generate(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    text = capsys.readouterr().out
+    assert "generate" in text and "charswap generate <id> --draft" in text
+
+
+def test_real_services_reach_the_wan_generator(settings):
+    from character_swap.providers.generators.wan_replicate import WanGenerator
+
+    services = cli.build_services(settings)
+    assert isinstance(services.generators["wan"], WanGenerator)
+
+
+def _stale_final(job):
+    """A finished final from older inputs; the draft's files were removed by hand."""
+    job.mark_stage("draft", fingerprint=review_fingerprint(job))
+    job.path("final.mp4").write_bytes(b"old final")
+    job.mark_stage("final", fingerprint="an older approval")
+
+
+def test_stale_final_is_not_presented_as_done(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_final(job)
+    asked, seen = [], []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--final"],
+        settings,
+        confirm=asked.append,
+        services_factory=wan_services,
+    )
+    assert code == 2 and asked == [] and seen == [] and "already done" not in out.text
+    assert (
+        "This final was made from inputs that are no longer approved; run "
+        f"`charswap generate {job.id} --draft` to make a new draft first."
+    ) in out.err.text
+    status = json.loads(run(["status", job.id], settings)[1].text)
+    assert status["next"] == f"charswap generate {job.id} --draft"
+
+
+def test_stale_final_is_remade_from_a_new_draft(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_final(job)
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=wan_services
+    )
+    assert code == 0 and seen == ["draft"] and "already done" not in out.text
+    assert [p.read_bytes() for p in job.root.glob("final-old-*")] == [b"old final"]
+    assert "final" not in job.state["stages"]
+
+
+def _wan_args(video, character, *extra):
+    return ["prepare", str(video), "--generator", "wan", "--character", str(character), *extra]
+
+
+def test_prepare_wan_direct_is_free_asks_nothing_and_logs_no_cost(tmp_path, video, monkeypatch):
+    empty = Settings.load(root=tmp_path, environ={})
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    ids = []
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: ids.append(job.id))
+
+    def never(_q):
+        raise AssertionError("must not ask")
+
+    code, out = run(
+        _wan_args(video, character), empty, confirm=never, services_factory=lambda s: object()
+    )
+    assert code == 0 and "free for this mode" in out.text
+    assert Job.load(empty.runs_dir, ids[0]).state.get("costs", []) == []
+
+
+def test_prepare_seedance_still_asks(settings, video):
+    asked = []
+    code, _ = run(
+        ["prepare", str(video), "--mode", "depth"],
+        settings,
+        confirm=lambda q: asked.append(q) or False,
+    )
+    assert code == 1 and asked
+
+
+def test_prepare_language_rejected_for_direct_mode(tmp_path, video):
+    empty = Settings.load(root=tmp_path, environ={})
+    character = tmp_path / "face.png"
+    character.write_bytes(b"x")
+    asked = []
+    code, out = run(
+        _wan_args(video, character, "--language", "es"),
+        empty,
+        confirm=lambda q: asked.append(q) or True,
+    )
+    assert code == 2 and "--language only matters for Seedance modes" in out.err.text
+    assert not asked and not empty.runs_dir.exists()

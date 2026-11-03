@@ -10,6 +10,7 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Tests (with coverage gate): `uv run pytest`
 - Lint/format: `uv run ruff format src tests && uv run ruff check --fix src tests`
 - CLI: `uv run charswap --help`
+- Generate (paid, asks first): `uv run charswap generate <job> --draft|--final`
 - Viewer: `uv run charswap view`
 
 ## Layout
@@ -19,7 +20,7 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Jobs live in `runs/<id>/` with `state.json` (resumable).
 
 ## Hard rules
-- Never auto-retry a paid request. Persist provider IDs before waiting.
+- Never auto-retry a paid request. Only exception: a create rejected with 429 (Replicate throttled it, nothing was created) is retried after re-claiming the exclusive "creating" marker. Persist provider IDs before waiting.
 - Every paid action shows an estimate and needs confirmation.
 - Tests never call paid APIs (use `tests/fakes.py`); live tests are `@pytest.mark.live`.
 - Stage files by name; never `git add -A`. No attribution lines in commits.

@@ -90,8 +90,10 @@ def test_live_job_page_polls_and_shows_running_step(client, runs_dir, media):
     job = make_job(runs_dir, media, "depth", done=5, running=True)  # depth running
     text = client.get(f"/jobs/{job.id}").text
     assert 'data-active="true"' in text
-    stages = json.loads(text.split('data-stages="')[1].split('"')[0].replace("&#34;", '"'))
-    assert stages["depth"] == "running" and stages["normalize"] == "done"
+    shown = json.loads(text.split('data-stages="')[1].split('"')[0].replace("&#34;", '"'))
+    assert shown["stages"]["depth"] == "running" and shown["stages"]["normalize"] == "done"
+    assert shown["generation"] == {"draft": "pending", "final": "pending"}
+    assert 'data-poll="fast"' in text
     assert "Waiting for this step…" in text and "⟳" in text
 
 
@@ -190,7 +192,7 @@ def test_api_progress_shape(client, runs_dir, media):
     response = client.get(f"/api/jobs/{job.id}")
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     data = response.json()
-    assert set(data) == {"stages", "done_count", "total_count", "active"}
+    assert set(data) == {"stages", "generation", "done_count", "total_count", "active", "poll"}
     assert list(data["stages"]) == [
         "normalize",
         "separate",
@@ -334,3 +336,50 @@ def test_interrupted_stage_says_stopped(client, runs_dir, media):
     text = client.get(f"/jobs/{job.id}").text
     assert f"Stopped (Ctrl-C). Run <code>charswap resume {job.id}</code> to continue." in text
     assert "interrupted" not in text and "Fix the issue" not in text
+
+
+def test_failed_job_page_slow_polls_for_a_resume(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=3, failed="boom")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'data-active="false"' in text and 'data-poll="slow"' in text
+
+
+def test_viewer_script_polls_by_mode(client):
+    script = client.get("/static/viewer.js").text
+    assert "slow: 10000" in script and "fast: 3000" in script
+    assert "data.generation" in script
+    assert 'mode === "fast" && !generating' in script  # no stall notice while generating
+    assert "data.poll" in script and "POLL_MS[mode]" in script  # follows the server's mode
+    assert "startedWaiting = Date.now()" in script.split("async function tick")[1]
+    assert 'startMode === "slow"' in script  # a page that started slow keeps watching
+
+
+def test_failed_draft_page_names_the_generate_command(client, runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    job.mark_stage("draft", "failed", error="boom")
+    text = client.get(f"/jobs/{job.id}").text
+    assert f"Fix the issue, then run <code>charswap generate {job.id} --draft</code>" in text
+    assert 'class="badge status-failed" id="job-status"' in text
+
+
+def test_finished_wan_job_page(client, runs_dir, media):
+    from viewer_jobs import finish_stage
+
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'class="badge status-done" id="job-status">Finished' in text
+    assert f"/jobs/{job.id}/files/final.mp4" in text and 'data-poll="off"' in text
+
+
+def test_stale_final_page_badge(client, runs_dir, media):
+    from viewer_jobs import finish_stage
+
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    job.mark_stage("final", fingerprint="old")
+    text = client.get(f"/jobs/{job.id}").text
+    assert 'class="badge status-failed" id="job-status">Out of date' in text
+    assert f"charswap generate {job.id} --draft" in text

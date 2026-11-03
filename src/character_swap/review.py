@@ -9,44 +9,32 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from character_swap.errors import CharSwapError
 from character_swap.jobs import Job
-
-DEPTH = ["original.mp4", "depth.mp4", "mask.mp4", "composite-silent.mp4", "prepared.mp4"]
-MESH = ["original.mp4", "face-landmarks.json", "composite-silent.mp4", "prepared.mp4"]
-DEPTH_MESH = [
-    "original.mp4",
-    "depth.mp4",
-    "mask.mp4",
-    "depth-composite-silent.mp4",
-    "face-landmarks.json",
-    "composite-silent.mp4",
-    "prepared.mp4",
-]
+from character_swap.modes import MODES
 
 
-class ReviewError(ValueError):
+class ReviewError(CharSwapError, ValueError):
     """Generation is blocked until the current artifacts are approved."""
 
 
 def review_files(job: Job) -> list[str]:
-    mode = job.mode
-    if mode == "direct":
+    mode = MODES.get(job.mode)
+    if mode is None:
+        raise ReviewError(f"Unknown mode {job.mode!r}; cannot review.")
+    files = list(mode.review_files)
+    if mode.generator == "wan":  # Wan receives the character image, so it is reviewed too
         character = job.state.get("character_primary")
         if not character:
             raise ReviewError("This job has no character image to review.")
-        return ["original.mp4", character]
-    files = {"depth": DEPTH, "face_mesh": MESH, "depth_mesh": DEPTH_MESH}.get(mode)
-    if files is None:
-        raise ReviewError(f"Unknown mode {mode!r}; cannot review.")
+        files.append(character)
     return files
 
 
 def _preparation_finished(job: Job) -> bool:
     """True when every stage of the job's mode is done (unknown modes fail in review_files)."""
-    from character_swap.pipeline import PREP_STAGES_BY_MODE  # lazy: pipeline imports review
-
-    names = PREP_STAGES_BY_MODE.get(job.mode)
-    return names is None or all(job.stage_done(name) for name in names)
+    mode = MODES.get(job.mode)
+    return mode is None or all(job.stage_done(name) for name in mode.prep_stages)
 
 
 def _compute_fingerprint(job: Job) -> str:

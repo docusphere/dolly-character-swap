@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from character_swap.errors import CharSwapError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 R2_KEYS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
 WHERE_TO_GET = {
@@ -16,7 +18,7 @@ WHERE_TO_GET = {
 }
 
 
-class MissingSettingError(RuntimeError):
+class MissingSettingError(CharSwapError, RuntimeError):
     """A required key is not configured."""
 
 

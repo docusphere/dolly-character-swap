@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from character_swap.errors import CharSwapError
+
 MAX_PROMPT = 4000
 MAX_SCENE = 300
 
@@ -29,6 +31,10 @@ MODE_NOTES = {
 SECONDARY = "@image2 is a second character; use them for the second person in the scene."
 
 
+class PromptError(CharSwapError, ValueError):
+    """The prompt cannot be sent as it is (for example it is too long)."""
+
+
 def _clean(text: str) -> str:
     """Neutralize untrusted text: no "@" at all, no double quotes, one line."""
     text = text.replace("@", "").replace('"', "'")
@@ -48,7 +54,7 @@ def _truncate(text: str, limit: int) -> str:
 
 def validate_prompt(text: str) -> str:
     if len(text) > MAX_PROMPT:
-        raise ValueError(f"Prompt is {len(text)} characters; the limit is {MAX_PROMPT}.")
+        raise PromptError(f"Prompt is {len(text)} characters; the limit is {MAX_PROMPT}.")
     return text
 
 

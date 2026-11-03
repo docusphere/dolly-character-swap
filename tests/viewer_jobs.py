@@ -7,6 +7,8 @@ from pathlib import Path
 from PIL import Image
 
 from character_swap.jobs import Job
+from character_swap.modes import GENERATION_STAGES
+from character_swap.review import fingerprint
 from character_swap.web.view_model import STAGES_BY_MODE
 from helpers import solid, tone, write_video, write_wav
 
@@ -20,6 +22,8 @@ ARTIFACTS = {
     "composite": ["mask.mp4", "composite-silent.mp4"],
     "face_mesh": ["composite-silent.mp4"],
     "embed": ["prepared.mp4"],
+    "draft": ["draft.mp4"],
+    "final": ["final.mp4"],
 }
 RECORDS = {
     "separate": "demucs-prediction.json",
@@ -27,6 +31,8 @@ RECORDS = {
     "describe": "describe-prediction.json",
     "depth": "depth-prediction.json",
     "masks": "sam/sam-prediction.json",
+    "draft": "draft-prediction.json",
+    "final": "final-prediction.json",
 }
 
 
@@ -75,6 +81,9 @@ def finish_stage(job: Job, media: Media, name: str) -> None:
         job.update(scene="A bright studio with plants.")
     if name in RECORDS and not (name == "depth" and job.state["depth_provider"] == "huggingface"):
         write_record(job, RECORDS[name], {"id": f"pred-{name}", "status": "succeeded"})
+    if name in GENERATION_STAGES:  # like pipeline.generate: remember which inputs it used
+        job.mark_stage(name, fingerprint=fingerprint(job))
+        return
     job.mark_stage(name)
 
 

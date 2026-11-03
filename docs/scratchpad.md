@@ -3,23 +3,68 @@
 ## Active work
 - [x] S1 — Plan 1: foundation + preparation pipeline (239 tests, 96.3 % coverage; branch feat/plan-1-foundation)
 - [x] Job viewer (read-only, `charswap view`; 389 tests, 97 % coverage; branch feat/job-viewer)
-- [ ] Plan 2 — generation (hosting, PiAPI, Wan, face check, audio restore)
+- [x] S2 — Replicate token set by Frank; `doctor` passes for prep (PIAPI_API_KEY still missing)
+- [x] S2 — First live prep on a real clip (COLORS 15 s, two people, depth mode): 9/9 steps, ~$0.06, job c0fcbc10…
+- [x] S3 — Plan 2a — Wan generation (draft/final, original audio), live-run fixes, prerequisites (568 tests, 97.6 % coverage; branch feat/plan-2a-wan)
+- [ ] Live Wan test (Task 15, needs Frank's OK; Wan price still unconfirmed)
+- [ ] Plan 2b — hosting (R2/tmpfiles), PiAPI Seedance 2.5 + face library, face check. Must cover two-person clips: `--subject` picks who gets disguised/replaced; primary + secondary face slots (@image1/@image2) to replace both; include a 'pick one of two people' live test.
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
-- [ ] Decide whole-second clip length: PiAPI `duration` is an int 4–30, `normalize` keeps fractional seconds, and `restore_original_audio` refuses > 0.25 s longer / > 0.5 s shorter. Snap video+audio to whole seconds at normalize (and use that as the soundtrack source) or round up and trim the generated video. Add a normalize → restore test with an integer-length generated video.
-- [ ] Persist normalize metadata in state.json (seconds, width, height, frames, aspect ratio); real-length cost estimates instead of fixed 30 s.
-- [ ] Spend log: one entry per paid call (provider, model, task id, units, estimate) written when the paid request is created; don't charge depth when provider is Hugging Face.
-- [ ] `providers/errors.py` (ProviderError, OutputExpired) + app-wide `CharSwapError` base; drop class-name matching in `stages/__init__.py`; catch prompt `ValueError` in CLI.
-- [ ] Single `modes.py` table (mode → generator, paid stages, review files, uses_depth); generator limits come from generator classes; stage error messages read prices from costs.
-- [ ] Rename `original.mp4` → `normalized.mp4`; depth_mesh composite writes `depth-composite-silent.mp4` directly (remove the copy trick).
+- [ ] (2b) Decide whole-second clip length: PiAPI `duration` is an int 4–30, `normalize` keeps fractional seconds, and `restore_original_audio` refuses > 0.25 s longer / > 0.5 s shorter. Snap video+audio to whole seconds at normalize (and use that as the soundtrack source) or round up and trim the generated video. Add a normalize → restore test with an integer-length generated video.
+- [x] Persist normalize metadata in state.json (seconds, width, height, frames, aspect ratio); real-length cost estimates instead of fixed 30 s.
+- [x] Spend log: one entry per paid call (provider, model, task id, units, estimate) written when the paid request is created; don't charge depth when provider is Hugging Face. (done for generation in S3; prep still logs one 'prepare' entry; HF depth still counted, Plan 3)
+- [x] `providers/errors.py` (ProviderError, OutputExpired) + app-wide `CharSwapError` base; drop class-name matching in `stages/__init__.py`; catch prompt `ValueError` in CLI.
+- [x] Single `modes.py` table (mode → generator, paid stages, review files, uses_depth); generator limits come from generator classes; stage error messages read prices from costs.
+- [ ] (Plan 3, decision P10) Rename `original.mp4` → `normalized.mp4`; depth_mesh composite writes `depth-composite-silent.mp4` directly (remove the copy trick).
 - [x] Stage status "running"/"failed" in state (done with the viewer)
-- [ ] Per-job file lock (or documented single-writer rule).
-- [ ] (Viewer final review) `pipeline.py` owns stage order: `prepare()` loops over `PREP_STAGES_BY_MODE`; keep generation stages (draft/final) in a separate group so "active"/"Preparing" doesn't treat every prepared-but-not-generated job as running.
+- [ ] (Plan 3, decision P11) Per-job file lock (or documented single-writer rule).
+- [x] (Viewer final review) `pipeline.py` owns stage order: `prepare()` loops over `PREP_STAGES_BY_MODE`; keep generation stages (draft/final) in a separate group so "active"/"Preparing" doesn't treat every prepared-but-not-generated job as running.
 - [ ] (Viewer final review) Move SECTIONS + "Why this step?" copy to `web/sections.py` with a per-section `texts` hook (remove id-string branching in view_model/job.html); generation sections plug in there.
 - [x] Review gate requires every prep stage done (status "unavailable", decide refuses) — done in viewer fixes.
 
+## Found in the first live run (S2) → Plan 2a
+- [x] Rate limits: low-balance Replicate accounts get ~6 req/min; polling every 5 s burns it and the next create gets 429. Poll slower (backoff), and a 429 on create means nothing was created → wait (Retry-After) and retry safely.
+- [x] Whisper on Replicate returned only "Let's get it." for rap; same vocals locally with language=en + condition_on_previous_text=False got the lyrics. Pass those inputs.
+- [x] Viewer: failed jobs stop polling, so a resume isn't shown live → slow-poll failed jobs.
+- [ ] SAM leaked a real arm for a few frames (arm crossing body) — repair (RGB) exists; consider in the review checklist.
+
+## Deferred from Plan 2a
+From the plan's Deferred table:
+- [ ] (2b) File hosting: R2 presigned + tmpfiles fallback (Wan uses Replicate's own upload; only PiAPI needs public URLs)
+- [ ] (2b) PiAPI Seedance 2.5 generator, draft to 1080p promote, face library, `charswap check-face` (add `generates=True` to Seedance modes)
+- [ ] (2b) Whole-second clip length (PiAPI `duration` is an int)
+- [ ] (2b) Prompt review before a Seedance draft
+- [ ] (2b if needed) Persist the full `GenerationRequest` in state.json
+- [ ] (Plan 3) Rename `original.mp4` to `normalized.mp4` (P10)
+- [ ] (Plan 3) Per-job file lock / run lock with heartbeat (P11)
+- [ ] (Plan 3) Per-call spend entries for prep stages; don't count depth when it ran on Hugging Face
+- [ ] (Plan 3) `web/sections.py` with per-section `texts` hook (remove id branching)
+- [ ] (Plan 3, UI) Hashed approval of the draft before the final (P4)
+- [ ] (Plan 3) Wan prep without `REPLICATE_API_TOKEN`, shared `services.py`, close `httpx.Client`
+- [ ] (Plan 3) Re-encode to AAC fallback when upload audio can't be stream-copied into mp4 (e.g. PCM in .mov)
+- [ ] (Plan 3) depth_mesh writes `depth-composite-silent.mp4` directly; stage messages read prices from `costs`
+- [ ] (Plan 3) SAM arm-leak item in the review checklist (Seedance depth modes only)
+- [x] S3 — Owner uuid in the "creating" marker so a 429 retry only removes its own marker (commit 661a3ad)
+- [ ] (Plan 3, with run lock) A run that loses the 429 re-claim race marks the stage "failed" while the winner still runs (cosmetic, no money risk)
+- [ ] (Backlog) `charswap cancel <job>` for a running prediction
+
+Review leftovers:
+- [ ] Owner check before `_save` after a 201 create
+- [ ] A resumed draft records its fingerprint at resume time (should be at create time)
+- [ ] Legacy jobs from before fingerprints count as stale
+- [ ] iPhone .mov audio start offset (`start_time`) vs generated video starting at 0
+- [ ] Spend-log rewrite is not cross-process safe
+- [ ] Partial archive failure reporting (draft-old-*/final-old-*)
+- [ ] Mode names still hardcoded in a few places (cli.py repair check, view_model, pipeline)
+- [ ] Ctrl-C at the cost question prints "not charged again"
+
+## Backlog (decided S2)
+- Grey depth option (`--depth-color grey`): clearer on orange/warm backgrounds; colour kept as default because it is the proven input. Try only if results look wrong. A/B by eye in the viewer; pose-match score later.
+
 ## Before Plan 3 (UI + skill)
+- Upload audio that cannot be stream-copied into mp4: re-encode to AAC fallback (see Deferred)
+- Hashed draft approval before the final (2a uses the cost confirmation)
 - Stat-keyed fingerprint cache for `review.status()` polling (full hash stays on approve/generate).
 - Move `build_services` to shared `services.py`; Wan path must not require REPLICATE_API_TOKEN for prep; close `httpx.Client`.
 - Move HF depth client + face model download into `providers/`.

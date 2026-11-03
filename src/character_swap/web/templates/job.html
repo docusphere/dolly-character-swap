@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Job {{ job.short_id }}{% endblock %}
 {% block body %}
-{% set badge_class = {"Failed": "status-failed", "Rejected": "status-failed", "Preparing": "status-running", "Ready for review": "status-done", "Approved": "status-done"} %}
+{% set badge_class = {"Failed": "status-failed", "Rejected": "status-failed", "Out of date": "status-failed", "Preparing": "status-running", "Generating": "status-running", "Ready for review": "status-done", "Approved": "status-done", "Draft ready": "status-done", "Finished": "status-done"} %}
 <div class="job-head">
   <h1>Job <code>{{ job.short_id }}</code></h1>
   <p class="meta">
@@ -12,6 +12,7 @@
 </div>
 <div class="layout" data-job-id="{{ job.id }}"
      data-active="{{ 'true' if job.progress.active else 'false' }}"
+     data-poll="{{ job.progress.poll }}"
      data-stages="{{ stages_json }}">
   <nav class="steps" aria-label="Steps">
     <ol>
@@ -50,10 +51,10 @@
       {% if section.error %}
       <div class="error" role="alert">
         {% if section.stopped %}
-        <p>Stopped (Ctrl-C). Run <code>charswap resume {{ job.id }}</code> to continue.</p>
+        <p>Stopped (Ctrl-C). Run <code>{{ section.retry }}</code> to continue.</p>
         {% else %}
         <p>{{ section.error }}</p>
-        <p>Fix the issue, then run <code>charswap resume {{ job.id }}</code>.</p>
+        <p>Fix the issue, then run <code>{{ section.retry }}</code>.</p>
         {% endif %}
       </div>
       {% endif %}

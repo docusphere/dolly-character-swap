@@ -6,6 +6,8 @@ import pytest
 from character_swap.media.audio import (
     DurationMismatchError,
     NoAudioError,
+    add_original_soundtrack,
+    copy_video_only,
     embed_samples,
     read_audio,
     restore_original_audio,
@@ -104,3 +106,65 @@ def test_read_audio_with_zero_audio_frames_raises(tmp_path):
         handle.setframerate(44100)
     with pytest.raises(NoAudioError):
         read_audio(path)
+
+
+# ---- Wan output (Plan 2a) ----------------------------------------------------------
+def video_rate(path):
+    with av.open(str(path)) as container:
+        return round(float(container.streams.video[0].average_rate))
+
+
+def test_restore_trims_a_slightly_long_generated_video(tmp_path):
+    original = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 24, audio_seconds=1)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 40, fps=30)
+    result = restore_original_audio(generated, original, tmp_path / "final.mp4")
+    assert audio_packets(result) == audio_packets(original)
+    expected = round(stream_seconds(original, "audio") * 30)
+    assert abs(count_frames(result) - expected) <= 1 and video_rate(result) == 30
+    gap = stream_seconds(result, "video") - stream_seconds(result, "audio")
+    assert abs(gap) <= 0.25
+
+
+def test_restore_refuses_a_much_longer_generated_video(tmp_path):
+    original = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 24, audio_seconds=1)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 60, fps=30)
+    with pytest.raises(DurationMismatchError):
+        restore_original_audio(generated, original, tmp_path / "final.mp4")
+
+
+def test_wan_like_30fps_output_keeps_its_rate_and_the_original_audio(tmp_path):
+    original = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 48, audio_seconds=2)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 60, fps=30)
+    result = restore_original_audio(generated, original, tmp_path / "final.mp4")
+    assert audio_packets(result) == audio_packets(original) and video_rate(result) == 30
+    assert count_frames(result) == 60
+
+
+def test_soundtrack_replaces_the_generated_audio(tmp_path):
+    upload = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 24, audio_seconds=1)
+    generated = write_video(
+        tmp_path / "gen.mp4", [solid((150, 150, 150))] * 30, fps=30, audio_seconds=0.5
+    )
+    result = add_original_soundtrack(generated, upload, tmp_path / "final.mp4")
+    assert audio_packets(result) == audio_packets(upload)
+    with av.open(str(result)) as container:
+        assert len(container.streams.audio) == 1
+
+
+def test_silent_upload_gives_a_silent_result(tmp_path):
+    upload = write_video(tmp_path / "upload.mp4", [solid((40, 40, 40))] * 24)
+    generated = write_video(
+        tmp_path / "gen.mp4", [solid((150, 150, 150))] * 30, fps=30, audio_seconds=1
+    )
+    result = add_original_soundtrack(generated, upload, tmp_path / "final.mp4")
+    with av.open(str(result)) as container:
+        assert container.streams.video and not container.streams.audio
+    assert count_frames(result) == 30 and video_rate(result) == 30
+
+
+def test_copy_video_only_drops_audio(tmp_path):
+    source = write_video(tmp_path / "v.mp4", [solid((10, 10, 10))] * 12, audio_seconds=0.5)
+    result = copy_video_only(source, tmp_path / "silent.mp4")
+    with av.open(str(result)) as container:
+        assert not container.streams.audio
+    assert count_frames(result) == 12

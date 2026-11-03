@@ -15,18 +15,37 @@ from pathlib import Path
 
 import av
 
-from character_swap.config import MissingSettingError, Settings
+from character_swap.config import Settings
 from character_swap.costs import (
     estimate_prepare,
     estimate_repair,
     estimate_stages,
     record_spend,
 )
-from character_swap.jobs import Job, JobError
-from character_swap.pipeline import Services, remaining_paid_stages, repair_with_rgb
+from character_swap.errors import CharSwapError
+from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
+from character_swap.pipeline import (
+    GENERATION_LABELS,
+    Services,
+    archive_stale_draft,
+    build_request,
+    check_can_generate,
+    generation_files,
+    generator_for,
+    needs_new_charge,
+    next_step,
+    remaining_paid_stages,
+    repair_with_rgb,
+    resumes_without_charge,
+    saved_request_unconfirmed,
+    stale_draft,
+    stale_generation,
+)
+from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.prompts import build_prompt
-from character_swap.review import ReviewError, decide
+from character_swap.providers.replicate import unconfirmed_message
+from character_swap.review import decide
 from character_swap.review import status as review_status
 from character_swap.stages import StageError
 
@@ -36,15 +55,21 @@ VIEW_HOST = "127.0.0.1"  # the viewer is never reachable from the network
 BROWSER_DELAY = 1.0  # seconds; lets the server start listening before the browser asks
 
 
-def build_services(settings: Settings) -> Services:  # pragma: no cover - wires real clients
+def build_services(settings: Settings) -> Services:
+    from character_swap.providers.generators.wan_replicate import WanGenerator
     from character_swap.providers.replicate import ReplicateClient
     from character_swap.stages.face_mesh import MediaPipeDetector, ensure_model
 
     model_dir = settings.root / "models"
+    replicate = ReplicateClient(
+        settings.require("REPLICATE_API_TOKEN"),
+        on_wait=lambda *wait: _stderr(rate_limit_message(*wait)),
+    )
     return Services(
-        replicate=ReplicateClient(settings.require("REPLICATE_API_TOKEN")),
-        face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),
+        replicate=replicate,
+        face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),  # pragma: no cover
         hf_token=settings.get("HF_TOKEN") or None,
+        generators={"wan": WanGenerator(replicate)},
     )
 
 
@@ -56,6 +81,13 @@ def run_server(app, *, host: str, port: int) -> None:  # pragma: no cover - real
 
 def _stderr(text: str = "") -> None:
     print(text, file=sys.stderr)
+
+
+def rate_limit_message(seconds: float, attempt: int, max_attempts: int) -> str:
+    return (
+        f"Replicate is busy (rate limit); waiting {seconds:.0f} s before retrying "
+        f"({attempt}/{max_attempts}). Nothing charged yet."
+    )
 
 
 def _ask(question: str, err: Out = _stderr) -> bool:
@@ -73,13 +105,16 @@ class Env:
     confirm: Callable[[str], bool]
     services_factory: Callable[[Settings], Services]
     job_id: str | None = None
-    retry: str | None = None  # command name to suggest after a failure
+    retry: str | None = None  # command template to suggest after a failure, e.g. "resume {id}"
     extra: dict = field(default_factory=dict)
     serve: Callable[..., object] = run_server
     open_browser: Callable[[str], object] = webbrowser.open
 
     def track(self, job: Job, retry: str) -> None:
         self.job_id, self.retry = job.id, retry
+
+    def retry_command(self) -> str:
+        return "charswap " + (self.retry or "resume {id}").format(id=self.job_id or "<job>")
 
     def proceed(self, question: str = "Continue?") -> bool:
         if self.confirm(question):
@@ -90,8 +125,10 @@ class Env:
 
 EPILOG = """example:
   charswap prepare clip.mp4 --mode depth
+  charswap prepare clip.mp4 --generator wan --character me.jpg
   charswap status <id>
   charswap review <id> --approve --note "watched all" --fingerprint <fp>
+  charswap generate <id> --draft
   charswap view
 """
 
@@ -113,6 +150,13 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument("--subject", default="person", help="what SAM 3 should cut out")
     prep.add_argument("--depth-provider", choices=["replicate", "huggingface"], default="replicate")
     prep.add_argument("--character", type=Path, help="character image (required for wan)")
+    prep.add_argument(
+        "--language",
+        default="auto",
+        choices=WHISPER_LANGUAGES,
+        metavar="CODE",
+        help="spoken language code for the transcript, e.g. en or es (default: auto, detect it)",
+    )
     prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
     sub.add_parser("status", help="show stages and review fingerprint as JSON").add_argument("job")
@@ -134,6 +178,14 @@ def _parser() -> argparse.ArgumentParser:
     repair = sub.add_parser("repair", help="re-cut the subject using original colors")
     repair.add_argument("job")
     repair.add_argument("--yes", action="store_true")
+    gen = sub.add_parser(
+        "generate", help="make the 480p draft or the 720p final (paid; asks first)"
+    )
+    gen.add_argument("job")
+    which = gen.add_mutually_exclusive_group(required=True)
+    which.add_argument("--draft", action="store_true", help="480p test run")
+    which.add_argument("--final", action="store_true", help="720p, same seed as the draft")
+    gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     sub.add_parser("doctor", help="check this machine's setup")
     view = sub.add_parser("view", help="open the read-only job viewer in your browser")
     view.add_argument("--port", type=_port, default=8770)
@@ -150,7 +202,7 @@ def _port(text: str) -> int:
 
 def _hint(env: Env) -> None:
     if env.job_id:
-        env.err(f"Fix the issue, then run: charswap {env.retry} {env.job_id}")
+        env.err(f"Fix the issue, then run: {env.retry_command()}")
 
 
 def main(
@@ -176,16 +228,21 @@ def main(
     )
     try:
         return COMMANDS[args.command](args, settings, env)
-    except (JobError, ReviewError, StageError, MissingSettingError) as error:
+    except CharSwapError as error:
         err(f"Error: {error}")
         _hint(env)
         return 2
     except KeyboardInterrupt:
-        where = f" {env.job_id}" if env.job_id else " <job>"
-        err(
-            f"Interrupted. Run `charswap resume{where}` to continue; "
-            "paid steps already started are not charged again."
-        )
+        if (env.retry or "").startswith("repair"):
+            err(
+                f"Interrupted. Run `charswap resume {env.job_id}` to finish the job. "
+                "Running repair again buys a new SAM 3 cut (~$0.002)."
+            )
+        else:
+            err(
+                f"Interrupted. Run `{env.retry_command()}` to continue; "
+                "paid steps already started are not charged again."
+            )
         return 130
     except Exception as error:
         if args.debug:
@@ -198,12 +255,18 @@ def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth")
     if args.generator == "wan" and args.character is None:
         raise JobError("Wan needs --character IMAGE (your face or character picture).")
+    if mode == "direct" and args.language != "auto":
+        raise JobError("--language only matters for Seedance modes (Wan has no transcript step).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     estimate = estimate_prepare(mode, seconds=30)
-    env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
-    if not args.yes and not env.proceed():
-        return 1
+    free = estimate.total == 0
+    if free:
+        env.out("Preparing is free for this mode (nothing is sent to a paid service).")
+    else:
+        env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
+        if not args.yes and not env.proceed():
+            return 1
     job = Job.create(
         settings.runs_dir,
         args.video,
@@ -212,18 +275,21 @@ def _prepare(args, settings, env) -> int:
         subject=args.subject,
         depth_provider=args.depth_provider,
         character=args.character,
+        language=args.language,
     )
-    env.track(job, "resume")
+    env.track(job, "resume {id}")
     env.out(f"JOB {job.id}")
     prepare_job(job, env.services_factory(settings), status=env.out)
-    record_spend(job, "prepare", estimate, settings.runs_dir)
-    env.out(f"Next: watch {job.path('prepared.mp4')} then run `charswap status {job.id}`.")
+    if not free:
+        record_spend(job, "prepare", estimate, settings.runs_dir)
+    watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
+    env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
     return 0
 
 
 def _resume(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
-    env.track(job, "resume")
+    env.track(job, "resume {id}")
     if job.mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     remaining = remaining_paid_stages(job)
@@ -241,12 +307,13 @@ def _resume(args, settings, env) -> int:
 
 def _status(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
-    state = job.state
+    review = review_status(job)
     report = {
         "job": job.id,
         "mode": job.mode,
-        "stages": state["stages"],
-        "review": review_status(job),
+        "stages": job.state["stages"],
+        "review": review,
+        "next": next_step(job, approved=bool(review.get("approved"))),
     }
     env.out(json.dumps(report, indent=2))
     return 0
@@ -272,7 +339,7 @@ def _prompt(args, settings, env) -> int:
 
 def _repair(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
-    env.track(job, "repair")
+    env.track(job, "repair {id}")
     if job.mode not in ("depth", "depth_mesh"):
         raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
     settings.require("REPLICATE_API_TOKEN")
@@ -281,6 +348,53 @@ def _repair(args, settings, env) -> int:
         return 1
     repair_with_rgb(job, env.services_factory(settings), status=env.out)
     record_spend(job, "repair", estimate_repair(), settings.runs_dir)
+    return 0
+
+
+def _generate(args, settings, env) -> int:
+    job = Job.load(settings.runs_dir, args.job)
+    stage = "final" if args.final else "draft"
+    remake = stage == "draft" and stale_draft(job)  # approved inputs changed since that draft
+    if stage == "final" and stale_generation(job, "final"):
+        env.err(
+            "This final was made from inputs that are no longer approved; run "
+            f"`charswap generate {job.id} --draft` to make a new draft first."
+        )
+        return 2
+    if job.stage_done(stage) and not remake:
+        env.out(f"The {stage} is already done: {job.path(f'{stage}.mp4')}")
+        return 0
+    check_can_generate(job, stage)  # mode, approved review, draft first: before any cost
+    env.track(job, f"generate {{id}} --{stage}")  # after the refusals: their text says what to do
+    settings.require("REPLICATE_API_TOKEN")
+    services = env.services_factory(settings)
+    if saved_request_unconfirmed(job, stage):
+        env.out(
+            "A request for this step was sent but never confirmed. It may have been charged; "
+            "follow the steps below before running again."
+        )
+        env.err(unconfirmed_message(job.path(generation_files(stage)[0])))
+        return 2
+    if remake or needs_new_charge(job, stage):
+        estimate = generator_for(job, services).estimate(build_request(job), stage)
+        env.out(f"{GENERATION_LABELS[stage]} (paid):\n" + estimate.describe())
+        if remake:
+            env.out(
+                "This makes a new draft because the approved inputs changed since the last "
+                "one, and it costs money. The old draft files are kept as draft-old-*."
+            )
+        if stage == "final":
+            env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")
+        if not args.yes and not env.proceed():
+            return 1
+        if remake:
+            archive_stale_draft(job)
+    elif resumes_without_charge(job, stage):
+        env.out(f"Found a saved {stage} request; resuming it (no new charge).")
+    result = generate_stage(job, services, stage, runs_dir=settings.runs_dir, status=env.out)
+    env.out(f"Watch: {result}")
+    if stage == "draft":
+        env.out(f"Happy with it? Run `charswap generate {job.id} --final`.")
     return 0
 
 
@@ -352,6 +466,7 @@ COMMANDS = {
     "review": _review,
     "prompt": _prompt,
     "repair": _repair,
+    "generate": _generate,
     "doctor": _doctor,
     "view": _view,
 }

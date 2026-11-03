@@ -25,3 +25,6 @@ _legacy/
 
 # brainstorming mockups
 .superpowers/
+
+# input clips and photos (third-party media, never committed)
+inputs/

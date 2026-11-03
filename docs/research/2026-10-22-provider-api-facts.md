@@ -65,3 +65,32 @@ boto3 `s3` client, `endpoint_url=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`,
 
 ## tmpfiles.org
 `POST https://tmpfiles.org/api/v1/upload` multipart `file` (≤ 100 MB), optional `expire` seconds 60–172800 (default 3600). Response `data.url = https://tmpfiles.org/{id}/{name}`; direct link by convention `https://tmpfiles.org/dl/{id}/{name}` (unverified). Max 48 h. ToS: no commercial automation without permission. Face asset upload needs `expire ≥ 86400`.
+
+## Wan 2.2 Animate Replace (verified 2026-11-03, for Plan 2a)
+
+Checked with free GET requests only (`GET /v1/models/wan-video/wan-2.2-animate-replace`), the model's web page/README, and by downloading the public example input and output (no prediction was created).
+
+- **Model:** `wan-video/wan-2.2-animate-replace`, `is_official: true`, public, ~82k runs. Call it through the model endpoint `POST /v1/models/wan-video/wan-2.2-animate-replace/predictions` (no version pin). Latest version at check time: `33ec6b986ba9010eee4cd812be67d25e72150fad7d2b11d3abed66a9c7ac1ba1` (2026-01-28, cog 0.16.9). Each prediction record shows the version that ran.
+- **Inputs** (required: `video`, `character_image`):
+
+| Input | Type | Default | Notes |
+|---|---|---|---|
+| `video` | string (uri) | none | "Input video containing the character to be replaced." |
+| `character_image` | string (uri) | none | "New character image to replace the original character." |
+| `resolution` | enum `"720"` \| `"480"` (strings) | `"720"` | |
+| `go_fast` | boolean | `false` | "additional optimizations for faster generation" |
+| `seed` | integer, nullable | random | logs print `Using seed: N` |
+| `merge_audio` | boolean | **`true`** | we send `false` and restore the original soundtrack ourselves |
+| `refert_num` | enum 1 \| 5 | 1 | deprecated, always 1 |
+| `frames_per_second` | integer 5–60 | 30 | deprecated, "will always be set to 30" |
+
+- **Output:** a single string (uri) to an `.mp4` (`replicate.delivery/...`). Like every Replicate output it expires (~1 h): download immediately.
+- **Example prediction** (`pyhq8c4k89rmw0cw0svaw5cdz0`, resolution 720, go_fast true, merge_audio true): input 8.0 s, 24 fps, 1280×720, 192 frames → output 7.9 s, **30 fps**, 1280×720, 237 frames, AAC audio 7.905 s; `predict_time` 83 s. So the output is always 30 fps and its length can differ from the input by ~0.1 s. The README's "output maintains the original frame rate" is out of date.
+- **Price:** NOT shown on the model page, API page or README on 2026-11-03. We keep the 2026-10-22 figures ($0.02 per output second at 480p, $0.05 at 720p) as the estimate and must confirm them against replicate.com billing after the first real draft.
+- **Limits:** max input length is not published ("Very long videos process in segments"; "slight variations between segments in extended videos"). The README asks for exactly one person in the video and one person in the character image, clear and well lit; complex camera moves or very fast motion are harder.
+
+## Whisper pinned version inputs (verified 2026-11-03)
+
+`GET /v1/models/openai/whisper/versions/8099696689d249cf8b122d833c36ac3f75505c666a395ca40ef26f68e7d3d16e` (created 2024-11-26). No `model` input (the version is large-v3). Inputs and defaults: `audio` (uri), `transcription` ("plain text" | "srt" | "vtt", default "plain text"), `language` (enum, default **"auto"**; ISO codes like "en" and names like "English"), `translate` (false), `temperature` (0), `temperature_increment_on_fallback` (0.2), `condition_on_previous_text` (**true**), `initial_prompt`, `patience`, `suppress_tokens` ("-1"), `compression_ratio_threshold` (2.4), `logprob_threshold` (-1), `no_speech_threshold` (0.6). Output object: `detected_language`, `transcription` (required), plus `segments`, `srt_file`, `txt_file`, `translation`.
+
+Plan 2a sends `condition_on_previous_text: false` (with it on, one bad window can make Whisper skip the rest; on the first live clip Replicate returned only "Let's get it." while a local run with it off got the rap) and `language` from the job (default "auto", so non-English clips still work). Temperature fallback is already on by default.

@@ -4,7 +4,6 @@
   const layout = document.querySelector(".layout[data-job-id]");
   if (!layout) return; // the jobs list needs no script
 
-  const POLL_MS = 3000;
   const STALL_MS = 10 * 60 * 1000; // no change for 10 minutes: stop and say so
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const links = new Map(
@@ -74,11 +73,20 @@
     setCurrent(links.keys().next().value);
   }
 
-  // 3. Live progress: poll while the job is active; reload when any stage changes.
-  if (layout.dataset.active !== "true") return;
+  // 3. Live progress. "fast" while a step runs, "slow" while the job can still change
+  //    (failed, waiting for review or generation), "off" once the final video exists.
+  const POLL_MS = { fast: 3000, slow: 10000 };
+  const startMode = layout.dataset.poll;
+  if (!Object.hasOwn(POLL_MS, startMode)) return;
+  let mode = startMode; // follows the server: a job can go from waiting to running and back
   const url = `/api/jobs/${layout.dataset.jobId}`;
-  const shown = JSON.stringify(JSON.parse(layout.dataset.stages));
-  const startedWaiting = Date.now();
+  const initial = JSON.parse(layout.dataset.stages);
+  const shown = JSON.stringify(initial);
+  let last = shown;
+  let startedWaiting = Date.now();
+  // A running generation (Wan's 720p final can take over 10 minutes) is never "stalled",
+  // and the stall hint below only fits preparation, where `resume` is the right command.
+  let generating = Object.values(initial.generation || {}).includes("running");
 
   document.getElementById("refresh-button").addEventListener("click", () => location.reload());
 
@@ -97,7 +105,13 @@
       const response = await fetch(url, { cache: "no-store" });
       if (response.ok) {
         const data = await response.json();
-        if (JSON.stringify(data.stages) !== shown) {
+        generating = Object.values(data.generation || {}).includes("running");
+        const now = JSON.stringify({ stages: data.stages, generation: data.generation });
+        if (now !== last) {
+          last = now;
+          startedWaiting = Date.now(); // progress was made: restart the stall timer
+        }
+        if (now !== shown) {
           if (!playing()) {
             location.reload();
             return;
@@ -105,16 +119,19 @@
           // never interrupt playback: offer a refresh and keep polling
           document.getElementById("new-results").hidden = false;
         }
-        if (!data.active) return; // finished or failed: nothing more to watch
+        // "off" = the final exists. A page that started slow (e.g. an out-of-date final
+        // waiting for a new draft) keeps watching, since the server only reads state.
+        mode = data.poll === "off" && startMode === "slow" ? "slow" : data.poll;
+        if (!Object.hasOwn(POLL_MS, mode)) return; // nothing more to watch
       }
     } catch (error) {
-      // the viewer may be restarting; keep trying until the stall timer runs out
+      // the viewer may be restarting; keep trying
     }
-    if (Date.now() - startedWaiting > STALL_MS) {
+    if (mode === "fast" && !generating && Date.now() - startedWaiting > STALL_MS) {
       stalled();
       return;
     }
-    window.setTimeout(tick, POLL_MS);
+    window.setTimeout(tick, POLL_MS[mode]);
   }
-  window.setTimeout(tick, POLL_MS);
+  window.setTimeout(tick, POLL_MS[mode]);
 })();

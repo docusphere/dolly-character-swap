@@ -16,8 +16,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-MODES_BY_GENERATOR = {"seedance": ("depth", "face_mesh", "depth_mesh"), "wan": ("direct",)}
+from character_swap.errors import CharSwapError
+from character_swap.modes import MODES_BY_GENERATOR
+
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
+# The codes openai/whisper accepts (its `language` enum, checked 2026-11-03 via
+# GET /v1/models/openai/whisper/versions/8099696689d2...). It also takes names;
+# we keep codes only.
+# fmt: off
+WHISPER_LANGUAGES: tuple[str, ...] = (
+    "auto", "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs",
+    "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha",
+    "haw", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km",
+    "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms",
+    "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd",
+    "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk",
+    "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
+)
+# fmt: on
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -27,7 +43,7 @@ def _lock_for(job_id: str) -> threading.Lock:
         return _LOCKS.setdefault(job_id, threading.Lock())
 
 
-class JobError(ValueError):
+class JobError(CharSwapError, ValueError):
     """The job request or job folder is invalid."""
 
 
@@ -51,6 +67,7 @@ class Job:
         subject: str = "person",
         depth_provider: str = "replicate",
         character: Path | None = None,
+        language: str = "auto",
     ) -> Job:
         if generator not in MODES_BY_GENERATOR:
             choices = ", ".join(MODES_BY_GENERATOR)
@@ -65,6 +82,10 @@ class Job:
             raise JobError(f"Video not found: {source}")
         if character is not None and not Path(character).is_file():
             raise JobError(f"Character image not found: {character}")
+        if language not in WHISPER_LANGUAGES:
+            raise JobError(
+                f"{language!r} is not a Whisper language code (for example en, es, or auto)."
+            )
 
         job_id = uuid.uuid4().hex
         root = Path(runs_dir) / job_id
@@ -77,6 +98,7 @@ class Job:
                 "mode": mode,
                 "subject": subject,
                 "depth_provider": depth_provider,
+                "language": language,
                 "seed": secrets.randbelow(2**31),
                 "created_at": _now(),
                 "stages": {},

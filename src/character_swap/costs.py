@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import threading
 import warnings
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from character_swap.jobs import Job
+from character_swap.modes import MODES
 
 _LOG_LOCK = threading.Lock()
 
@@ -42,6 +44,22 @@ PRICES: dict[str, Price] = {
         "Depth video", 0.04, "run", "2026-10-22", "replicate.com/lucataco/depth-anything-video"
     ),
     "sam3": Price("SAM 3 masks", 0.002, "run", "2026-10-22", "replicate.com/lucataco/sam3-video"),
+    # Wan is billed per second of output video. Not shown on the model page on 2026-11-03;
+    # these are the 2026-10-22 figures. Confirm against replicate.com billing after a run.
+    "wan-480": Price(
+        "Wan draft (480p)",
+        0.02,
+        "second",
+        "2026-10-22",
+        "replicate.com/wan-video/wan-2.2-animate-replace (per output second)",
+    ),
+    "wan-720": Price(
+        "Wan final (720p)",
+        0.05,
+        "second",
+        "2026-10-22",
+        "replicate.com/wan-video/wan-2.2-animate-replace (per output second)",
+    ),
 }
 
 STAGE_PRICE = {
@@ -52,11 +70,8 @@ STAGE_PRICE = {
     "masks": "sam3",
 }
 
-PREP_STEPS = {
-    "depth": ["demucs", "whisper", "describe", "depth", "sam3"],
-    "face_mesh": ["demucs", "whisper", "describe"],
-    "depth_mesh": ["demucs", "whisper", "describe", "depth", "sam3"],
-    "direct": [],
+PREP_STEPS: dict[str, list[str]] = {
+    name: [STAGE_PRICE[stage] for stage in mode.paid_stages] for name, mode in MODES.items()
 }
 
 
@@ -81,36 +96,94 @@ class Estimate:
         return "\n".join(rows)
 
 
-def _cost(key: str, seconds: float) -> Line:
+def cost_line(key: str, seconds: float) -> Line:
     price = PRICES[key]
     usd = price.usd * seconds if price.unit == "second" else price.usd
     return Line(price.item, round(usd, 4))
 
 
 def estimate_prepare(mode: str, seconds: float) -> Estimate:
-    return Estimate(lines=tuple(_cost(key, seconds) for key in PREP_STEPS[mode]))
+    return Estimate(lines=tuple(cost_line(key, seconds) for key in PREP_STEPS[mode]))
 
 
 def estimate_stages(stage_names: list[str], seconds: float) -> Estimate:
-    return Estimate(lines=tuple(_cost(STAGE_PRICE[name], seconds) for name in stage_names))
+    return Estimate(lines=tuple(cost_line(STAGE_PRICE[name], seconds) for name in stage_names))
 
 
 def estimate_repair() -> Estimate:
-    return Estimate(lines=(_cost("sam3", 0),))
+    return Estimate(lines=(cost_line("sam3", 0),))
 
 
-def record_spend(job: Job, step: str, estimate: Estimate, runs_dir: Path) -> None:
+# New columns go at the end: old logs keep their 5-column header and still add up.
+SPEND_LOG_COLUMNS = (
+    "at",
+    "job",
+    "step",
+    "usd_estimate",
+    "usd_micro",
+    "provider",
+    "model",
+    "task_id",
+    "units",
+)
+
+
+_OLD_SPEND_LOG_COLUMNS = SPEND_LOG_COLUMNS[:5]
+
+
+def _upgrade_old_header(log: Path) -> None:
+    """Rewrite a 5-column log once with the full header, padding old rows. Hold _LOG_LOCK."""
+    with log.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.reader(file))
+    if not rows or tuple(rows[0]) != _OLD_SPEND_LOG_COLUMNS:
+        return
+    width = len(SPEND_LOG_COLUMNS)
+    body = [row + [""] * (width - len(row)) for row in rows[1:]]
+    part = log.with_suffix(log.suffix + ".part")
+    with part.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(SPEND_LOG_COLUMNS)
+        writer.writerows(body)
+    os.replace(part, log)
+
+
+def record_spend(
+    job: Job,
+    step: str,
+    estimate: Estimate,
+    runs_dir: Path,
+    *,
+    provider: str = "",
+    model: str = "",
+    task_id: str = "",
+    units: str = "",
+) -> None:
     at = datetime.now(UTC).isoformat(timespec="seconds")
-    job.append_cost({"step": step, "usd": estimate.total, "at": at})
+    entry: dict[str, object] = {"step": step, "usd": estimate.total, "at": at}
+    details = {"provider": provider, "model": model, "task_id": task_id, "units": units}
+    entry.update({key: value for key, value in details.items() if value})
+    job.append_cost(entry)
     log = Path(runs_dir) / "spend-log.csv"
     with _LOG_LOCK:
         new = not log.exists() or log.stat().st_size == 0
+        if not new:
+            _upgrade_old_header(log)
         with log.open("a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             if new:
-                writer.writerow(["at", "job", "step", "usd_estimate", "usd_micro"])
+                writer.writerow(SPEND_LOG_COLUMNS)
             writer.writerow(
-                [at, job.id, step, f"{estimate.total:.4f}", round(estimate.total * 1_000_000)]
+                [
+                    at,
+                    job.id,
+                    step,
+                    f"{estimate.total:.4f}",
+                    round(estimate.total * 1_000_000),
+                    provider,
+                    model,
+                    task_id,
+                    units,
+                ]
             )
 
 
