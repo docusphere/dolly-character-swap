@@ -8,6 +8,7 @@ import os
 import tempfile
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -141,12 +142,20 @@ class ReplicateClient:
 
     # ---- paid call (never retried) -------------------------------------------
     def run(
-        self, *, input: dict, record: Path, version: str | None = None, model: str | None = None
+        self,
+        *,
+        input: dict,
+        record: Path,
+        version: str | None = None,
+        model: str | None = None,
+        on_created: Callable[[dict], None] | None = None,
     ) -> Any:
         """Create a prediction once, save it to `record`, and wait for its output.
 
         A marker is created exclusively BEFORE the paid POST, so a crash or timeout can
         never lead to a second charge. If `record` exists, resume it instead.
+        `on_created(prediction)` runs once, right after Replicate confirms a NEW
+        prediction (never on resume); a failing callback only warns.
         """
         record = Path(record)
         prediction = None
@@ -167,7 +176,9 @@ class ReplicateClient:
                     f"Delete {record} to try again (this costs money)."
                 )
         else:
-            prediction = self._create(input=input, version=version, model=model, record=record)
+            prediction = self._create(
+                input=input, version=version, model=model, record=record, on_created=on_created
+            )
         return self._wait(prediction, record)
 
     @staticmethod
@@ -200,7 +211,15 @@ class ReplicateClient:
             Path(tmp).unlink(missing_ok=True)
             raise
 
-    def _create(self, *, input: dict, version: str | None, model: str | None, record: Path) -> dict:
+    def _create(
+        self,
+        *,
+        input: dict,
+        version: str | None,
+        model: str | None,
+        record: Path,
+        on_created: Callable[[dict], None] | None = None,
+    ) -> dict:
         if version:
             url, body = f"{API}/predictions", {"version": version, "input": input}
         elif model:
@@ -233,10 +252,12 @@ class ReplicateClient:
         try:
             self._save(record, prediction)
         except OSError as error:
+            _announce(on_created, prediction)  # paid even though the record was not saved
             raise ReplicateError(
                 f"Paid prediction {prediction['id']} was created but its record could not be "
                 f"saved ({error}). Note this id; check https://replicate.com/predictions."
             ) from error
+        _announce(on_created, prediction)
         return prediction
 
     @staticmethod
@@ -379,6 +400,16 @@ def _unconfirmed(record: Path) -> str:
         "charswap command is running for this job. Then check https://replicate.com/predictions; "
         f"if nothing is there, delete {record} and run again."
     )
+
+
+def _announce(callback: Callable[[dict], None] | None, prediction: dict) -> None:
+    """Report a new paid prediction; a failing logger must never lose track of it."""
+    if callback is None:
+        return
+    try:
+        callback(prediction)
+    except Exception as exc:
+        warnings.warn(f"Could not log paid prediction {prediction.get('id')}: {exc}", stacklevel=4)
 
 
 def _taken_over(record: Path) -> str:

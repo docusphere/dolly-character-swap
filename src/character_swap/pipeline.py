@@ -53,7 +53,13 @@ class ReplicateLike(Protocol):
     def latest_version(self, model: str): ...
 
     def run(
-        self, *, input: dict, record: Path, version: str | None = None, model: str | None = None
+        self,
+        *,
+        input: dict,
+        record: Path,
+        version: str | None = None,
+        model: str | None = None,
+        on_created: Callable[[dict], None] | None = None,
     ): ...
 
     def download(self, url: str, dest: Path) -> Path: ...

@@ -30,12 +30,15 @@ class FakeReplicate:
         self.latest_calls += 1
         return f"{model}-latest", self.schema
 
-    def run(self, *, input, record: Path, version=None, model=None):
+    def run(self, *, input, record: Path, version=None, model=None, on_created=None):
         key = version or model
         if record.exists() and json.loads(record.read_text()).get("status") == "succeeded":
             return self.outputs[key]  # resumed from the record: no new run, no new cost
         self.runs.append({"key": key, "input": input})
-        record.write_text(json.dumps({"id": f"pred-{len(self.runs)}", "status": "succeeded"}))
+        prediction = {"id": f"pred-{len(self.runs)}", "status": "succeeded"}
+        record.write_text(json.dumps(prediction))
+        if on_created is not None:
+            on_created({"id": prediction["id"], "status": "starting"})
         return self.outputs[key]
 
     def download(self, url: str, dest: Path) -> Path:

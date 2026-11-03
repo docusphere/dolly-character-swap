@@ -718,3 +718,112 @@ def test_unreadable_record_after_429_is_left_alone(tmp_path):
     with pytest.raises(ReplicateError, match="Another charswap run"):
         client().run(version="v1", input={}, record=record)
     assert route.call_count == 1 and record.read_text() == "{"
+
+
+# ---- spend hook ------------------------------------------------------------------
+@respx.mock
+def test_on_created_runs_once_for_a_new_prediction_only(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p9", "status": "succeeded", "output": 1})
+    )
+    seen = []
+    client().run(version="v1", input={}, record=record, on_created=seen.append)
+    client().run(version="v1", input={}, record=record, on_created=seen.append)  # resumed
+    assert [prediction["id"] for prediction in seen] == ["p9"]
+
+
+@respx.mock
+def test_on_created_is_not_called_when_resuming_a_running_prediction(tmp_path):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"id": "p1", "status": "processing"}))
+    create = respx.post(f"{API}/predictions")
+    respx.get(f"{API}/predictions/p1").mock(
+        return_value=httpx.Response(200, json={"id": "p1", "status": "succeeded", "output": 2})
+    )
+    seen = []
+    assert client().run(version="v1", input={}, record=record, on_created=seen.append) == 2
+    assert seen == [] and create.call_count == 0
+
+
+@respx.mock
+def test_on_created_runs_after_the_record_is_saved(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p9", "status": "succeeded", "output": 1})
+    )
+    saved = []
+    client().run(
+        version="v1",
+        input={},
+        record=record,
+        on_created=lambda _p: saved.append(json.loads(record.read_text())["id"]),
+    )
+    assert saved == ["p9"]
+
+
+@respx.mock
+def test_on_created_failure_never_loses_the_prediction(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p9", "status": "succeeded", "output": 1})
+    )
+
+    def broken(_prediction):
+        raise OSError("disk full")
+
+    with pytest.warns(UserWarning, match="p9"):
+        assert client().run(version="v1", input={}, record=record, on_created=broken) == 1
+    assert json.loads(record.read_text())["id"] == "p9"
+
+
+@respx.mock
+def test_on_created_runs_once_after_a_throttled_create(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "1"}),
+            httpx.Response(201, json={"id": "p9", "status": "succeeded", "output": 1}),
+        ]
+    )
+    seen = []
+    client().run(version="v1", input={}, record=record, on_created=seen.append)
+    assert [prediction["id"] for prediction in seen] == ["p9"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(422, json={"detail": "bad"}),
+        httpx.Response(502),
+        httpx.Response(201, text="<html>"),
+        httpx.Response(201, json={"status": "starting"}),
+    ],
+)
+@respx.mock
+def test_on_created_never_runs_without_a_confirmed_prediction_id(tmp_path, response):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(return_value=response)
+    seen = []
+    with pytest.raises(ReplicateError):
+        client().run(version="v1", input={}, record=record, on_created=seen.append)
+    assert seen == []
+
+
+@respx.mock
+def test_on_created_still_logs_a_paid_prediction_whose_record_could_not_be_saved(
+    tmp_path, monkeypatch
+):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "paid42", "status": "starting"})
+    )
+
+    def boom(_record, _data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ReplicateClient, "_save", staticmethod(boom))
+    seen = []
+    with pytest.raises(ReplicateError, match="paid42"):
+        client().run(version="v1", input={}, record=record, on_created=seen.append)
+    assert [prediction["id"] for prediction in seen] == ["paid42"]

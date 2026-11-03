@@ -97,18 +97,55 @@ def estimate_repair() -> Estimate:
     return Estimate(lines=(_cost("sam3", 0),))
 
 
-def record_spend(job: Job, step: str, estimate: Estimate, runs_dir: Path) -> None:
+# New columns go at the end: old logs keep their 5-column header and still add up.
+SPEND_LOG_COLUMNS = (
+    "at",
+    "job",
+    "step",
+    "usd_estimate",
+    "usd_micro",
+    "provider",
+    "model",
+    "task_id",
+    "units",
+)
+
+
+def record_spend(
+    job: Job,
+    step: str,
+    estimate: Estimate,
+    runs_dir: Path,
+    *,
+    provider: str = "",
+    model: str = "",
+    task_id: str = "",
+    units: str = "",
+) -> None:
     at = datetime.now(UTC).isoformat(timespec="seconds")
-    job.append_cost({"step": step, "usd": estimate.total, "at": at})
+    entry: dict[str, object] = {"step": step, "usd": estimate.total, "at": at}
+    details = {"provider": provider, "model": model, "task_id": task_id, "units": units}
+    entry.update({key: value for key, value in details.items() if value})
+    job.append_cost(entry)
     log = Path(runs_dir) / "spend-log.csv"
     with _LOG_LOCK:
         new = not log.exists() or log.stat().st_size == 0
         with log.open("a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             if new:
-                writer.writerow(["at", "job", "step", "usd_estimate", "usd_micro"])
+                writer.writerow(SPEND_LOG_COLUMNS)
             writer.writerow(
-                [at, job.id, step, f"{estimate.total:.4f}", round(estimate.total * 1_000_000)]
+                [
+                    at,
+                    job.id,
+                    step,
+                    f"{estimate.total:.4f}",
+                    round(estimate.total * 1_000_000),
+                    provider,
+                    model,
+                    task_id,
+                    units,
+                ]
             )
 
 
