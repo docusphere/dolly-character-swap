@@ -649,7 +649,7 @@ def test_stale_hint_asks_for_a_review_first_when_not_approved(runs_dir, media):
     finish_stage(job, media, "draft")
     job.mark_stage("draft", fingerprint="old")
     texts = {t.label: t.value for t in sections(vm.job_view(job, runs_dir))["draft"].texts}
-    assert f"Review the new files (charswap review {job.id}), then run" in texts["Out of date"]
+    assert "Review the new files in the Review section above, then run" in texts["Out of date"]
     decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
     texts = {t.label: t.value for t in sections(vm.job_view(job, runs_dir))["draft"].texts}
     assert texts["Out of date"] == "Made from inputs that are no longer approved."

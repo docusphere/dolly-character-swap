@@ -681,7 +681,7 @@ def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
 def _stale_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
     note = "Made from inputs that are no longer approved."
     if decision.get("status") != "approved":
-        note += f" Review the new files (charswap review {job.id}), then run:"
+        note += " Review the new files in the Review section above, then run:"
     return [
         TextItem("Out of date", note),
         TextItem("Make a new draft", f"charswap generate {job.id} --draft", code=True),
