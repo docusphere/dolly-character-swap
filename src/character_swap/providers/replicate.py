@@ -17,6 +17,7 @@ from character_swap.providers.errors import OutputExpired, ProviderError
 
 API = "https://api.replicate.com/v1"
 TERMINAL = {"succeeded", "failed", "canceled"}
+POLL_GROWTH = 1.5  # each wait is 1.5x the last, up to max_poll_seconds
 
 
 class ReplicateError(ProviderError):
@@ -34,12 +35,14 @@ class ReplicateClient:
         *,
         http: httpx.Client | None = None,
         poll_seconds: float = 5.0,
+        max_poll_seconds: float = 30.0,
         max_polls: int = 720,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self._http = http or httpx.Client(timeout=httpx.Timeout(180, connect=15))
         self._headers = {"Authorization": f"Bearer {token}"}
         self._poll_seconds = poll_seconds
+        self._max_poll_seconds = max_poll_seconds
         self._max_polls = max_polls
         self._sleep = sleep
 
@@ -232,14 +235,17 @@ class ReplicateClient:
         return prediction
 
     def _wait(self, prediction: dict, record: Path) -> Any:
-        polls = 0
+        polls, delay = 0, self._poll_seconds
         while prediction.get("status") not in TERMINAL:
             if polls >= self._max_polls:
                 raise ReplicateError(
                     f"Prediction {prediction.get('id')} is still running (saved in {record}). "
                     "Resume the job to keep waiting; no new charge."
                 )
-            self._sleep(self._poll_seconds)
+            # Back off: low-balance accounts get ~6 requests/min, and a fixed 5 s poll
+            # starved the next paid create of its quota (first live run).
+            self._sleep(delay)
+            delay = min(delay * POLL_GROWTH, self._max_poll_seconds)
             # Built from the id: never send the token to a URL taken from a response.
             url = f"{API}/predictions/{prediction['id']}"
             try:

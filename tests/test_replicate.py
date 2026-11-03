@@ -420,3 +420,17 @@ def test_auth_header_on_paid_post_and_poll(tmp_path):
     client().run(version="v1", input={}, record=tmp_path / "r.json")
     assert post.calls[0].request.headers["authorization"] == "Bearer tok"
     assert poll.calls[0].request.headers["authorization"] == "Bearer tok"
+
+
+# ---- rate limits (first live run) -----------------------------------------------
+@respx.mock
+def test_polling_backs_off_to_a_ceiling(tmp_path):
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"id": "p1", "status": "processing"}))
+    running = [httpx.Response(200, json={"id": "p1", "status": "processing"}) for _ in range(5)]
+    done = httpx.Response(200, json={"id": "p1", "status": "succeeded", "output": 1})
+    respx.get(f"{API}/predictions/p1").mock(side_effect=[*running, done])
+    sleeps = []
+    slow = ReplicateClient("tok", poll_seconds=5, max_poll_seconds=20, sleep=sleeps.append)
+    assert slow.run(version="v1", input={}, record=record) == 1
+    assert sleeps == [5, 7.5, 11.25, 16.875, 20, 20]
