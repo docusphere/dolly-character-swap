@@ -103,3 +103,12 @@ def test_path_must_stay_inside_job(runs_dir, video, name):
     job = Job.create(runs_dir, video, generator="seedance", mode="depth")
     with pytest.raises(JobError, match="outside"):
         job.path(name)
+
+
+def test_language_is_saved_and_checked(runs_dir, video):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth", language="en")
+    assert job.state["language"] == "en"
+    default = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    assert default.state["language"] == "auto"
+    with pytest.raises(JobError, match="language code"):
+        Job.create(runs_dir, video, generator="seedance", mode="depth", language="English please")

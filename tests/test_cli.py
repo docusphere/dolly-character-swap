@@ -559,3 +559,14 @@ def test_rate_limit_wait_message():
     assert rate_limit_message(7.4, 1, 3) == (
         "Replicate is busy (rate limit); waiting 7 s before retrying (1/3). Nothing charged yet."
     )
+
+
+def test_prepare_passes_the_language(settings, video, monkeypatch):
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
+    code, _ = run(
+        ["prepare", str(video), "--mode", "depth", "--language", "en", "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
+    assert code == 0 and Job.load(settings.runs_dir, job_id).state["language"] == "en"

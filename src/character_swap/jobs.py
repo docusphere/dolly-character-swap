@@ -20,6 +20,7 @@ from character_swap.errors import CharSwapError
 from character_swap.modes import MODES_BY_GENERATOR
 
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
+_LANGUAGE = re.compile(r"auto|[a-z]{2,3}")  # Whisper codes: en, es, haw, ...
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -53,6 +54,7 @@ class Job:
         subject: str = "person",
         depth_provider: str = "replicate",
         character: Path | None = None,
+        language: str = "auto",
     ) -> Job:
         if generator not in MODES_BY_GENERATOR:
             choices = ", ".join(MODES_BY_GENERATOR)
@@ -67,6 +69,10 @@ class Job:
             raise JobError(f"Video not found: {source}")
         if character is not None and not Path(character).is_file():
             raise JobError(f"Character image not found: {character}")
+        if not _LANGUAGE.fullmatch(language):
+            raise JobError(
+                f"{language!r} is not a Whisper language code (for example en, es, or auto)."
+            )
 
         job_id = uuid.uuid4().hex
         root = Path(runs_dir) / job_id
@@ -79,6 +85,7 @@ class Job:
                 "mode": mode,
                 "subject": subject,
                 "depth_provider": depth_provider,
+                "language": language,
                 "seed": secrets.randbelow(2**31),
                 "created_at": _now(),
                 "stages": {},

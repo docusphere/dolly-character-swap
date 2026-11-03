@@ -124,6 +124,11 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument("--subject", default="person", help="what SAM 3 should cut out")
     prep.add_argument("--depth-provider", choices=["replicate", "huggingface"], default="replicate")
     prep.add_argument("--character", type=Path, help="character image (required for wan)")
+    prep.add_argument(
+        "--language",
+        default="auto",
+        help="spoken language code for the transcript, e.g. en (default: detect it)",
+    )
     prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
     sub.add_parser("status", help="show stages and review fingerprint as JSON").add_argument("job")
@@ -223,6 +228,7 @@ def _prepare(args, settings, env) -> int:
         subject=args.subject,
         depth_provider=args.depth_provider,
         character=args.character,
+        language=args.language,
     )
     env.track(job, "resume")
     env.out(f"JOB {job.id}")

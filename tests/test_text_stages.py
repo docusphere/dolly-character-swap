@@ -26,6 +26,8 @@ def test_transcribe_saves_text(runs_dir, tmp_path):
     assert fake.runs[0]["input"] == {
         "audio": "https://fake.replicate/vocals.wav",
         "transcription": "plain text",
+        "language": "auto",
+        "condition_on_previous_text": False,
     }
 
 
@@ -92,3 +94,19 @@ def test_text_stages_resume_without_second_run(runs_dir, tmp_path):
         transcribe(job, fake)
         describe_scene(job, fake)
     assert len(fake.runs) == 2
+
+
+def test_transcribe_uses_the_job_language(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    job.update(language="es")
+    fake = FakeReplicate(outputs={WHISPER_VERSION: {"transcription": "hola"}})
+    transcribe(job, fake)
+    assert fake.runs[0]["input"]["language"] == "es"
+
+
+def test_jobs_from_before_the_language_option_use_auto(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    job.update(language=None)
+    fake = FakeReplicate(outputs={WHISPER_VERSION: {"transcription": "hi"}})
+    transcribe(job, fake)
+    assert fake.runs[0]["input"]["language"] == "auto"
