@@ -50,3 +50,15 @@
   - Whisper on Replicate needs condition_on_previous_text false for rap/fast speech, or it returns a few words.
   - Reviewers found double-charge paths again, so keep adversarial money reviews on every paid change.
 - **Not done:** live Wan test (Task 15, needs Frank's OK); Wan price still unconfirmed ($0.02/s 480p, $0.05/s 720p are estimates). Leftovers are in docs/scratchpad.md "Deferred from Plan 2a".
+
+## 2026-11-04 — Session 4: Plan 2a shipped, first live Wan draft
+- **Goal:** Merge Plan 2a and run the first paid Wan test.
+- **Completed:** feat/plan-2a-wan merged to main and pushed (571 tests, 97.57 % coverage). Compared our project with the original reference: the prep half is the same technique; the difference is the generator (reference uses Seedance, which with SAM `--subject` can target one of two people; Wan picks one person itself). Test clip: a 12 s one-person talking-head clip from YouTube (git-ignored `inputs/talking-head-12s.mp4`). Frank's first three photos were ~200 px screenshots (too small); he supplied an 828x1086 original. Free prepare → approved → paid 480p draft (prediction d76cxwh659rmt0d1mwasfaz1am): ~1 min 45 s, 832x464 at 30 fps, original audio restored at 12.00 s. Identity clearly Frank's.
+- **Decisions:**
+  - Quick Wan test before Plan 2b. Why: proves the whole chain for ~$0.24; Seedance stays the target for two-person clips like the rap clip.
+  - Did not use the two-person rap clip with Wan. Why: Wan can't be told which person to replace, and cuts plus sunglasses would make a failed test uninformative.
+- **Lessons:**
+  - Wan copies everything in the character photo: a shirtless face-only selfie produced an invented tank top, and the photo's background (a building) appeared as a window in the scene. Ask for head-and-shoulders, clothed, plain-background photos.
+  - Screenshots of photos are too small (~200 px); ask for the exported original.
+  - Real run was ~1 min 45 s, much faster than the 3–8 min guess.
+- **Next:** Frank checks the real charge on Replicate billing (update prices); optionally retake the photo and redo the draft, then `--final`. Then Plan 2b (Seedance via PiAPI, two-person clips).
