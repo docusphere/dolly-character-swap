@@ -5,17 +5,14 @@ from __future__ import annotations
 import json
 import math
 import os
-import tempfile
 import time
-import uuid
-import warnings
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from character_swap.providers import common
 from character_swap.providers.errors import OutputExpired, ProviderError
 
 API = "https://api.replicate.com/v1"
@@ -57,22 +54,7 @@ class ReplicateClient:
     # ---- free calls (retried) -------------------------------------------------
     def _retry(self, call: Callable[[], Any], attempts: int = 3) -> Any:
         """Retry transport errors, 5xx and 429. Raises the last raw httpx error."""
-        for attempt in range(attempts):
-            delay: float = 2**attempt
-            try:
-                return call()
-            except httpx.HTTPStatusError as error:
-                code = error.response.status_code
-                if (code < 500 and code != 429) or attempt == attempts - 1:
-                    raise
-                retry_after = error.response.headers.get("Retry-After", "")
-                if code == 429 and retry_after.isdigit():
-                    delay = min(int(retry_after), 60)
-            except httpx.TransportError:
-                if attempt == attempts - 1:
-                    raise
-            self._sleep(delay)
-        raise AssertionError("unreachable")
+        return common.retry_free(call, sleep=self._sleep, attempts=attempts)
 
     def _free(self, call: Callable[[], Any]) -> Any:
         """A retried free call whose final failure is a ReplicateError."""
@@ -202,14 +184,7 @@ class ReplicateClient:
 
     @staticmethod
     def _save(record: Path, data: dict) -> None:
-        fd, tmp = tempfile.mkstemp(dir=record.parent, prefix=record.name, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as file:
-                json.dump(data, file, indent=2)
-            os.replace(tmp, record)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        common.save(record, data)
 
     def _create(
         self,
@@ -269,50 +244,17 @@ class ReplicateClient:
 
     @staticmethod
     def _claim(record: Path) -> dict:
-        """Write our "creating" marker exclusively and return it.
-
-        FileExistsError if anyone else has the record. The random owner lets this run
-        recognize its own marker later, so it never deletes another run's.
-        """
-        marker = {
-            "status": "creating",
-            "created_at": datetime.now(UTC).isoformat(),
-            "owner": uuid.uuid4().hex,
-        }
-        with open(record, "x") as file:  # exclusive: a second runner cannot also pay
-            try:
-                json.dump(marker, file)
-            except BaseException:
-                file.close()
-                record.unlink(missing_ok=True)  # POST was never sent
-                raise
-        return marker
+        return common.claim(record)
 
     @staticmethod
     def _release(record: Path, marker: dict, nothing_charged: str) -> None:
-        """Delete the record only if it is still exactly our marker.
-
-        Only called when Replicate confirmed nothing was created (`nothing_charged` says
-        why). If another run replaced the record, it is left alone and we stop.
-        """
-        try:
-            current = json.loads(record.read_text())
-        except FileNotFoundError:
-            return  # already gone; nothing of ours to remove
-        except (OSError, ValueError) as error:
-            raise ReplicateError(_taken_over(record)) from error
-        if current != marker:
-            raise ReplicateError(_taken_over(record))
-        try:
-            record.unlink()
-        except FileNotFoundError:
-            return
-        except OSError as error:
-            raise ReplicateError(
-                f"{nothing_charged} But the marker {record} could not be removed ({error}), "
-                "so it is still there. Make sure no other charswap command is running for "
-                "this job, then delete it and run again."
-            ) from error
+        common.release(
+            record,
+            marker,
+            nothing_charged=nothing_charged,
+            taken_over=_taken_over(record),
+            error=ReplicateError,
+        )
 
     def _post_create(
         self, url: str, body: dict, record: Path, marker: dict
@@ -412,12 +354,7 @@ def unconfirmed_message(record: Path) -> str:
 
 def _announce(callback: Callable[[dict], None] | None, prediction: dict) -> None:
     """Report a new paid prediction; a failing logger must never lose track of it."""
-    if callback is None:
-        return
-    try:
-        callback(prediction)
-    except Exception as exc:
-        warnings.warn(f"Could not log paid prediction {prediction.get('id')}: {exc}", stacklevel=4)
+    common.announce(callback, prediction, what="paid prediction")
 
 
 def _taken_over(record: Path) -> str:
