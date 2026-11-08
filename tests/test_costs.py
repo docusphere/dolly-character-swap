@@ -2,7 +2,14 @@ import csv
 
 import pytest
 
-from character_swap.costs import PRICES, Estimate, estimate_prepare, record_spend, total_spend
+from character_swap.costs import (
+    PRICES,
+    Estimate,
+    cost_line,
+    estimate_prepare,
+    record_spend,
+    total_spend,
+)
 from character_swap.jobs import Job
 
 
@@ -157,3 +164,22 @@ def test_old_five_column_header_is_upgraded_once(runs_dir, tmp_path):
 def test_wan_prices_are_per_output_second():
     assert PRICES["wan-480"].unit == PRICES["wan-720"].unit == "second"
     assert PRICES["wan-480"].usd < PRICES["wan-720"].usd
+
+
+def test_seedance_prices_are_per_second_and_include_the_input_video():
+    seconds = 12
+    draft = Estimate(
+        lines=(cost_line("seedance-480", seconds), cost_line("seedance-480-input", seconds))
+    )
+    final_1080 = Estimate(
+        lines=(cost_line("seedance-1080", seconds), cost_line("seedance-1080-input", seconds))
+    )
+    final_720 = Estimate(
+        lines=(cost_line("seedance-720", seconds), cost_line("seedance-720-input", seconds))
+    )
+    assert draft.total == pytest.approx(2.97)
+    assert final_1080.total == pytest.approx(15.84)
+    assert final_720.total == pytest.approx(6.93)
+    for key in ("seedance-480", "seedance-720", "seedance-1080"):
+        assert PRICES[key].unit == "second" and PRICES[key].checked_on == "2026-11-08"
+        assert PRICES[f"{key}-input"].usd == pytest.approx(PRICES[key].usd / 2)

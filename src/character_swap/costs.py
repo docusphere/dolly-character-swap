@@ -60,6 +60,20 @@ PRICES: dict[str, Price] = {
         "2026-10-22",
         "replicate.com/wan-video/wan-2.2-animate-replace (per output second)",
     ),
+    # PiAPI Seedance 2.5 less-restriction, per second (piapi.ai/pricing and the 2.5 docs,
+    # 2026-11-08). The input video is billed at half the output rate; a 1080p promote
+    # bills the draft's input video again at half the 1080p rate.
+    **{
+        key: Price(item, usd, "second", "2026-11-08", "piapi.ai/docs/seedance-api/seedance-25")
+        for key, item, usd in (
+            ("seedance-480", "Seedance draft (480p)", 0.165),
+            ("seedance-480-input", "Seedance input video (480p)", 0.0825),
+            ("seedance-720", "Seedance final (720p)", 0.385),
+            ("seedance-720-input", "Seedance input video (720p)", 0.1925),
+            ("seedance-1080", "Seedance final (1080p)", 0.88),
+            ("seedance-1080-input", "Seedance input video (1080p)", 0.44),
+        )
+    },
 }
 
 STAGE_PRICE = {

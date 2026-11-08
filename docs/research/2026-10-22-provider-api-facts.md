@@ -34,7 +34,7 @@ Forbidden with promote (400 even if same value): prompt, image/video/audio urls,
 - Raw refs: ≤ 30 images; ≤ 10 videos (mp4/mov, 2–30 s, ≤ 200 MB, total ≤ 30 s); ≤ 10 audio.
 - Per second: `seedance-2.5` 0.15 / 0.35 / 0.80; `seedance-2.5-less-restriction` 0.165 / 0.385 / 0.88 (480p/720p/1080p). Input video billed at half rate. Promote also bills draft input video at half 1080p rate.
 
-### `asset://` on 2.5-less-restriction — CONFLICTING
+### `asset://` on 2.5-less-restriction — RESOLVED 2026-11-08: yes, after the asset is Active (raw real-face URLs are rejected)
 - Yes: blog "seedance-2-5-less-restriction" (2026-09-08) example uses `asset://` with 2.5-less-restriction; 2.5 doc mentions `auto_upload_assets`.
 - No: older specs blog (2026-07-31); Private Asset Library doc lists only `seedance-2-less-restriction` and `seedance-2-fast-less-restriction`.
 - → Verify with one cheap call (face check, Plan 2).
@@ -46,6 +46,43 @@ Forbidden with promote (400 even if same value): prompt, image/video/audio urls,
 - Image limits: < 30 MB, aspect 0.4–2.5, sides 300–6000 px. Asset video: ≤ 50 MB, 2–15 s.
 - Idle TTL: hobbyist 3 days, developer 7, premium/enterprise 15.
 - PiAPI temp upload `POST https://upload.theapi.app/api/ephemeral_resource` `{file_name, file_data: base64}` (Creator+, ≤ 10 MB, no mov, 24 h).
+
+### Re-verified 2026-11-08 (for Plan 2b)
+
+Public PiAPI docs only, no API calls.
+
+- **Auth, create and poll:** header `x-api-key`; create `POST https://api.piapi.ai/api/v1/task`; poll `GET https://api.piapi.ai/api/v1/task/{task_id}`.
+  - Response `{code, data:{task_id, status, output:{video | video_url}, error:{code, message, raw_message}}, message}`.
+  - Status casing differs between docs, so compare lowercase: `completed`/`success` mean done, `failed` is final, anything else means still running.
+  - The output URL lasts 24 h.
+- **Real faces:** `seedance-2.5-less-restriction` accepts real faces only as `asset://<id>` from the Private Asset Library once the asset is `Active`. Raw real-face URLs are rejected.
+  - The library needs the Creator plan ($15/month) or higher.
+  - `POST /api/v1/asset/upload {url, name}` returns 202 `{asset_id, status:"Processing"}`. `GET /api/v1/asset/{id}` returns `Processing`/`Active`/`Failed` and refreshes the asset's idle lifetime (3-15 days by plan).
+  - Images under 30 MB, 300-6000 px per side, aspect 0.4-2.5.
+  - `auto_upload_assets` exists but the docs disagree on its default, so always send it explicitly as `false`.
+- **Draft body:** `{"model":"seedance","task_type":"seedance-2.5-less-restriction","input":{prompt, mode:"omni_reference", omni_reference_task_type, video_urls, image_urls, resolution:"480p", draft:true, auto_upload_assets:false}}`.
+  - `omni_reference_task_type` can be `auto`, `reference`, `edit` or `extend`. `edit` needs `aspect_ratio:"adaptive"` and `duration:-1`, with a 4-30 s source.
+  - Placeholders are lowercase `@video1`, `@image1`, `@image2`.
+  - `seed` and `audio` are not in the 2.5 schema, so we don't send them.
+- **Promote:** `{"model":"seedance","task_type":"seedance-2.5-less-restriction","input":{"draft_task_id":..., "resolution":"1080p"}}`.
+  - Any other field (prompt, urls, duration, aspect_ratio, seed, audio, omni_reference_task_type, draft) gives a 400.
+  - The draft must be completed, under 7 days old and the same task_type.
+- **Prices (less-restriction, per second):** 480p $0.165, 720p $0.385, 1080p $0.88.
+  - Input video is billed at half the output rate. A promote bills the draft's input video again at half the 1080p rate.
+  - 12 s costs about: draft $2.97, 1080p promote $15.84, 720p re-run $6.93.
+- **Temporary upload:** `POST https://upload.theapi.app/api/ephemeral_resource {file_name, file_data: base64}` returns `{code, data:{url}}`.
+  - Types jpg/jpeg/png/webp/mp4/wav/mp3, no mov. 10 MB limit (docs don't say whether before or after base64, so keep files <= 7 MB). Deleted after 24 h. Needs Creator or higher (403 below that).
+- **Errors:** bad parameters, placeholders, draft or asset problems fail at create (400/403/404/409/422/429) before any billing. A content rejection arrives later as `failed` and is refunded. If PiAPI's own guess of the task type disagrees with ours, the task fails after submission.
+- **Concurrency:** Creator plan runs 5 jobs at once. Queues can take hours at peak time (09-15 GMT).
+
+Sources:
+- https://piapi.ai/docs/seedance-api/seedance-25.md
+- https://piapi.ai/docs/seedance-api/private-asset.md
+- https://piapi.ai/docs/seedance-api/get-task.md
+- https://piapi.ai/docs/tools/file-upload.md
+- https://piapi.ai/seedance-2-5
+- https://piapi.ai/blogs/seedance-2-5-less-restriction
+- https://piapi.ai/pricing
 
 ## Replicate
 
