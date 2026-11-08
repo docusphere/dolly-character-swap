@@ -37,7 +37,7 @@ Forbidden with promote (400 even if same value): prompt, image/video/audio urls,
 ### `asset://` on 2.5-less-restriction — RESOLVED 2026-11-08: yes, after the asset is Active (raw real-face URLs are rejected)
 - Yes: blog "seedance-2-5-less-restriction" (2026-09-08) example uses `asset://` with 2.5-less-restriction; 2.5 doc mentions `auto_upload_assets`.
 - No: older specs blog (2026-07-31); Private Asset Library doc lists only `seedance-2-less-restriction` and `seedance-2-fast-less-restriction`.
-- → Verify with one cheap call (face check, Plan 2).
+- → Resolved by the 2026-11-08 re-verification below.
 
 ### Private Asset Library
 - Plan ≥ "hobbyist" (pricing page lists Free / Creator $15 / Pro $60 / Enterprise $100 per month; hobbyist ≈ Creator, unconfirmed).

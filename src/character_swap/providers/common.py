@@ -113,7 +113,11 @@ def save(record: Path, data: dict) -> None:
 
 
 def announce(
-    callback: Callable[[dict], None] | None, data: dict, *, what: str = "paid prediction"
+    callback: Callable[[dict], None] | None,
+    data: dict,
+    *,
+    what: str = "paid prediction",
+    stacklevel: int = 3,
 ) -> None:
     """Report a new paid request; a failing logger must never lose track of it."""
     if callback is None:
@@ -121,4 +125,4 @@ def announce(
     try:
         callback(data)
     except Exception as exc:
-        warnings.warn(f"Could not log {what} {data.get('id')}: {exc}", stacklevel=4)
+        warnings.warn(f"Could not log {what} {data.get('id')}: {exc}", stacklevel=stacklevel)

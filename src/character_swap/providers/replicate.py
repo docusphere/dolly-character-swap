@@ -354,7 +354,7 @@ def unconfirmed_message(record: Path) -> str:
 
 def _announce(callback: Callable[[dict], None] | None, prediction: dict) -> None:
     """Report a new paid prediction; a failing logger must never lose track of it."""
-    common.announce(callback, prediction, what="paid prediction")
+    common.announce(callback, prediction, what="paid prediction", stacklevel=4)
 
 
 def _taken_over(record: Path) -> str:

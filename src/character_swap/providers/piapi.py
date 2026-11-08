@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import time
@@ -193,3 +194,206 @@ class PiAPIClient:
         part.write_bytes(data)
         os.replace(part, dest)
         return dest
+
+    # ---- paid call (never retried) -------------------------------------------
+    def run(
+        self,
+        *,
+        body: dict,
+        record: Path,
+        on_created: Callable[[dict], None] | None = None,
+    ) -> str:
+        """Create a task once, save it to `record`, wait, and return the video link.
+
+        A marker is created exclusively BEFORE the paid POST, so a crash or a timeout can
+        never lead to a second charge. If `record` exists, it is resumed instead.
+        `on_created(task)` runs once, right after PiAPI confirms a NEW task.
+        """
+        record = Path(record)
+        task = None
+        if record.exists():
+            try:
+                task = self._load(record)
+            except FileNotFoundError:
+                task = None  # removed since the check; the exclusive claim still guards
+        if task is None:
+            task = self._create(body, record, on_created)
+        elif task["status"] == "creating":
+            raise PiAPIError(unconfirmed_message(record))
+        elif task["status"] == "failed":
+            raise PiAPIError(failed_message(task, record))
+        return self._output(self._wait(task, record), record)
+
+    @staticmethod
+    def _load(record: Path) -> dict:
+        damaged = PiAPIError(
+            f"{record} is damaged. The task may still exist: check your task list at "
+            f"{WORKSPACE} before deleting it (deleting and running again costs money)."
+        )
+        try:
+            data = json.loads(record.read_text())
+        except FileNotFoundError:
+            raise
+        except (OSError, ValueError) as error:
+            raise damaged from error
+        if not isinstance(data, dict) or "status" not in data:
+            raise damaged
+        if data["status"] != "creating" and not _ID.fullmatch(str(data.get("id", ""))):
+            raise damaged
+        return data
+
+    def _create(self, body: dict, record: Path, on_created: Callable[[dict], None] | None) -> dict:
+        if not body:
+            # Resumes pass {} because the record exists; if it vanished since, posting {}
+            # would buy a task with no input. Nothing sent, no marker written.
+            raise PiAPIError(
+                f"Refusing to create a paid task with no input; {record} vanished during "
+                "resume. Run the command again."
+            )
+        record.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            marker = common.claim(record)
+        except FileExistsError as error:
+            raise PiAPIError(unconfirmed_message(record)) from error
+        try:
+            response = self._http.post(f"{API}/task", headers=self._headers, json=body)
+        except httpx.HTTPError as error:
+            raise PiAPIError(unconfirmed_message(record)) from error
+        code = response.status_code
+        if 400 <= code < 500 and code != 408:
+            rejection = _rejection(code, response.text)
+            self._release(record, marker, rejection)
+            raise PiAPIError(rejection)
+        if response.is_error:
+            raise PiAPIError(unconfirmed_message(record))
+        try:
+            answer = response.json()
+        except ValueError as error:
+            raise PiAPIError(unconfirmed_message(record)) from error
+        data = _data(answer)
+        task_id = data.get("task_id")
+        if not isinstance(task_id, str) or not _ID.fullmatch(task_id):
+            problem = _envelope_error(answer)
+            if problem is not None:  # PiAPI said no and gave no task: nothing exists
+                rejection = f"PiAPI rejected the request (nothing was charged): {problem[:300]}"
+                self._release(record, marker, rejection)
+                raise PiAPIError(rejection)
+            raise PiAPIError(unconfirmed_message(record))
+        task = {"id": task_id, "status": task_status(data.get("status")), "task": data}
+        try:
+            common.save(record, task)
+        except OSError as error:
+            common.announce(on_created, task, what="paid PiAPI task")  # paid all the same
+            raise PiAPIError(
+                f"Paid PiAPI task {task_id} was created but its record could not be saved "
+                f"({error}). Note this id; check {WORKSPACE}."
+            ) from error
+        common.announce(on_created, task, what="paid PiAPI task")
+        return task
+
+    @staticmethod
+    def _release(record: Path, marker: dict, nothing_charged: str) -> None:
+        common.release(
+            record,
+            marker,
+            nothing_charged=nothing_charged,
+            taken_over=_taken_over(record),
+            error=PiAPIError,
+        )
+
+    def _wait(self, task: dict, record: Path) -> dict:
+        polls, delay = 0, self._poll_seconds
+        while task["status"] not in ("succeeded", "failed"):
+            if polls >= self._max_polls:
+                raise PiAPIError(
+                    f"PiAPI task {task['id']} is still running (saved in {record}). PiAPI "
+                    "queues can take hours at busy times. Run the same command later to keep "
+                    "waiting; no new charge."
+                )
+            self._sleep(delay)
+            delay = min(delay * POLL_GROWTH, self._max_poll_seconds)
+            # Built from the saved id: the key never goes to a URL taken from a response.
+            url = f"{API}/task/{task['id']}"
+            try:
+                answer = common.retry_free(lambda: self._send("GET", url), sleep=self._sleep)  # noqa: B023
+            except httpx.HTTPStatusError as error:
+                code = error.response.status_code
+                if code == 401:
+                    raise PiAPIError(KEY_MESSAGE) from error
+                if code == 404:
+                    raise PiAPIError(
+                        f"PiAPI no longer recognizes task {task['id']}; check {WORKSPACE}."
+                    ) from error
+                raise self._lost(task, record) from error
+            except (httpx.TransportError, PiAPIError) as error:
+                raise self._lost(task, record) from error
+            data = _data(answer)
+            if data.get("task_id") not in (None, task["id"]):
+                raise self._lost(task, record)
+            task = {"id": task["id"], "status": task_status(data.get("status")), "task": data}
+            common.save(record, task)
+            polls += 1
+        if task["status"] == "failed":
+            raise PiAPIError(failed_message(task, record))
+        return task
+
+    @staticmethod
+    def _output(task: dict, record: Path) -> str:
+        output = (task.get("task") or {}).get("output")
+        url = (output.get("video") or output.get("video_url")) if isinstance(output, dict) else None
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise PiAPIError(
+                f"PiAPI task {task['id']} finished without a video link. Check {WORKSPACE} "
+                f"before deleting {record} (a new run costs money)."
+            )
+        return url
+
+    @staticmethod
+    def _lost(task: dict, record: Path) -> PiAPIError:
+        return PiAPIError(
+            f"Lost connection while waiting; PiAPI task {task['id']} is saved in {record}. "
+            "Run the same command again to keep waiting; no new charge."
+        )
+
+
+def unconfirmed_message(record: Path) -> str:
+    """Guidance when a record holds only our "creating" marker (POST never confirmed)."""
+    return (
+        "The request was sent to PiAPI but not confirmed. It may have been charged, or "
+        "another charswap command for this job is still sending it. First make sure no "
+        f"other charswap command is running for this job. Then check your task list at "
+        f"{WORKSPACE}; if nothing is there, delete {record} and run again."
+    )
+
+
+def failed_message(task: dict, record: Path) -> str:
+    error = (task.get("task") or {}).get("error") or {}
+    reason = (error.get("message") or error.get("raw_message")) if isinstance(error, dict) else None
+    return (
+        f"PiAPI task {task.get('id')} failed: {reason or 'no reason given'}. PiAPI refunds "
+        "tasks it rejects for content. To try again, delete "
+        f"{record} and run the same command (it shows the cost and asks first)."
+    )
+
+
+def _taken_over(record: Path) -> str:
+    return (
+        f"Another charswap run took over {record} while this one was talking to PiAPI; "
+        "this run sent nothing more and was not charged for it. Let the other run finish, "
+        "or run the command again to resume what it saved."
+    )
+
+
+def _rejection(code: int, body: str) -> str:
+    if code == 401:
+        return KEY_MESSAGE
+    if code == 402:
+        return "Add credit to your PiAPI account (nothing was charged)."
+    if code == 403:
+        return f"PiAPI refused the request (403; nothing was charged): {body[:300]}. {PLAN_MESSAGE}"
+    if code == 429:
+        return (
+            "PiAPI is busy (429). Nothing was charged; wait a minute and run the same "
+            "command again."
+        )
+    return f"PiAPI rejected the request ({code}); nothing was charged: {body[:300]}"
