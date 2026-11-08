@@ -144,7 +144,7 @@ Decisions Q2, Q3 and Q5 below change the spec where they say so.
 - [ ] **Step 0: Branch**
 
 ```bash
-git checkout main && git pull --ff-only && git checkout -b feat/plan-2b-seedance
+git checkout feat/plan-2b-seedance  # already created with the plan commit
 ```
 
 - [ ] **Step 1: Research doc.** Under `## PiAPI (Seedance)`, add a subsection `### Re-verified 2026-11-08 (for Plan 2b)` that lists exactly the bullets in this plan's "Verified before writing" block, with these sources:
