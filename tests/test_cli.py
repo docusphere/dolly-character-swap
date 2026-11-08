@@ -1529,3 +1529,115 @@ def test_real_services_include_seedance_when_the_key_is_set(piapi_settings, sett
     assert isinstance(services.generators["seedance"], SeedanceGenerator)
     assert services.faces is not None
     assert "seedance" not in cli.build_services(settings).generators
+
+
+def test_a_failed_720p_try_does_not_stick_to_a_plain_final(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    # A 720p attempt that failed before PiAPI saved anything: state only, no record.
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="720p")
+    assert not job.path("final-prediction.json").exists()
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and "Seedance final (1080p)" in out.text and "(720p)" not in out.text
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"],
+        piapi_settings,
+        services_factory=seedance_services,
+    )
+    assert code == 0
+    (body,) = seedance_services.last.bodies
+    assert body["input"] == {"draft_task_id": "task-1", "resolution": "1080p"}
+
+
+@pytest.mark.parametrize("record", [None, "{damaged", '{"status": "succeeded"}'])
+def test_promote_without_the_draft_task_id_is_refused_before_asking(
+    piapi_settings, video, tmp_path, record
+):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    draft_record = job.path("draft-prediction.json")
+    draft_record.unlink()
+    job.path("draft-raw.mp4").write_bytes(b"kept")  # the draft video itself is still there
+    if record is not None:
+        draft_record.write_text(record)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and seedance_services.last.bodies == []
+    assert "task id is missing" in out.err.text and "Nothing was charged" in out.err.text
+
+
+def test_prompt_after_a_paid_draft_says_it_was_already_sent(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("FIRST @image1 into @video1.")
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    job.path("prompt.txt").write_text("EDITED @image1 into @video1.")
+    code, out = run(["prompt", job.id], piapi_settings)
+    assert code == 0 and "FIRST @image1 into @video1." in out.text
+    assert "already sent" in out.text and "exactly as it is" not in out.text
+
+
+def test_prompt_for_a_stale_draft_shows_what_the_remake_sends(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    _stale_draft(job)
+    job.mark_stage("draft", fingerprint="an older approval", prompt="OLD @image1 @video1")
+    job.path("prompt.txt").write_text("NEW @image1 into @video1.")
+    code, out = run(["prompt", job.id], piapi_settings)
+    assert code == 0 and "NEW @image1 into @video1." in out.text and "OLD @image1" not in out.text
+    assert "new draft" in out.text
+
+
+def test_stale_remake_with_a_bad_prompt_is_refused_before_anything(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    _stale_draft(job)
+    job.mark_stage("draft", fingerprint="an older approval", prompt="OLD @image1 @video1")
+    job.path("prompt.txt").write_text("No placeholders here.")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and "@video1" in out.err.text
+    assert job.path("draft-prediction.json").exists()
+    assert not list(job.root.glob("draft-old-*")) and seedance_services.last.bodies == []
+
+
+def test_doctor_reports_a_malformed_face_list_as_unreadable(settings):
+    (settings.root / "faces").mkdir()
+    (settings.root / "faces" / "faces.json").write_text('["x"]')
+    code, out = run(["doctor"], settings)
+    assert "saved faces: unreadable" in out.text
+
+
+def test_after_the_draft_a_malformed_face_list_only_drops_the_prices(
+    piapi_settings, video, tmp_path, monkeypatch
+):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    original = cli._after_draft_hint
+
+    def hint(job, services):
+        (services.faces.folder / "faces.json").write_text('["x"]')
+        return original(job, services)
+
+    monkeypatch.setattr(cli, "_after_draft_hint", hint)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    assert code == 0 and f"Run `charswap generate {job.id} --final`." in out.text

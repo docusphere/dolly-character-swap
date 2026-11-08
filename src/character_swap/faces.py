@@ -122,7 +122,7 @@ class FaceLibrary:
             rows = json.loads(self.index.read_text(encoding="utf-8"))
             known = {f.name for f in fields(Face)}
             return [Face(**{k: v for k, v in row.items() if k in known}) for row in rows]
-        except (OSError, ValueError, TypeError) as error:
+        except (OSError, ValueError, TypeError, AttributeError) as error:
             raise FaceError(
                 f"{self.index} is damaged. Fix or delete it (your faces stay in your PiAPI "
                 "library; add them again with charswap face add)."

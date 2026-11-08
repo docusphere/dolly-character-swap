@@ -28,7 +28,9 @@ from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrar
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.modes import MODES
 from character_swap.pipeline import (
+    PROMOTE,
     Services,
+    already_paid,
     archive_stale_draft,
     build_request,
     check_can_generate,
@@ -49,6 +51,7 @@ from character_swap.pipeline import (
 )
 from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
+from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
 from character_swap.providers.piapi import unconfirmed_message as piapi_unconfirmed
 from character_swap.providers.replicate import unconfirmed_message as replicate_unconfirmed
 from character_swap.review import decide
@@ -64,7 +67,6 @@ UNCONFIRMED = {"wan": replicate_unconfirmed, "seedance": piapi_unconfirmed}
 
 
 def build_services(settings: Settings) -> Services:
-    from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
     from character_swap.providers.generators.wan_replicate import WanGenerator
     from character_swap.providers.replicate import ReplicateClient
     from character_swap.stages.face_mesh import MediaPipeDetector, ensure_model
@@ -438,11 +440,23 @@ def _prompt(args, settings, env) -> int:
             f"charswap resume {job.id}"
         )
     path = write_prompt_file(job)
-    env.out(generation_prompt(job, "draft"))
-    env.out(
-        f"\nSaved in {path}. Edit that file to change what Seedance is told; the draft sends "
-        "it exactly as it is."
-    )
+    remake = stale_draft(job)  # the next draft replaces the old one: it sends prompt.txt
+    env.out(generation_prompt(job, "draft", replacing_stale=remake))
+    if already_paid(job, "draft") and not remake:
+        env.out(
+            f"\nThe draft was already sent with this prompt. Editing {path} only changes a "
+            "new draft, made after the approved inputs change."
+        )
+    elif remake:
+        env.out(
+            f"\nSaved in {path}. The new draft (it replaces the old one) sends it exactly as "
+            "it is; edit that file to change what Seedance is told."
+        )
+    else:
+        env.out(
+            f"\nSaved in {path}. Edit that file to change what Seedance is told; the draft "
+            "sends it exactly as it is."
+        )
     return 0
 
 
@@ -497,6 +511,8 @@ def _generate(args, settings, env) -> int:
             final_resolution=resolution,
             replacing_stale=remake,
         )
+        if job.generator == "seedance" and stage == "final" and resolution == PROMOTE:
+            SeedanceGenerator.promote_body(request.draft_task_id)  # refuses with no task id
         estimate = generator_for(job, services).estimate(request, stage)
         if stage == "draft" and request.prompt:
             env.out(

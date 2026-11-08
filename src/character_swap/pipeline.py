@@ -449,11 +449,12 @@ def final_resolution(job: Job, requested: str = "") -> str:
     """The final's resolution: the one a started final used, else the request, else default."""
     choices = FINAL_RESOLUTIONS[job.generator]
     saved = job.state["stages"].get("final", {}).get("resolution", "")
-    chosen = requested or saved or choices[0]
+    # A saved choice counts only once that final really started (a record or a download):
+    # an attempt that failed before PiAPI took it must not steer a plain --final to 720p.
+    started = already_paid(job, "final")
+    chosen = requested or (saved if started else "") or choices[0]
     if chosen not in choices:
         raise StageError(f"{job.generator} finals can be {' or '.join(choices)}, not {chosen}.")
-    record, raw, _ = generation_files("final")
-    started = job.path(record).exists() or job.path(raw).exists()
     if saved and chosen != saved and started:
         raise StageError(
             f"A {saved} final was already started for this job; run the same command with "
