@@ -52,3 +52,49 @@ class FakeReplicate:
         else:
             shutil.copyfile(source, dest)
         return Path(dest)
+
+
+class FakePiAPI:
+    """Stands in for PiAPIClient: canned links, assets that turn Active, one task per body."""
+
+    def __init__(self, output="https://cdn.piapi.ai/out.mp4", files=None, assets=None):
+        self.output = output
+        self.files = files if files is not None else {output: b"mp4"}
+        self.assets = dict(assets or {})  # asset id -> status PiAPI reports on the next GET
+        self.uploads: list[Path] = []
+        self.bodies: list[dict] = []
+        self.asset_checks: list[str] = []
+        self.created = 0  # faces created by this fake (ids asset-1, asset-2, ...)
+
+    def upload_temp(self, path: Path) -> str:
+        self.uploads.append(Path(path))
+        return f"https://img.theapi.app/temp/{Path(path).name}"
+
+    def create_asset(self, url: str, name: str) -> dict:
+        self.created += 1
+        asset_id = f"asset-{self.created}"
+        self.assets.setdefault(asset_id, "Active")  # preset statuses (e.g. Processing) win
+        return {"asset_id": asset_id, "status": "Processing"}
+
+    def get_asset(self, asset_id: str) -> dict | None:
+        self.asset_checks.append(asset_id)
+        status = self.assets.get(asset_id)
+        return None if status is None else {"asset_id": asset_id, "status": status}
+
+    def run(self, *, body, record: Path, on_created=None):
+        if record.exists() and json.loads(record.read_text()).get("status") == "succeeded":
+            return self.output  # resumed from the record: no new task, no new cost
+        self.bodies.append(body)
+        task = {"id": f"task-{len(self.bodies)}", "status": "succeeded"}
+        record.write_text(json.dumps(task))
+        if on_created is not None:
+            on_created({"id": task["id"], "status": "starting"})
+        return self.output
+
+    def download(self, url: str, dest: Path) -> Path:
+        source = self.files[url]
+        if isinstance(source, bytes):
+            Path(dest).write_bytes(source)
+        else:
+            shutil.copyfile(source, dest)
+        return Path(dest)

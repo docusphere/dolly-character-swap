@@ -6,15 +6,18 @@ import time
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from character_swap import cli
 from character_swap.config import Settings
 from character_swap.costs import Estimate, Line
+from character_swap.faces import FaceLibrary
 from character_swap.jobs import Job
 from character_swap.pipeline import PREP_STAGES_BY_MODE, Services
 from character_swap.review import decide as approve_review
 from character_swap.review import fingerprint as review_fingerprint
 from character_swap.stages import StageError
+from fakes import FakePiAPI
 from helpers import solid, write_video
 
 
@@ -1017,3 +1020,56 @@ def test_prepare_language_rejected_for_direct_mode(tmp_path, video):
     )
     assert code == 2 and "--language only matters for Seedance modes" in out.err.text
     assert not asked and not empty.runs_dir.exists()
+
+
+def _photo(path):
+    Image.new("RGB", (828, 1086), (200, 150, 120)).save(path, "JPEG")
+    return path
+
+
+def test_face_add_shows_consent_asks_and_saves(settings, tmp_path):
+    asked = []
+    code, out = run(
+        ["face", "add", "frank", str(_photo(tmp_path / "me.jpg"))],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+        piapi_factory=lambda s: FakePiAPI(),
+    )
+    assert code == 0 and asked and "right to use" in out.text
+    assert "charswap prepare clip.mp4 --face frank" in out.text
+    assert FaceLibrary(settings.root).get("frank").asset_id == "asset-1"
+
+
+def test_face_add_declined_uploads_nothing(settings, tmp_path):
+    piapi = FakePiAPI()
+    code, out = run(
+        ["face", "add", "frank", str(_photo(tmp_path / "me.jpg"))],
+        settings,
+        confirm=lambda _q: False,
+        piapi_factory=lambda s: piapi,
+    )
+    assert code == 1 and piapi.uploads == [] and "Nothing was uploaded" in out.err.text
+
+
+def test_face_list_and_check(settings, tmp_path):
+    piapi = FakePiAPI()
+    run(
+        ["face", "add", "frank", str(_photo(tmp_path / "me.jpg")), "--yes"],
+        settings,
+        piapi_factory=lambda s: piapi,
+    )
+    code, out = run(["face", "list"], settings)
+    assert code == 0 and "frank" in out.text and "Active" in out.text
+    piapi.assets.clear()
+    code, out = run(["face", "check", "frank"], settings, piapi_factory=lambda s: piapi)
+    assert code == 2 and "charswap face renew frank" in out.text
+
+
+def test_face_list_when_empty(settings):
+    code, out = run(["face", "list"], settings)
+    assert code == 0 and "No saved faces yet" in out.text
+
+
+def test_face_commands_need_the_piapi_key(settings, tmp_path):
+    code, out = run(["face", "add", "frank", str(_photo(tmp_path / "me.jpg")), "--yes"], settings)
+    assert code == 2 and "PIAPI_API_KEY" in out.err.text

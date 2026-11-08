@@ -28,3 +28,6 @@ _legacy/
 
 # input clips and photos (third-party media, never committed)
 inputs/
+
+# saved faces (personal photos + PiAPI ids, never committed)
+faces/

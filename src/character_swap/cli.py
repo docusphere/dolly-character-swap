@@ -23,6 +23,7 @@ from character_swap.costs import (
     record_spend,
 )
 from character_swap.errors import CharSwapError
+from character_swap.faces import ACTIVE, CONSENT, PROCESSING, FaceLibrary
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import (
     GENERATION_LABELS,
@@ -98,6 +99,12 @@ def _ask(question: str, err: Out = _stderr) -> bool:
         return False
 
 
+def build_piapi(settings: Settings):
+    from character_swap.providers.piapi import PiAPIClient
+
+    return PiAPIClient(settings.require("PIAPI_API_KEY"))
+
+
 @dataclass
 class Env:
     out: Out
@@ -109,6 +116,7 @@ class Env:
     extra: dict = field(default_factory=dict)
     serve: Callable[..., object] = run_server
     open_browser: Callable[[str], object] = webbrowser.open
+    piapi_factory: Callable[[Settings], object] = build_piapi
 
     def track(self, job: Job, retry: str) -> None:
         self.job_id, self.retry = job.id, retry
@@ -124,6 +132,7 @@ class Env:
 
 
 EPILOG = """example:
+  charswap face add frank me.jpg
   charswap prepare clip.mp4 --mode depth
   charswap prepare clip.mp4 --generator wan --character me.jpg
   charswap status <id>
@@ -187,6 +196,17 @@ def _parser() -> argparse.ArgumentParser:
     which.add_argument("--final", action="store_true", help="720p, same seed as the draft")
     gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     sub.add_parser("doctor", help="check this machine's setup")
+    face = sub.add_parser("face", help="save and check faces in your PiAPI face library (free)")
+    face_sub = face.add_subparsers(dest="face_command", required=True)
+    add = face_sub.add_parser("add", help="save a photo as a face")
+    add.add_argument("name", help="short name, e.g. frank")
+    add.add_argument("photo", type=Path)
+    add.add_argument("--yes", action="store_true", help="confirm you have the right to use it")
+    face_sub.add_parser("list", help="show saved faces")
+    face_sub.add_parser("check", help="ask PiAPI for a face's status").add_argument("name")
+    face_sub.add_parser(
+        "renew", help="upload the same saved photo again after PiAPI removed it"
+    ).add_argument("name")
     view = sub.add_parser("view", help="open the read-only job viewer in your browser")
     view.add_argument("--port", type=_port, default=8770)
     view.add_argument("--no-browser", action="store_true", help="only print the URL")
@@ -215,6 +235,7 @@ def main(
     services_factory: Callable[[Settings], Services] = build_services,
     serve: Callable[..., object] | None = None,
     open_browser: Callable[[str], object] | None = None,
+    piapi_factory: Callable[[Settings], object] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     settings = settings or Settings.load()
@@ -225,6 +246,7 @@ def main(
         services_factory,
         serve=serve or run_server,
         open_browser=open_browser or webbrowser.open,
+        piapi_factory=piapi_factory or build_piapi,
     )
     try:
         return COMMANDS[args.command](args, settings, env)
@@ -459,6 +481,46 @@ def _view(args, settings, env) -> int:
     return 0
 
 
+def _face_line(face, library: FaceLibrary) -> str:
+    if face.status == ACTIVE:
+        return (
+            f"Face {face.name} is ready (PiAPI id {face.asset_id}). Use it with: "
+            f"charswap prepare clip.mp4 --face {face.name}"
+        )
+    if face.status == PROCESSING:
+        return f"PiAPI is still checking {face.name}. Run: charswap face check {face.name}"
+    if face.status == "Failed":
+        return f"PiAPI rejected {face.name}: {face.error or 'no reason given'}."
+    return f"PiAPI removed {face.name} after it went unused. Run: charswap face renew {face.name}"
+
+
+def _face(args, settings, env) -> int:
+    library = FaceLibrary(settings.root)
+    if args.face_command == "list":
+        faces = library.all()
+        if not faces:
+            env.out("No saved faces yet. Add one: charswap face add NAME photo.jpg")
+        for face in faces:
+            env.out(
+                f"{face.name:<16} {face.status:<11} {face.asset_id}  {library.image_path(face)}"
+            )
+        return 0
+    if args.face_command == "add":
+        env.out(CONSENT)
+        if not args.yes and not env.confirm("Do you have the right to use this face?"):
+            env.err("Cancelled. Nothing was uploaded.")
+            return 1
+        piapi = env.piapi_factory(settings)
+        env.out("Uploading, then waiting for PiAPI's face check (free, up to ~5 minutes)...")
+        face = library.add(args.name, args.photo, piapi)
+    elif args.face_command == "renew":
+        face = library.renew(args.name, env.piapi_factory(settings))
+    else:
+        face = library.check(args.name, env.piapi_factory(settings))
+    env.out(_face_line(face, library))
+    return 0 if face.status in (ACTIVE, PROCESSING) else 2
+
+
 COMMANDS = {
     "prepare": _prepare,
     "resume": _resume,
@@ -468,5 +530,6 @@ COMMANDS = {
     "repair": _repair,
     "generate": _generate,
     "doctor": _doctor,
+    "face": _face,
     "view": _view,
 }
