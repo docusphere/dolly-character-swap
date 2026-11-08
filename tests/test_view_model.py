@@ -78,6 +78,9 @@ def test_every_section_explains_why():
     for section in vm.SECTIONS:
         assert section.title and len(section.why) > 40, section.id
         assert "—" not in section.why  # UI guide: no em dashes in body copy
+        if section.seedance_why:
+            assert len(section.seedance_why) > 40 and "—" not in section.seedance_why
+        assert "—" not in section.seedance_title
 
 
 @pytest.mark.parametrize(
@@ -679,3 +682,58 @@ def test_stale_final_keeps_slow_polling(runs_dir, media):
     assert vm.job_view(job, runs_dir).progress["poll"] == "off"
     job.mark_stage("final", fingerprint="old")
     assert vm.job_view(job, runs_dir).progress["poll"] == "slow"
+
+
+# ---- Seedance draft/final --------------------------------------------------------
+def test_seedance_draft_shows_the_prompt_and_piapi_costs(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Put @image1 into @video1.")
+    job.append_cost({"step": "draft", "usd": 0.99, "task_id": "pred-draft", "provider": "piapi"})
+    view = vm.job_view(job, runs_dir)
+    draft = sections(view)["draft"]
+    assert "Seedance" in draft.why and not draft.links
+    assert {t.label: t.value for t in draft.texts}["Prompt sent"] == "Put @image1 into @video1."
+    row = next(r for r in view.costs.rows if r.step.startswith("Draft"))
+    assert row.provider == "PiAPI" and row.link is None and row.usd == 0.99
+
+
+def test_seedance_final_shows_its_resolution(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    job.mark_stage("final", fingerprint=fingerprint(job), resolution="720p")
+    view = vm.job_view(job, runs_dir)
+    final = sections(view)["final"]
+    texts = {t.label: t.value for t in final.texts}
+    assert texts["Resolution"] == "720p"
+    assert final.title == "Final" and "1080p upgrades" in final.why and not final.links
+    assert any(r.step == "Final (720p)" for r in view.costs.rows)
+
+
+def test_wan_sections_keep_their_replicate_wording(runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    by_id = sections(vm.job_view(job, runs_dir))
+    assert "Replicate" in by_id["draft"].why
+    assert by_id["final"].title == "Final (720p)"
+
+
+@pytest.mark.parametrize(("mode", "step"), [("depth", "Final (1080p)"), ("direct", "Final (720p)")])
+def test_final_row_without_a_saved_resolution_uses_the_generator_default(
+    runs_dir, media, mode, step
+):
+    job = make_job(runs_dir, media, mode)
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    view = vm.job_view(job, runs_dir)
+    assert [r.step for r in view.costs.rows if r.step.startswith("Final")] == [step]
+    assert "Resolution" not in {t.label for t in sections(view)["final"].texts}
+
+
+def test_seedance_prep_sections_keep_replicate_links_and_rows(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    view = vm.job_view(job, runs_dir)
+    assert sections(view)["vocals"].links[0].url == "https://replicate.com/p/pred-separate"
+    providers = {r.step: r.provider for r in view.costs.rows}
+    assert providers["Separate vocals"] == "Replicate" and providers["Draft (480p)"] == "PiAPI"

@@ -18,14 +18,14 @@ from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.modes import GENERATION_STAGES, MODES
-from character_swap.pipeline import PAID_STAGES, PREP_STAGES_BY_MODE
+from character_swap.pipeline import FINAL_RESOLUTIONS, PAID_STAGES, PREP_STAGES_BY_MODE
 from character_swap.review import ReviewError, fingerprint
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
 STAGES_BY_MODE = PREP_STAGES_BY_MODE
 SEEDANCE_PREP = ("depth", "face_mesh", "depth_mesh")
 ALL_MODES = (*SEEDANCE_PREP, "direct")
-# Modes whose draft/final can be generated in this version (Seedance joins in Plan 2b).
+# Modes whose draft/final can be generated (every mode since Plan 2b).
 GENERATING_MODES = tuple(name for name, mode in MODES.items() if mode.generates)
 ICONS = {"done": "✓", "pending": "◻", "running": "⟳", "failed": "✕"}
 STATUS_WORDS = {"done": "done", "pending": "waiting", "running": "running", "failed": "failed"}
@@ -71,6 +71,8 @@ class Section:
     assets: tuple[Asset, ...] = ()
     records: tuple[Record, ...] = ()
     retry: str = "resume {id}"  # after `charswap`; {id} = job id (one form: generate <id> --draft)
+    seedance_title: str = ""  # used instead of title/why on Seedance jobs (draft/final)
+    seedance_why: str = ""
 
 
 ON_REPLICATE = "View on Replicate ↗"
@@ -207,6 +209,11 @@ SECTIONS: tuple[Section, ...] = (
         assets=(Asset("Draft with the original sound", "draft.mp4", "video", "draft"),),
         records=(Record(ON_REPLICATE, "draft-prediction.json", "draft"),),
         retry="generate {id} --draft",
+        seedance_why=(
+            "A cheaper 480p test run on PiAPI. Seedance redraws the disguised people as your "
+            "characters, guided by the prompt, then your original soundtrack is put back "
+            "unchanged."
+        ),
     ),
     Section(
         id="final",
@@ -220,6 +227,11 @@ SECTIONS: tuple[Section, ...] = (
         assets=(Asset("Final with the original sound", "final.mp4", "video", "final"),),
         records=(Record(ON_REPLICATE, "final-prediction.json", "final"),),
         retry="generate {id} --final",
+        seedance_title="Final",
+        seedance_why=(
+            "1080p upgrades the exact draft you watched. 720p is a cheaper fresh run with the "
+            "same prompt, so it can differ a little. The original soundtrack is restored again."
+        ),
     ),
 )
 
@@ -529,6 +541,8 @@ def _review_section_status(decision: dict[str, Any]) -> str:
 
 
 def _links(job: Job, state: dict[str, Any], section: Section) -> list[Link]:
+    if state.get("generator") == "seedance" and section.id in GENERATION_STAGES:
+        return []  # PiAPI has no public page per task
     if section.id == "mask" and state.get("mask_source") == "rgb":
         pairs = [
             ("First attempt ↗", PAID_RECORD["masks"]),
@@ -589,6 +603,7 @@ def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     """One row per paid stage that is done. Derived from state, never stored."""
     rows = []
+    seedance = state.get("generator") == "seedance"
     for stage in PAID_STAGES[state["mode"]]:
         if stage_status(state, stage) != "done":
             continue
@@ -604,13 +619,24 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
             continue
         rows.append(
             CostRow(
-                STEP_NAMES[stage],
-                "Replicate",
+                _generation_name(state, stage),
+                "PiAPI" if seedance else "Replicate",
                 _generation_cost(job, state, stage),
-                prediction_url(job, PAID_RECORD[stage]),
+                None if seedance else prediction_url(job, PAID_RECORD[stage]),
             )
         )
     return tuple(rows)
+
+
+def _generation_name(state: dict[str, Any], stage: str) -> str:
+    """'Final (1080p)': the resolution the final used, else the generator's default final."""
+    if stage != "final":
+        return STEP_NAMES[stage]
+    entry = state.get("stages", {}).get("final")
+    resolution = entry.get("resolution") if isinstance(entry, dict) else None
+    if not isinstance(resolution, str) or not resolution:
+        resolution = FINAL_RESOLUTIONS.get(str(state.get("generator")), ("720p",))[0]
+    return f"Final ({resolution})"
 
 
 def completed_cost(rows: tuple[CostRow, ...]) -> float:
@@ -678,6 +704,17 @@ def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
     )
 
 
+def _seedance_texts(state: dict[str, Any], stage: str) -> list[TextItem]:
+    entry = state.get("stages", {}).get(stage)
+    if not isinstance(entry, dict):
+        return []
+    if stage == "draft" and isinstance(entry.get("prompt"), str):
+        return [TextItem("Prompt sent", entry["prompt"])]
+    if stage == "final" and isinstance(entry.get("resolution"), str):
+        return [TextItem("Resolution", entry["resolution"])]
+    return []
+
+
 def _stale_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
     note = "Made from inputs that are no longer approved."
     if decision.get("status") != "approved":
@@ -696,6 +733,7 @@ def _section_view(
     decision: dict[str, Any],
     stale: frozenset[str] = frozenset(),
 ) -> SectionView:
+    seedance = state.get("generator") == "seedance"
     if section.id == "review":
         status = _review_section_status(decision)
         texts = review_texts(job, decision)
@@ -710,12 +748,14 @@ def _section_view(
             texts = _tracking_texts(job, state)
         elif section.id in stale:
             texts = _stale_texts(job, decision)
+        if section.id in GENERATION_STAGES and seedance:
+            texts = [*texts, *_seedance_texts(state, section.id)]
     error = _error(state, section)
     return SectionView(
         id=section.id,
         number=number,
-        title=section.title,
-        why=section.why,
+        title=(section.seedance_title or section.title) if seedance else section.title,
+        why=(section.seedance_why or section.why) if seedance else section.why,
         status=status,
         media=tuple(_media(job, state, asset) for asset in section.assets),
         texts=tuple(texts),

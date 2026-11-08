@@ -61,8 +61,12 @@ def test_job_page_has_every_section_and_anchor(client, runs_dir, media, mode):
         section_id = section.id if section else "costs"
         assert f'<section id="{section_id}"' in response.text
         assert f'href="#{section_id}"' in response.text
+    text = response.text.replace("&#39;", "'")
     for section in sections_for(mode):
-        assert section.why in response.text.replace("&#39;", "'")
+        seedance = mode != "direct"
+        why = (section.seedance_why or section.why) if seedance else section.why
+        title = (section.seedance_title or section.title) if seedance else section.title
+        assert why in text and title.replace("&", "&amp;") in response.text, section.id
     assert 'data-active="false"' in response.text
     assert "Ready for review" in response.text
 
