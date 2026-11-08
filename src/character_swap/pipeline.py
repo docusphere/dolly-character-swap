@@ -16,6 +16,7 @@ from typing import Any, Protocol
 import av
 
 from character_swap.costs import record_spend
+from character_swap.faces import FaceError
 from character_swap.jobs import Job
 from character_swap.media.audio import (
     FIT_LIMIT,
@@ -424,8 +425,7 @@ def archive_stale_draft(job: Job) -> list[Path]:
 
 def needs_new_charge(job: Job, stage: str) -> bool:
     """False when a saved provider request or a downloaded result exists (resume is free)."""
-    record, raw, _ = generation_files(stage)
-    return not job.path(record).exists() and not job.path(raw).exists()
+    return not already_paid(job, stage)
 
 
 def generator_for(job: Job, services: Services) -> Generator:
@@ -441,7 +441,8 @@ def generation_label(job: Job, stage: str, resolution: str = "") -> str:
     return f"Generating the {resolution or final_resolution(job, '')} final"
 
 
-FINAL_RESOLUTIONS = {"seedance": ("1080p", "720p"), "wan": ("720p",)}  # first = default
+PROMOTE = "1080p"  # Seedance's final that upgrades the draft's own task (sends no face/prompt)
+FINAL_RESOLUTIONS = {"seedance": (PROMOTE, "720p"), "wan": ("720p",)}  # first = default
 
 
 def final_resolution(job: Job, requested: str = "") -> str:
@@ -465,7 +466,18 @@ def final_resolution_for(job: Job, stage: str, requested: str) -> str:
     return final_resolution(job, requested) if stage == "final" else ""
 
 
-def _character(job: Job, slot: str, faces: Any) -> CharacterRef | None:
+def already_paid(job: Job, stage: str) -> bool:
+    """The step's paid task exists (record) or its video is downloaded: it resumes free."""
+    record, raw, _ = generation_files(stage)
+    return job.path(record).exists() or job.path(raw).exists()
+
+
+def _character(job: Job, slot: str, faces: Any, *, face_needed: bool) -> CharacterRef | None:
+    """The slot's character. A saved face is looked up by name (its current asset id).
+
+    face_needed=False (a resume or a 1080p promote: nothing about the face is sent) lets a
+    face that left the library since become asset id None instead of an error.
+    """
     state = job.state
     image = state.get(f"character_{slot}")
     if not image:
@@ -473,9 +485,13 @@ def _character(job: Job, slot: str, faces: Any) -> CharacterRef | None:
     face_name = state.get(f"face_{slot}")
     asset_id = None
     if face_name:
-        if faces is None:
-            raise StageError("The face library is not set up for this command.")
-        asset_id = faces.get(face_name).asset_id  # the current id (charswap face renew)
+        try:
+            if faces is None:
+                raise StageError("The face library is not set up for this command.")
+            asset_id = faces.get(face_name).asset_id  # the current id (charswap face renew)
+        except (FaceError, StageError):
+            if face_needed:
+                raise
     return CharacterRef(job.path(image), face_asset_id=asset_id, name=face_name or "")
 
 
@@ -493,20 +509,22 @@ def build_request(
     job: Job, *, faces: Any = None, stage: str = "draft", final_resolution: str = ""
 ) -> GenerationRequest:
     state = job.state
-    primary = _character(job, "primary", faces)
+    seedance = job.generator == "seedance"
+    promote = seedance and stage == "final" and final_resolution == PROMOTE
+    face_needed = not (already_paid(job, stage) or promote)
+    primary = _character(job, "primary", faces, face_needed=face_needed)
     if primary is None:
         raise StageError(
             "This job has no character image. Prepare a new job with --face NAME or "
             "--character IMAGE."
         )
-    seedance = job.generator == "seedance"
     return GenerationRequest(
         video=job.path("prepared.mp4" if seedance else "original.mp4"),
         primary=primary,
-        secondary=_character(job, "secondary", faces),
+        secondary=_character(job, "secondary", faces, face_needed=face_needed),
         seconds=_readable_clip_seconds(job),
         seed=int(state["seed"]),
-        prompt=generation_prompt(job, stage) if seedance else "",
+        prompt=generation_prompt(job, stage, final_resolution) if seedance else "",
         final_resolution=final_resolution if stage == "final" else "",
         draft_task_id=_draft_task_id(job) if stage == "final" else "",
     )
@@ -557,12 +575,7 @@ def generate(
     # No clear_review: generating changes no input.
     extra: dict[str, str] = {}
     if stage == "draft" and request.prompt:
-        # The final (720p) reuses exactly the text PiAPI received: on a resume (record or
-        # download already there) keep the prompt saved when the task was created.
-        saved = job.state["stages"].get("draft", {}).get("prompt")
-        sent_before = record.exists() or raw.exists()
-        keep = sent_before and isinstance(saved, str) and saved
-        extra["prompt"] = saved if keep else request.prompt
+        extra["prompt"] = request.prompt  # a 720p final sends exactly this text again
     if stage == "final":
         extra["resolution"] = resolution
     with _tracked(job, stage, fingerprint=inputs, **extra), _wrap(label):
@@ -628,12 +641,26 @@ def write_prompt_file(job: Job) -> Path:
     return path
 
 
-def generation_prompt(job: Job, stage: str) -> str:
-    """The text Seedance receives: the draft's saved prompt for a final, else prompt.txt."""
+def generation_prompt(job: Job, stage: str, resolution: str = "") -> str:
+    """The text Seedance receives.
+
+    - final: the draft's saved prompt (a 720p run must match the watched draft; a 1080p
+      promote sends no prompt, so it may be "").
+    - draft already paid (record or download there): the prompt saved when it was created,
+      so a resume never depends on today's prompt.txt.
+    - new draft: prompt.txt (or the default), checked.
+    """
+    saved = job.state["stages"].get("draft", {}).get("prompt")
+    saved = saved if isinstance(saved, str) and saved else ""
     if stage == "final":
-        saved = job.state["stages"].get("draft", {}).get("prompt")
-        if isinstance(saved, str) and saved:
+        if saved or resolution != "720p" or already_paid(job, "final"):
             return saved
+        raise PromptError(
+            "The draft's prompt wasn't saved, so a 720p final can't match it. Make a new draft "
+            "first; nothing was charged."
+        )
+    if saved and already_paid(job, "draft"):
+        return saved
     path = job.path(PROMPT_FILE)
     text = (path.read_text(encoding="utf-8") if path.exists() else default_prompt(job)).strip()
     if not text:

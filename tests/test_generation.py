@@ -560,3 +560,73 @@ def test_a_resumed_draft_keeps_the_prompt_it_was_created_with(seedance, runs_dir
     assert job.state["stages"]["draft"]["prompt"] == sent
     generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
     assert services.generators["seedance"].calls[-1][1].prompt == sent
+
+
+def _interrupted_draft(job, sent):
+    """A draft whose paid task exists (record saved) but which never finished here."""
+    job.mark_stage("draft", "failed", fingerprint=fingerprint(job), prompt=sent, error="x")
+    job.path("draft-prediction.json").write_text('{"id": "p-draft", "status": "succeeded"}')
+
+
+def _forget_faces(services):
+    (services.faces.folder / "faces.json").write_text("[]")
+
+
+def test_a_paid_draft_resumes_even_with_a_broken_prompt_file(seedance, runs_dir):
+    job, services = seedance
+    sent = "Put @image1 on the person in @video1."
+    _interrupted_draft(job, sent)
+    write_prompt_file(job).write_text("")  # would be refused for a new draft
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert job.stage_done("draft") and job.state["stages"]["draft"]["prompt"] == sent
+    assert services.generators["seedance"].calls[0][1].prompt == sent
+
+
+def test_a_paid_draft_resumes_even_after_its_face_was_removed(seedance, runs_dir):
+    job, services = seedance
+    _interrupted_draft(job, "Put @image1 on the person in @video1.")
+    _forget_faces(services)
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    request = services.generators["seedance"].calls[0][1]
+    assert job.stage_done("draft")
+    assert request.primary.face_asset_id is None and request.primary.name == "frank"
+
+
+def test_a_removed_face_does_not_block_the_1080p_promote(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    _forget_faces(services)
+    generate(job, services, "final", runs_dir=runs_dir, **QUIET)
+    request = services.generators["seedance"].calls[1][1]
+    assert request.final_resolution == "1080p" and request.draft_task_id == "p-draft"
+    assert request.primary.face_asset_id is None and job.stage_done("final")
+
+
+def test_a_removed_face_still_blocks_a_new_720p_final(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    _forget_faces(services)
+    with pytest.raises(FaceError, match="charswap face add frank"):
+        generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
+    assert len(services.generators["seedance"].calls) == 1  # only the draft
+
+
+def test_a_720p_final_needs_the_drafts_saved_prompt(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    draft = job.state["stages"]["draft"]
+    job.mark_stage("draft", fingerprint=draft["fingerprint"])  # an older state: no prompt saved
+    with pytest.raises(PromptError, match="prompt wasn't saved"):
+        generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
+    assert len(services.generators["seedance"].calls) == 1
+
+
+def test_a_new_draft_after_archiving_sends_the_edited_prompt(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    pipeline.archive_stale_draft(job)
+    edited = "Turn the person in @video1 into @image1, nothing else."
+    write_prompt_file(job).write_text(edited)
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert services.generators["seedance"].calls[1][1].prompt == edited
+    assert job.state["stages"]["draft"]["prompt"] == edited
