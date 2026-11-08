@@ -168,3 +168,19 @@ def test_copy_video_only_drops_audio(tmp_path):
     with av.open(str(result)) as container:
         assert not container.streams.audio
     assert count_frames(result) == 12
+
+
+def test_restore_can_cut_the_original_sound_at_a_length(tmp_path):
+    original = write_video(tmp_path / "orig.mp4", [solid((1, 1, 1))] * 72, audio_seconds=3)
+    generated = write_video(tmp_path / "gen.mp4", [solid((2, 2, 2))] * 48)  # 2 s, silent
+    result = restore_original_audio(generated, original, tmp_path / "out.mp4", seconds=2.0)
+    kept = audio_packets(result)
+    assert kept == audio_packets(original)[: len(kept)]  # the same packets, just fewer
+    assert 1.95 <= stream_seconds(result, "audio") <= 2.05
+
+
+def test_soundtrack_passes_the_cut_through(tmp_path):
+    original = write_video(tmp_path / "orig.mp4", [solid((1, 1, 1))] * 72, audio_seconds=3)
+    generated = write_video(tmp_path / "gen.mp4", [solid((2, 2, 2))] * 48)
+    result = add_original_soundtrack(generated, original, tmp_path / "out.mp4", seconds=2.0)
+    assert stream_seconds(result, "audio") <= 2.05

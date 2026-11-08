@@ -97,12 +97,19 @@ def _fit_video(generated: Path, seconds: float, dst: Path) -> Path:
     return dst
 
 
-def restore_original_audio(generated: Path, original: Path, dst: Path) -> Path:
-    """Replace the generated audio with the original's audio packets, byte for byte."""
+def restore_original_audio(
+    generated: Path, original: Path, dst: Path, *, seconds: float | None = None
+) -> Path:
+    """Replace the generated audio with the original's audio packets, byte for byte.
+
+    With seconds, the original sound stops there (later packets are left out, never re-encoded).
+    """
     with av.open(str(original)) as probe:
         if not probe.streams.audio:
             raise NoAudioError("The original video has no audio track.")
     audio_seconds = stream_seconds(original, "audio")
+    if seconds is not None:
+        audio_seconds = min(audio_seconds, seconds)
     gap = audio_seconds - stream_seconds(generated, "video")
     with tempfile.TemporaryDirectory() as scratch:
         if MAX_MISMATCH < abs(gap) <= FIT_LIMIT:
@@ -120,10 +127,17 @@ def restore_original_audio(generated: Path, original: Path, dst: Path) -> Path:
         ):
             audio = output.add_stream_from_template(source.streams.audio[0])
             _copy_video_packets(video, output)
+            first = None
             for packet in source.demux(audio=0):
-                if packet.dts is not None:
-                    packet.stream = audio
-                    output.mux(packet)
+                if packet.dts is None:
+                    continue
+                if seconds is not None and packet.pts is not None:
+                    moment = float(packet.pts * packet.time_base)
+                    first = moment if first is None else first
+                    if moment - first >= seconds:
+                        break
+                packet.stream = audio
+                output.mux(packet)
     return Path(dst)
 
 
@@ -134,10 +148,12 @@ def copy_video_only(video: Path, dst: Path) -> Path:
     return Path(dst)
 
 
-def add_original_soundtrack(generated: Path, upload: Path, dst: Path) -> Path:
+def add_original_soundtrack(
+    generated: Path, upload: Path, dst: Path, *, seconds: float | None = None
+) -> Path:
     """Generated pictures + the upload's untouched audio; silent if the upload had none."""
     with av.open(str(upload)) as probe:
         has_audio = bool(probe.streams.audio)
     if not has_audio:
         return copy_video_only(generated, dst)
-    return restore_original_audio(generated, upload, dst)
+    return restore_original_audio(generated, upload, dst, seconds=seconds)

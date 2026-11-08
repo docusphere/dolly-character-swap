@@ -17,10 +17,16 @@ import av
 
 from character_swap.costs import record_spend
 from character_swap.jobs import Job
-from character_swap.media.audio import FIT_LIMIT, add_original_soundtrack, embed_samples, read_audio
+from character_swap.media.audio import (
+    FIT_LIMIT,
+    RATE,
+    add_original_soundtrack,
+    embed_samples,
+    read_audio,
+)
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize, stream_seconds
-from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES
+from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
@@ -145,7 +151,11 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
         "Normalizing video to 24 fps",
         lambda: job.update(
             video=normalize(
-                job.path("upload.mp4"), job.path("original.mp4"), min_seconds=low, max_seconds=high
+                job.path("upload.mp4"),
+                job.path("original.mp4"),
+                min_seconds=low,
+                max_seconds=high,
+                whole_seconds=job.generator in WHOLE_SECONDS,
             )
         ),
         status,
@@ -260,11 +270,10 @@ def _mesh(job: Job, services: Services) -> None:
 
 
 def _embed(job: Job) -> None:
-    embed_samples(
-        job.path("composite-silent.mp4"),
-        read_audio(job.path("vocals-plus3.wav")),
-        job.path("prepared.mp4"),
-    )
+    samples = read_audio(job.path("vocals-plus3.wav"))
+    if job.generator in WHOLE_SECONDS:  # the picture was cut to whole seconds; so is the voice
+        samples = samples[:, : round(clip_seconds(job) * RATE)]
+    embed_samples(job.path("composite-silent.mp4"), samples, job.path("prepared.mp4"))
 
 
 # ---- generation (paid, after review) ---------------------------------------------
@@ -329,7 +338,10 @@ def _check_soundtrack_fits(job: Job) -> None:
             "Nothing was charged."
         ) from exc
     picture = _readable_clip_seconds(job)
-    if abs(sound - picture) > FIT_LIMIT - 0.1:  # leave 0.1 s for the generator's rounding
+    gap = sound - picture
+    if job.generator in WHOLE_SECONDS and gap >= 0:
+        return  # longer sound than the whole-second picture: it is cut to match after generating
+    if abs(gap) > FIT_LIMIT - 0.1:  # leave 0.1 s for the generator's rounding
         raise StageError(
             f"The clip's sound lasts {sound:.1f} s but its picture {picture:.1f} s, so the "
             "original soundtrack could not be put back after generating. Trim the clip so "
@@ -476,8 +488,11 @@ def generate(
         if not raw.exists():  # downloaded already: never ask the provider again
             generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
         _notify(status, "Putting the original soundtrack back")
+        # Wan keeps the exact call it always had; only whole-second jobs cut the sound.
+        cut = {"seconds": request.seconds} if job.generator in WHOLE_SECONDS else {}
         _write_atomically(
-            result, lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part)
+            result,
+            lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
         )
     _notify(status, f"{stage.capitalize()} ready: {result}")
     return result

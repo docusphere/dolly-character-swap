@@ -11,6 +11,9 @@ GENERATION_STAGES: tuple[str, ...] = ("draft", "final")
 # (min_seconds, max_seconds) per generator; see docs/research/2026-10-22-provider-api-facts.md.
 GENERATOR_LIMITS: dict[str, tuple[int, int]] = {"seedance": (4, 30), "wan": (1, 30)}
 
+# Generators whose clips are cut to whole seconds (PiAPI durations are whole seconds).
+WHOLE_SECONDS: frozenset[str] = frozenset({"seedance"})
+
 
 @dataclass(frozen=True)
 class Mode:

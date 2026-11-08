@@ -141,3 +141,16 @@ def test_normalize_nonzero_start_keeps_every_frame(tmp_path):
     assert all(
         b - a >= 2 for a, b in zip(out, out[1:], strict=False)
     )  # strictly advancing: no duplicates
+
+
+def test_normalize_whole_seconds_drops_the_tail(tmp_path):
+    src = write_video(tmp_path / "in.mp4", [solid((10, 20, 30))] * 60)  # 2.5 s at 24 fps
+    facts = normalize(src, tmp_path / "out.mp4", min_seconds=1, max_seconds=30, whole_seconds=True)
+    assert facts["frames"] == 48 and facts["seconds"] == 2.0
+    assert count_frames(tmp_path / "out.mp4") == 48
+
+
+def test_normalize_whole_seconds_still_checks_the_minimum(tmp_path):
+    src = write_video(tmp_path / "in.mp4", [solid((10, 20, 30))] * 108)  # 4.5 s
+    with pytest.raises(ClipLengthError, match="whole seconds it is 4s.*at least 5s"):
+        normalize(src, tmp_path / "out.mp4", min_seconds=4.5, max_seconds=30, whole_seconds=True)

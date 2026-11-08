@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -120,8 +121,13 @@ def _rotation_transpose(rotation: float) -> Image.Transpose | None:
     }.get(round(rotation) % 360)
 
 
-def normalize(src: Path, dst: Path, *, min_seconds: float, max_seconds: float) -> dict:
-    """Re-time to 24 fps (holding the nearest earlier frame), upright it, fit within 960 px."""
+def normalize(
+    src: Path, dst: Path, *, min_seconds: float, max_seconds: float, whole_seconds: bool = False
+) -> dict:
+    """Re-time to 24 fps (holding the nearest earlier frame), upright it, fit within 960 px.
+
+    With whole_seconds, drop the tail to a whole number of seconds.
+    """
     name = Path(src).name
     with av.open(str(src)) as container:
         if not container.streams.video:
@@ -135,6 +141,14 @@ def normalize(src: Path, dst: Path, *, min_seconds: float, max_seconds: float) -
         raise ClipLengthError(
             f"Clip is {seconds:.1f}s; this generator needs at least {min_seconds:g}s."
         )
+    count = round(seconds * FPS)
+    if whole_seconds:
+        count -= count % FPS  # whole seconds only: drop the tail
+        if count < min_seconds * FPS:
+            raise ClipLengthError(
+                f"Clip is {seconds:.1f}s; trimmed to whole seconds it is {count // FPS}s, and "
+                f"this generator needs at least {math.ceil(min_seconds):g}s."
+            )
     with av.open(str(src)) as container:
         decoded = container.decode(video=0)
         current = next(decoded, None)
@@ -149,7 +163,6 @@ def normalize(src: Path, dst: Path, *, min_seconds: float, max_seconds: float) -
         scale = min(1.0, MAX_SIDE / max(src_w, src_h))
         width = max(2, int(src_w * scale) // 2 * 2)
         height = max(2, int(src_h * scale) // 2 * 2)
-        count = round(seconds * FPS)
         with VideoWriter(dst, width, height) as writer:
             for index in range(count):
                 moment = start + index / FPS

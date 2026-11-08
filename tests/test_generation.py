@@ -404,3 +404,37 @@ def test_failed_soundtrack_restore_leaves_no_partial_result(
         generate(wan_job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert not wan_job.path("draft.mp4").exists()
     assert not wan_job.path("draft.part.mp4").exists()
+
+
+def _seedance_job(runs_dir, tmp_path, *, picture, sound):
+    upload = write_video(
+        tmp_path / "s.mp4", [solid((1, 1, 1))] * round(picture * 24), audio_seconds=sound
+    )
+    me = tmp_path / "me.jpg"
+    me.write_bytes(b"me")
+    job = Job.create(runs_dir, upload, generator="seedance", mode="depth", character=me)
+    job.update(video={"seconds": float(int(picture))})  # what a whole-second normalize saves
+    return job
+
+
+def test_seedance_sound_longer_than_the_whole_second_picture_is_fine(runs_dir, tmp_path):
+    job = _seedance_job(runs_dir, tmp_path, picture=4.9, sound=4.9)  # picture becomes 4 s
+    pipeline._check_soundtrack_fits(job)  # no error: the sound is cut at 4 s
+
+
+def test_seedance_sound_shorter_than_the_picture_is_still_refused(runs_dir, tmp_path):
+    job = _seedance_job(runs_dir, tmp_path, picture=5.0, sound=4.0)
+    with pytest.raises(StageError, match="Nothing was charged"):
+        pipeline._check_soundtrack_fits(job)
+
+
+def test_embed_cuts_the_pitched_vocals_to_the_picture(runs_dir, tmp_path):
+    from character_swap.media.audio import write_wav
+    from character_swap.media.video import stream_seconds
+    from helpers import tone
+
+    job = _seedance_job(runs_dir, tmp_path, picture=2.0, sound=2.0)
+    write_video(job.path("composite-silent.mp4"), [solid((3, 3, 3))] * 48)
+    write_wav(job.path("vocals-plus3.wav"), tone(2.6))
+    pipeline._embed(job)
+    assert stream_seconds(job.path("prepared.mp4"), "audio") <= 2.05
