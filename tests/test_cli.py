@@ -1831,3 +1831,74 @@ def test_prompt_recreates_a_deleted_file_with_what_the_draft_sent(piapi_settings
         services_factory=seedance_services,
     )
     assert code == 0 and asked == [] and "already done" in out.text
+
+
+# ---- a prompt remake never orphans a paid final -----------------------------------------
+@pytest.mark.parametrize(
+    "record",
+    [{"id": "t-9", "status": "processing"}, {"status": "creating"}],
+    ids=["running", "unconfirmed"],
+)
+def test_a_prompt_remake_waits_for_a_final_in_progress(piapi_settings, video, tmp_path, record):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    final_record = job.path("final-prediction.json")
+    final_record.write_text(json.dumps(record))
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="1080p")
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    seedance_services.last = FakePiAPI()
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and seedance_services.last.bodies == []
+    assert "A final is still in progress" in out.err.text
+    assert f"charswap generate {job.id} --final" in out.err.text
+    assert json.loads(final_record.read_text()) == record
+    assert not list(job.root.glob("*-old-*"))
+
+
+def test_a_prompt_remake_says_the_finished_final_is_moved(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    code, _ = run(
+        ["generate", job.id, "--final", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    assert code == 0 and job.stage_done("final")
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    shown = []
+    out = Recorder()
+    out.err = Recorder()
+
+    def ask(question):
+        shown.append(out.text)  # everything printed before the question
+        return True
+
+    code = cli.main(
+        ["generate", job.id, "--draft"],
+        settings=piapi_settings,
+        out=out,
+        err=out.err,
+        confirm=ask,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and "final-old-*" in shown[0] and "kept, not deleted" in shown[0]
+    assert len(list(job.root.glob("final-old-*"))) == 3 and not job.path("final.mp4").exists()
+    (body,) = seedance_services.last.bodies
+    assert body["input"]["prompt"] == "SECOND @image1 into @video1."
+
+
+def test_an_inputs_remake_mentions_the_final_too(settings, video, tmp_path, monkeypatch):
+    job = _approved_wan_job(settings, video, tmp_path)
+    _stale_draft(job)
+    job.path("final.mp4").write_bytes(b"old final")
+    job.mark_stage("final", fingerprint="an older approval")
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate([]))
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda _q: False,
+        services_factory=wan_services,
+    )
+    assert code == 1 and "final-old-*" in out.text

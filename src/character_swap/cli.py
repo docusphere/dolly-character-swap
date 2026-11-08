@@ -488,6 +488,15 @@ def _generate(args, settings, env) -> int:
     # not part of the review, so editing it never clears the approval).
     prompt_changed = stage == "draft" and not inputs_changed and draft_prompt_changed(job)
     remake = inputs_changed or prompt_changed
+    if prompt_changed and already_paid(job, "final") and not job.stage_done("final"):
+        # A remake archives the final too; a paid final still running (or unconfirmed)
+        # would be orphaned and bought again. Refuse before any question.
+        env.err(
+            "A final is still in progress for this job. Pick it up first with "
+            f"`charswap generate {job.id} --final` (no new charge), then make a new draft. "
+            "Nothing was charged."
+        )
+        return 2
     if stage == "final" and stale_generation(job, "final"):
         env.err(
             "This final was made from inputs that are no longer approved; run "
@@ -538,6 +547,9 @@ def _generate(args, settings, env) -> int:
                 "prompt.txt changed since the draft: this makes a new paid draft with the "
                 "prompt above. The old draft files are kept as draft-old-*."
             )
+        if remake and _has_final_files(job):
+            what = "finished final" if job.stage_done("final") else "earlier final files"
+            env.out(f"Your {what} will also be moved to final-old-* (kept, not deleted).")
         if stage == "final":
             env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")
         if job.generator == "seedance" and stage == "final" and resolution == "720p":
@@ -563,6 +575,13 @@ def _generate(args, settings, env) -> int:
     if stage == "draft":
         env.out(_after_draft_hint(job, services))
     return 0
+
+
+def _has_final_files(job: Job) -> bool:
+    """Anything archive_stale_draft would move aside for the final."""
+    return job.stage_done("final") or any(
+        job.path(name).exists() for name in generation_files("final")
+    )
 
 
 def _after_draft_hint(job: Job, services: Services) -> str:
