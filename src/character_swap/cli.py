@@ -7,6 +7,7 @@ import json
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import webbrowser
 from collections.abc import Callable, Sequence
@@ -23,7 +24,7 @@ from character_swap.costs import (
     record_spend,
 )
 from character_swap.errors import CharSwapError
-from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary
+from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary, check_photo
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import (
     GENERATION_LABELS,
@@ -158,7 +159,14 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument("--mode", choices=["depth", "face_mesh", "depth_mesh", "direct"])
     prep.add_argument("--subject", default="person", help="what SAM 3 should cut out")
     prep.add_argument("--depth-provider", choices=["replicate", "huggingface"], default="replicate")
-    prep.add_argument("--character", type=Path, help="character image (required for wan)")
+    prep.add_argument("--face", help="a saved face to put in the video (see charswap face add)")
+    prep.add_argument(
+        "--character",
+        type=Path,
+        help="character image: Wan, any picture; Seedance, a character that is not a real person",
+    )
+    prep.add_argument("--face2", help="Seedance: a second saved face, for a second person")
+    prep.add_argument("--character2", type=Path, help="Seedance: a second character image")
     prep.add_argument(
         "--language",
         default="auto",
@@ -273,40 +281,85 @@ def main(
         return 1
 
 
+def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path | None, dict]:
+    """Resolve --face/--character (and the second slot) to image files + face names. Free."""
+    library = FaceLibrary(settings.root)
+    images: dict[str, Path | None] = {}
+    faces: dict[str, str] = {}
+    for slot, face_name, image in (
+        ("primary", args.face, args.character),
+        ("secondary", args.face2, args.character2),
+    ):
+        flag = "" if slot == "primary" else "2"
+        if face_name and image:
+            raise JobError(f"Use --face{flag} or --character{flag}, not both.")
+        if face_name:
+            face = library.get(face_name)
+            if face.status != ACTIVE:
+                raise JobError(
+                    f"Face {face_name!r} is {face.status} at PiAPI. Run charswap face check "
+                    f"{face_name} first."
+                )
+            images[slot], faces[slot] = library.image_path(face), face_name
+        elif image and args.generator == "seedance":
+            env.out(
+                "Note: Seedance takes --character images only for characters that are not a real "
+                "person (PiAPI rejects real faces sent this way). For a real person, use --face."
+            )
+            images[slot] = check_photo(image, scratch / f"character-{slot}.jpg")
+        else:
+            images[slot] = image
+    return images.get("primary"), images.get("secondary"), faces
+
+
 def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth")
-    if args.generator == "wan" and args.character is None:
-        raise JobError("Wan needs --character IMAGE (your face or character picture).")
+    if args.generator == "wan" and args.character is None and args.face is None:
+        raise JobError(
+            "Wan needs --character IMAGE or --face NAME (your face or character picture)."
+        )
+    if args.generator == "wan" and (args.character2 or args.face2):
+        raise JobError("Wan takes one character; a second one only works with Seedance.")
+    if args.generator == "seedance" and not (args.face or args.character):
+        raise JobError(
+            "Seedance needs --face NAME (a saved face; see charswap face add) or --character "
+            "IMAGE (a character that is not a real person)."
+        )
     if mode == "direct" and args.language != "auto":
         raise JobError("--language only matters for Seedance modes (Wan has no transcript step).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
-    estimate = estimate_prepare(mode, seconds=30)
-    free = estimate.total == 0
-    if free:
-        env.out("Preparing is free for this mode (nothing is sent to a paid service).")
-    else:
-        env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
-        if not args.yes and not env.proceed():
-            return 1
-    job = Job.create(
-        settings.runs_dir,
-        args.video,
-        generator=args.generator,
-        mode=mode,
-        subject=args.subject,
-        depth_provider=args.depth_provider,
-        character=args.character,
-        language=args.language,
-    )
-    env.track(job, "resume {id}")
-    env.out(f"JOB {job.id}")
-    prepare_job(job, env.services_factory(settings), status=env.out)
-    if not free:
-        record_spend(job, "prepare", estimate, settings.runs_dir)
-    watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
-    env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
-    return 0
+    with tempfile.TemporaryDirectory() as scratch:
+        # Free checks first, so a bad photo or face is refused before any cost question.
+        character, character2, faces = _characters(args, settings, env, Path(scratch))
+        estimate = estimate_prepare(mode, seconds=30)
+        free = estimate.total == 0
+        if free:
+            env.out("Preparing is free for this mode (nothing is sent to a paid service).")
+        else:
+            env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
+            if not args.yes and not env.proceed():
+                return 1
+        job = Job.create(
+            settings.runs_dir,
+            args.video,
+            generator=args.generator,
+            mode=mode,
+            subject=args.subject,
+            depth_provider=args.depth_provider,
+            character=character,
+            character2=character2,
+            faces=faces,
+            language=args.language,
+        )
+        env.track(job, "resume {id}")
+        env.out(f"JOB {job.id}")
+        prepare_job(job, env.services_factory(settings), status=env.out)
+        if not free:
+            record_spend(job, "prepare", estimate, settings.runs_dir)
+        watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
+        env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
+        return 0
 
 
 def _resume(args, settings, env) -> int:

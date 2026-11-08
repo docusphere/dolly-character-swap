@@ -124,3 +124,25 @@ def test_missing_stage_entry_blocks_review(depth_job):
     del state["stages"]["embed"]
     depth_job._write(state)
     assert status(depth_job)["status"] == "unavailable"
+
+
+def test_seedance_review_covers_the_character_images(runs_dir, tmp_path):
+    upload = tmp_path / "s.mp4"
+    upload.write_bytes(b"v")
+    me, friend = tmp_path / "me.jpg", tmp_path / "friend.jpg"
+    me.write_bytes(b"me")
+    friend.write_bytes(b"friend")
+    job = Job.create(
+        runs_dir, upload, generator="seedance", mode="depth", character=me, character2=friend
+    )
+    files = review_files(job)
+    assert files[-2:] == ["character-primary.jpg", "character-secondary.jpg"]
+
+
+def test_seedance_review_without_characters_is_unchanged(runs_dir, tmp_path):
+    from character_swap.modes import MODES
+
+    upload = tmp_path / "s.mp4"
+    upload.write_bytes(b"v")
+    job = Job.create(runs_dir, upload, generator="seedance", mode="depth")
+    assert review_files(job) == list(MODES["depth"].review_files)

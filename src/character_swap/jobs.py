@@ -67,6 +67,8 @@ class Job:
         subject: str = "person",
         depth_provider: str = "replicate",
         character: Path | None = None,
+        character2: Path | None = None,
+        faces: dict[str, str] | None = None,  # slot ("primary"/"secondary") -> saved face name
         language: str = "auto",
     ) -> Job:
         if generator not in MODES_BY_GENERATOR:
@@ -82,6 +84,10 @@ class Job:
             raise JobError(f"Video not found: {source}")
         if character is not None and not Path(character).is_file():
             raise JobError(f"Character image not found: {character}")
+        if generator == "wan" and character2 is not None:
+            raise JobError("Wan takes one character; a second one only works with Seedance.")
+        if character2 is not None and not Path(character2).is_file():
+            raise JobError(f"Second character image not found: {character2}")
         if language not in WHISPER_LANGUAGES:
             raise JobError(
                 f"{language!r} is not a Whisper language code (for example en, es, or auto)."
@@ -103,10 +109,14 @@ class Job:
                 "created_at": _now(),
                 "stages": {},
             }
-            if character is not None:
-                name = f"character-primary{Path(character).suffix.lower()}"
-                shutil.copy2(character, root / name)
-                state["character_primary"] = name
+            for slot, image in (("primary", character), ("secondary", character2)):
+                if image is None:
+                    continue
+                name = f"character-{slot}{Path(image).suffix.lower()}"
+                shutil.copy2(image, root / name)
+                state[f"character_{slot}"] = name
+            for slot, face_name in (faces or {}).items():
+                state[f"face_{slot}"] = face_name
             job = cls(job_id, root)
             job._write(state)
         except BaseException:

@@ -50,17 +50,29 @@ def run(argv, settings, **kw):
     return code, out
 
 
-def test_prepare_declined_creates_nothing(settings, video):
-    code, out = run(["prepare", str(video), "--mode", "depth"], settings, confirm=lambda _q: False)
+def test_prepare_declined_creates_nothing(tmp_path, settings, video):
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--mode", "depth"],
+        settings,
+        confirm=lambda _q: False,
+    )
     assert code == 1 and "Depth video" in out.text and "Cancelled" in out.err.text
     assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
 
 
-def test_prepare_runs_pipeline_and_prints_job(settings, video, monkeypatch):
+def test_prepare_runs_pipeline_and_prints_job(tmp_path, settings, video, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: calls.append(job.id))
     code, out = run(
-        ["prepare", str(video), "--mode", "depth", "--yes"],
+        [
+            "prepare",
+            str(video),
+            "--character",
+            str(_photo(tmp_path / "c.jpg")),
+            "--mode",
+            "depth",
+            "--yes",
+        ],
         settings,
         services_factory=lambda s: object(),
     )
@@ -86,12 +98,16 @@ def test_prepare_wan_direct_needs_no_token(tmp_path, video, monkeypatch):
     assert code == 0 and calls
 
 
-def test_prepare_stage_error_is_friendly(settings, video, monkeypatch):
+def test_prepare_stage_error_is_friendly(tmp_path, settings, video, monkeypatch):
     def boom(job, services, status):
         raise StageError("Normalizing failed: too short")
 
     monkeypatch.setattr(cli, "prepare_job", boom)
-    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
     assert code == 2 and "too short" in out.err.text
     assert not any(settings.runs_dir.glob("spend-log.csv"))  # nothing logged on failure
 
@@ -172,7 +188,9 @@ def test_errors_are_friendly(settings):
 
 def test_missing_key_is_reported(tmp_path, video):
     empty = Settings.load(root=tmp_path, environ={})
-    code, out = run(["prepare", str(video), "--yes"], empty)
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"], empty
+    )
     assert code == 2 and "REPLICATE_API_TOKEN" in out.err.text
 
 
@@ -231,45 +249,64 @@ def _job(settings, video, mode="depth"):
     return Job.create(settings.runs_dir, video, generator="seedance", mode=mode)
 
 
-def test_keyboard_interrupt_is_reported_with_job_id(settings, video, monkeypatch):
+def test_keyboard_interrupt_is_reported_with_job_id(tmp_path, settings, video, monkeypatch):
     def stop(job, services, status):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "prepare_job", stop)
-    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
     job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
     assert code == 130 and "Interrupted" in out.err.text
     assert f"charswap resume {job_id}" in out.err.text and "not charged again" in out.err.text
 
 
-def test_unexpected_error_is_summarised(settings, video, monkeypatch):
+def test_unexpected_error_is_summarised(tmp_path, settings, video, monkeypatch):
     def bad(job, services, status):
         raise ValueError("kaboom")
 
     monkeypatch.setattr(cli, "prepare_job", bad)
-    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
     assert code == 1 and "Unexpected error: kaboom. Run with --debug for details." in out.err.text
 
 
-def test_debug_reraises(settings, video, monkeypatch):
+def test_debug_reraises(tmp_path, settings, video, monkeypatch):
     def bad(job, services, status):
         raise ValueError("kaboom")
 
     monkeypatch.setattr(cli, "prepare_job", bad)
     with pytest.raises(ValueError):
         run(
-            ["--debug", "prepare", str(video), "--yes"],
+            [
+                "--debug",
+                "prepare",
+                str(video),
+                "--character",
+                str(_photo(tmp_path / "c.jpg")),
+                "--yes",
+            ],
             settings,
             services_factory=lambda s: object(),
         )
 
 
-def test_stage_error_prints_resume_hint(settings, video, monkeypatch):
+def test_stage_error_prints_resume_hint(tmp_path, settings, video, monkeypatch):
     def fail(job, services, status):
         raise StageError("Depth failed: x")
 
     monkeypatch.setattr(cli, "prepare_job", fail)
-    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
     job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
     assert code == 2 and f"Fix the issue, then run: charswap resume {job_id}" in out.err.text
 
@@ -536,14 +573,18 @@ def test_help_lists_view(capsys):
     assert "open the read-only job viewer" in capsys.readouterr().out
 
 
-def test_provider_errors_are_friendly(settings, video, monkeypatch):
+def test_provider_errors_are_friendly(tmp_path, settings, video, monkeypatch):
     from character_swap.providers.replicate import ReplicateError
 
     def throttled(job, services, status):
         raise ReplicateError("Rate limited, nothing was charged; wait a minute and retry.")
 
     monkeypatch.setattr(cli, "prepare_job", throttled)
-    code, out = run(["prepare", str(video), "--yes"], settings, services_factory=lambda s: object())
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
     assert code == 2 and "Error: Rate limited, nothing was charged" in out.err.text
 
 
@@ -568,10 +609,20 @@ def test_rate_limit_wait_message():
     )
 
 
-def test_prepare_passes_the_language(settings, video, monkeypatch):
+def test_prepare_passes_the_language(tmp_path, settings, video, monkeypatch):
     monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
     code, _ = run(
-        ["prepare", str(video), "--mode", "depth", "--language", "en", "--yes"],
+        [
+            "prepare",
+            str(video),
+            "--character",
+            str(_photo(tmp_path / "c.jpg")),
+            "--mode",
+            "depth",
+            "--language",
+            "en",
+            "--yes",
+        ],
         settings,
         services_factory=lambda s: object(),
     )
@@ -581,12 +632,21 @@ def test_prepare_passes_the_language(settings, video, monkeypatch):
 
 @pytest.mark.parametrize("language", ["eng", "zz", "English"])
 def test_prepare_rejects_an_unknown_language_before_the_cost_question(
-    settings, video, language, capsys
+    tmp_path, settings, video, language, capsys
 ):
     asked = []
     with pytest.raises(SystemExit) as exit_info:
         run(
-            ["prepare", str(video), "--mode", "depth", "--language", language],
+            [
+                "prepare",
+                str(video),
+                "--character",
+                str(_photo(tmp_path / "c.jpg")),
+                "--mode",
+                "depth",
+                "--language",
+                language,
+            ],
             settings,
             confirm=lambda q: asked.append(q) or True,
         )
@@ -998,10 +1058,10 @@ def test_prepare_wan_direct_is_free_asks_nothing_and_logs_no_cost(tmp_path, vide
     assert Job.load(empty.runs_dir, ids[0]).state.get("costs", []) == []
 
 
-def test_prepare_seedance_still_asks(settings, video):
+def test_prepare_seedance_still_asks(tmp_path, settings, video):
     asked = []
     code, _ = run(
-        ["prepare", str(video), "--mode", "depth"],
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--mode", "depth"],
         settings,
         confirm=lambda q: asked.append(q) or False,
     )
@@ -1100,3 +1160,103 @@ def test_face_add_bad_name_fails_before_consent_and_client(settings, tmp_path):
         piapi_factory=boom,
     )
     assert code == 2 and not asked and "lowercase" in out.err.text
+
+
+def _saved_face(settings, tmp_path, name="frank"):
+    return FaceLibrary(settings.root, sleep=lambda _s: None).add(
+        name, _photo(tmp_path / f"{name}.jpg"), FakePiAPI()
+    )
+
+
+def _prepare_ids(monkeypatch):
+    ids = []
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: ids.append(job.id))
+    return ids
+
+
+def test_prepare_seedance_with_a_saved_face(settings, video, tmp_path, monkeypatch):
+    _saved_face(settings, tmp_path)
+    ids = _prepare_ids(monkeypatch)
+    code, _ = run(
+        ["prepare", str(video), "--mode", "depth", "--face", "frank", "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    state = Job.load(settings.runs_dir, ids[0]).state
+    assert code == 0 and state["face_primary"] == "frank"
+    assert state["character_primary"] == "character-primary.jpg"
+
+
+def test_prepare_seedance_needs_a_character(settings, video):
+    code, out = run(["prepare", str(video), "--mode", "depth", "--yes"], settings)
+    assert code == 2 and "--face NAME" in out.err.text and "--character IMAGE" in out.err.text
+
+
+def test_prepare_refuses_face_and_character_together(settings, video, tmp_path):
+    _saved_face(settings, tmp_path)
+    code, out = run(
+        [
+            "prepare",
+            str(video),
+            "--face",
+            "frank",
+            "--character",
+            str(_photo(tmp_path / "c.jpg")),
+            "--yes",
+        ],
+        settings,
+    )
+    assert code == 2 and "not both" in out.err.text
+
+
+def test_prepare_refuses_a_face_that_is_not_active(settings, video, tmp_path):
+    lib = FaceLibrary(settings.root, sleep=lambda _s: None, polls=0)
+    lib.add("frank", _photo(tmp_path / "me.jpg"), FakePiAPI(assets={"asset-1": "Processing"}))
+    code, out = run(["prepare", str(video), "--face", "frank", "--yes"], settings)
+    assert code == 2 and "charswap face check frank" in out.err.text
+
+
+def test_prepare_seedance_character_image_is_checked_and_warned(
+    settings, video, tmp_path, monkeypatch
+):
+    ids = _prepare_ids(monkeypatch)
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "toon.png")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and "not a real person" in out.text
+    assert Job.load(settings.runs_dir, ids[0]).state["character_primary"] == "character-primary.jpg"
+
+
+def test_prepare_two_people(settings, video, tmp_path, monkeypatch):
+    _saved_face(settings, tmp_path, "frank")
+    _saved_face(settings, tmp_path, "sam")
+    ids = _prepare_ids(monkeypatch)
+    code, _ = run(
+        [
+            "prepare",
+            str(video),
+            "--face",
+            "frank",
+            "--face2",
+            "sam",
+            "--subject",
+            "two men",
+            "--yes",
+        ],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    state = Job.load(settings.runs_dir, ids[0]).state
+    assert code == 0 and state["face_secondary"] == "sam" and state["subject"] == "two men"
+
+
+def test_prepare_wan_refuses_a_second_character(settings, video, tmp_path):
+    code, out = run(
+        _wan_args(
+            video, _photo(tmp_path / "a.jpg"), "--character2", str(_photo(tmp_path / "b.jpg"))
+        ),
+        settings,
+    )
+    assert code == 2 and "one character" in out.err.text

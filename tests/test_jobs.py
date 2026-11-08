@@ -126,3 +126,37 @@ def test_whisper_language_list_has_auto_and_three_letter_codes():
     assert WHISPER_LANGUAGES[0] == "auto"
     assert {"en", "es", "haw", "yue"} <= set(WHISPER_LANGUAGES)
     assert len(WHISPER_LANGUAGES) == len(set(WHISPER_LANGUAGES)) == 101
+
+
+def test_seedance_job_keeps_two_characters_and_face_names(runs_dir, video, tmp_path):
+    me, friend = tmp_path / "me.jpg", tmp_path / "friend.png"
+    me.write_bytes(b"me")
+    friend.write_bytes(b"friend")
+    job = Job.create(
+        runs_dir,
+        video,
+        generator="seedance",
+        mode="depth",
+        character=me,
+        character2=friend,
+        faces={"primary": "frank"},
+    )
+    state = job.state
+    assert state["character_primary"] == "character-primary.jpg"
+    assert state["character_secondary"] == "character-secondary.png"
+    assert state["face_primary"] == "frank" and "face_secondary" not in state
+    assert job.path("character-secondary.png").read_bytes() == b"friend"
+
+
+def test_wan_takes_only_one_character(runs_dir, video, tmp_path):
+    me = tmp_path / "me.jpg"
+    me.write_bytes(b"me")
+    with pytest.raises(JobError, match="one character"):
+        Job.create(runs_dir, video, generator="wan", mode="direct", character=me, character2=me)
+
+
+def test_missing_second_character_image_is_refused(runs_dir, video, tmp_path):
+    with pytest.raises(JobError, match="not found"):
+        Job.create(
+            runs_dir, video, generator="seedance", mode="depth", character2=tmp_path / "nope.jpg"
+        )

@@ -18,16 +18,21 @@ class ReviewError(CharSwapError, ValueError):
     """Generation is blocked until the current artifacts are approved."""
 
 
+CHARACTER_SLOTS = ("primary", "secondary")
+
+
 def review_files(job: Job) -> list[str]:
     mode = MODES.get(job.mode)
     if mode is None:
         raise ReviewError(f"Unknown mode {job.mode!r}; cannot review.")
     files = list(mode.review_files)
-    if mode.generator == "wan":  # Wan receives the character image, so it is reviewed too
-        character = job.state.get("character_primary")
-        if not character:
-            raise ReviewError("This job has no character image to review.")
-        files.append(character)
+    state = job.state
+    if mode.generator == "wan" and not state.get("character_primary"):
+        raise ReviewError("This job has no character image to review.")
+    # The generator receives these images, so they are reviewed too (any generator).
+    files.extend(
+        state[f"character_{slot}"] for slot in CHARACTER_SLOTS if state.get(f"character_{slot}")
+    )
     return files
 
 
