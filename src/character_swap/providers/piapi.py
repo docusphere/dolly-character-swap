@@ -111,23 +111,27 @@ class PiAPIClient:
             if code == 403:
                 raise PiAPIError(PLAN_MESSAGE) from error
             raise PiAPIError(
-                f"PiAPI returned {code} while {what}: {error.response.text[:200]}"
+                f"PiAPI returned {code} while {what}: {error.response.text[:200]}. "
+                "Nothing was charged."
             ) from error
         except httpx.TransportError as error:
-            raise PiAPIError(f"Could not reach PiAPI while {what}: {error!r}") from error
+            raise PiAPIError(
+                f"Could not reach PiAPI while {what}: {error!r}. Nothing was charged."
+            ) from error
 
     def upload_temp(self, path: Path) -> str:
         """Upload a file PiAPI can read for 24 hours; returns its link."""
         path = Path(path)
         if path.suffix.lower() not in UPLOAD_TYPES:
             raise PiAPIError(
-                f"PiAPI can't take {path.suffix} files; use one of: {', '.join(UPLOAD_TYPES)}."
+                f"PiAPI can't take {path.suffix} files; use one of: {', '.join(UPLOAD_TYPES)}. "
+                "Nothing was charged."
             )
         size = path.stat().st_size
         if size > MAX_UPLOAD_BYTES:
             raise PiAPIError(
                 f"{path.name} is {size / 1e6:.1f} MB; PiAPI uploads must stay under "
-                f"{MAX_UPLOAD_BYTES / 1e6:.0f} MB."
+                f"{MAX_UPLOAD_BYTES / 1e6:.0f} MB. Nothing was charged."
             )
         payload = {
             "file_name": path.name,

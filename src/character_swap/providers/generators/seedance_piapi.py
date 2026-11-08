@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from character_swap.costs import Estimate, cost_line
@@ -44,14 +45,15 @@ class SeedanceGenerator:
             return DRAFT
         chosen = request.final_resolution or PROMOTE
         if chosen not in FINALS:
-            raise ProviderError(f"Seedance finals are {' or '.join(FINALS)}, not {chosen}.")
+            raise ProviderError(
+                f"Seedance finals are {' or '.join(FINALS)}, not {chosen}. Nothing was charged."
+            )
         return chosen
 
     def estimate(self, request: GenerationRequest, stage: Stage) -> Estimate:
         key = PRICE[self.resolution(request, stage)]
-        return Estimate(
-            lines=(cost_line(key, request.seconds), cost_line(f"{key}-input", request.seconds))
-        )
+        seconds = math.ceil(request.seconds)  # PiAPI bills whole seconds: only ever over-quote
+        return Estimate(lines=(cost_line(key, seconds), cost_line(f"{key}-input", seconds)))
 
     @staticmethod
     def build_input(
@@ -160,4 +162,8 @@ class SeedanceGenerator:
             video = fit_for_upload(request.video, folder / UPLOAD_COPY, MAX_UPLOAD_BYTES)
         except UploadTooLarge as exc:
             raise ProviderError(f"{exc} Nothing was charged.") from exc
-        return self._piapi.upload_temp(video)
+        try:
+            return self._piapi.upload_temp(video)
+        finally:
+            if video != request.video:  # the compressed copy is private media: don't keep it
+                video.unlink(missing_ok=True)

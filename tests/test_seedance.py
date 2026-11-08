@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from character_swap.media.upload import UploadTooLarge
 from character_swap.providers.errors import OutputExpired, ProviderError
 from character_swap.providers.generators import seedance_piapi
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest
@@ -45,7 +46,7 @@ def test_estimates_include_the_input_video(tmp_path):
 
 
 def test_unknown_final_resolution_is_refused(tmp_path):
-    with pytest.raises(ProviderError, match="1080p or 720p"):
+    with pytest.raises(ProviderError, match="1080p or 720p.*Nothing was charged"):
         SeedanceGenerator(FakePiAPI()).estimate(request(tmp_path, final_resolution="4k"), "final")
 
 
@@ -156,6 +157,7 @@ def test_big_prepared_video_is_uploaded_as_a_smaller_copy(tmp_path, monkeypatch)
     generate(SeedanceGenerator(piapi), request(tmp_path), "draft", tmp_path)
     assert seen == [("prepared.mp4", "upload-copy.mp4", 7_000_000)]
     assert [p.name for p in piapi.uploads] == ["upload-copy.mp4"]
+    assert not (tmp_path / "upload-copy.mp4").exists()  # private media is removed after upload
 
 
 def test_expired_download_names_the_record_and_the_rebuy_cost(tmp_path):
@@ -175,3 +177,24 @@ def test_capabilities():
     assert (SeedanceGenerator.min_seconds, SeedanceGenerator.max_seconds) == (4, 30)
     assert SeedanceGenerator.supports_secondary and SeedanceGenerator.provider == "piapi"
     assert SeedanceGenerator.model == TASK_TYPE == "seedance-2.5-less-restriction"
+
+
+def test_estimates_round_partial_seconds_up(tmp_path):
+    gen = SeedanceGenerator(FakePiAPI())
+    assert gen.estimate(request(tmp_path, seconds=12.4), "draft").total == pytest.approx(
+        gen.estimate(request(tmp_path, seconds=13.0), "draft").total
+    )
+
+
+def test_video_too_big_even_compressed_stops_before_paying(tmp_path, monkeypatch):
+    def too_big(src, dst, max_bytes):
+        raise UploadTooLarge(
+            "prepared.mp4 is still over 7 MB after compressing. Use a shorter clip."
+        )
+
+    monkeypatch.setattr(seedance_piapi, "fit_for_upload", too_big)
+    piapi = FakePiAPI(assets={"a1": "Active"})
+    with pytest.raises(ProviderError, match="shorter clip.*Nothing was charged"):
+        generate(SeedanceGenerator(piapi), request(tmp_path), "draft", tmp_path)
+    assert piapi.bodies == [] and piapi.uploads == []
+    assert not (tmp_path / "draft-prediction.json").exists()
