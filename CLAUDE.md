@@ -10,17 +10,20 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Tests (with coverage gate): `uv run pytest`
 - Lint/format: `uv run ruff format src tests && uv run ruff check --fix src tests`
 - CLI: `uv run charswap --help`
-- Generate (paid, asks first): `uv run charswap generate <job> --draft|--final`
+- Faces (free): `uv run charswap face add|list|check|renew`
+- Prompt (Seedance): `uv run charswap prompt <job>`
+- Generate (paid, asks first): `uv run charswap generate <job> --draft|--final [--resolution 720p]`
 - Viewer: `uv run charswap view`
 
 ## Layout
 - `src/character_swap/providers/` is the ONLY code that calls the network.
 - `stages/` = one pipeline step per file; `media/` = local video/audio work.
 - `web/` = read-only job viewer (FastAPI + Jinja2, localhost only; GET routes only, never changes job state).
-- Jobs live in `runs/<id>/` with `state.json` (resumable).
+- Jobs live in `runs/<id>/` with `state.json` (resumable). Saved faces live in `faces/` (`faces.json` + photos).
+- `inputs/`, `faces/` and `runs/` are git-ignored and never committed.
 
 ## Hard rules
-- Never auto-retry a paid request. Only exception: a create rejected with 429 (Replicate throttled it, nothing was created) is retried after re-claiming the exclusive "creating" marker. Persist provider IDs before waiting.
+- Never auto-retry a paid request. Only exception: a Replicate create rejected with 429 (nothing was created) is retried after re-claiming the exclusive "creating" marker. PiAPI 429s are not retried. Persist provider IDs before waiting.
 - Every paid action shows an estimate and needs confirmation.
 - Tests never call paid APIs (use `tests/fakes.py`); live tests are `@pytest.mark.live`.
 - Stage files by name; never `git add -A`. No attribution lines in commits.

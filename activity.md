@@ -62,3 +62,37 @@
   - Screenshots of photos are too small (~200 px); ask for the exported original.
   - Real run was ~1 min 45 s, much faster than the 3–8 min guess.
 - **Next:** Frank checks the real charge on Replicate billing (update prices); optionally retake the photo and redo the draft, then `--final`. Then Plan 2b (Seedance via PiAPI, two-person clips).
+
+## 2026-11-08 — Session 5: Plan 2b (Seedance 2.5 on PiAPI) built
+- **Goal:** Second generator: Seedance 2.5 on PiAPI with real faces, a cheap 480p draft and a 1080p or 720p final, for one- and two-person clips.
+- **Completed:** On branch feat/plan-2b-seedance (not merged yet).
+  - PiAPI client: free calls (temporary upload, face assets, download) and paid tasks that are created once, saved before waiting and resumed, never re-bought. Shared money-safe record helpers now serve both the Replicate and PiAPI clients.
+  - Face library in `faces/` (git-ignored) with `charswap face add|list|check|renew` (all free).
+  - Characters are chosen at `prepare` for both generators: `--face`/`--character`, plus `--face2`/`--character2` for a second person on Seedance. The review fingerprint covers them.
+  - Whole-second clips for Seedance: `normalize` drops the tail and the original sound is cut to the same length.
+  - Upload copy: a `prepared.mp4` over 7 MB is re-encoded smaller with the audio packets copied untouched; still too big means a refusal before paying.
+  - Seedance generator: 480p draft, then a 1080p promote of that draft (default) or a fresh 720p run (`--resolution 720p`). Estimates round up to whole seconds and include the input-video charge.
+  - `charswap prompt <id>` writes and prints `prompt.txt`; `generate --draft` shows the full prompt before the cost question, and the text sent is saved with the draft.
+  - CLI and doctor: `PIAPI_API_KEY` is needed for the face commands and Seedance generation (Wan never asks for it); `doctor` reports it.
+  - Viewer shows the Seedance draft and final with the prompt, resolution and PiAPI costs.
+  - 751 tests, 96.50 % coverage, ruff clean. README has a "Try it with Seedance" section.
+- **Decisions:**
+  - Q1 PiAPI first, BytePlus later as one more generator file. Why: PiAPI is the only documented real-face path on Seedance 2.5 today; BytePlus verification is pending.
+  - Q2 Hosting is PiAPI's own 24 h upload; R2 and tmpfiles dropped. Why: the Creator plan needed for faces already includes it, so no Cloudflare account.
+  - Q3 Characters chosen at `prepare` and hashed by the review. Why: one rule for both generators, and the final can only use what was reviewed.
+  - Q4 Face library in `faces/`, jobs store the face name and the asset id is looked up and checked `Active` before any charge. Why: free calls only, and `renew` re-uploads the same photo so the identity never silently changes.
+  - Q5 Whole-second clips with the sound cut to match. Why: PiAPI durations are whole seconds and the sound must stay in sync.
+  - Q6 Task type `edit` as one constant. Why: "replace the person in @video1" is an edit; the live test confirms it, and switching to `reference` is a small follow-up.
+  - Q7 Final is a 1080p promote (default) or a fresh 720p run. Why: 1080p is an exact upgrade of the watched draft (~$16 for 12 s); 720p is ~$7 but can differ a little.
+  - Q8 Prompt review through `prompt.txt`, outside the review fingerprint. Why: the confirmed text is what is sent, and editing it never clears the review.
+  - Q9 Upload copy under 7 MB with untouched audio. Why: PiAPI's upload limit is 10 MB and the pitched vocals must survive for lip sync.
+  - Q10 A PiAPI 429 on a paid create is not retried. Why: the 429 exception covers Replicate only; the rule stays simple for a new provider.
+  - Q11 A task that fails after creation keeps its record. Why: never re-buy without the user's yes; PiAPI refunds content rejections.
+  - Q12 No paid "face check" generation. Why: the library's `Active` status is the check and the first draft is the real test.
+- **Lessons:**
+  - The preview shown before a stale-draft remake must be built from the request that will really be sent (`replacing_stale`), not from the old paid draft.
+  - A failed 720p attempt must not become the default: a plain `--final` afterwards is a 1080p promote again.
+  - A promote with no saved draft task id is refused before the cost question, not after the user says yes.
+  - Resuming a paid generation must never depend on today's `prompt.txt` or face library; it uses what was saved at create time.
+  - Estimates round seconds up so they only ever over-quote.
+- **Not done:** live Seedance test (Task 14, needs Frank's OK and a PiAPI Creator plan). Leftovers are in docs/scratchpad.md "Deferred from Plan 2b".

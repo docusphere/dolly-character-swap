@@ -2,7 +2,7 @@
 
 Swap a person in a short video for your own character while keeping the original motion, timing and soundtrack. Runs locally; uses Seedance 2.5 (via PiAPI) or the open-source Wan 2.2 Animate (via Replicate).
 
-**Status:** work in progress. The open-source Wan path works end to end (not yet tested live); Seedance (PiAPI) is next. The design is in [docs/superpowers/specs/](docs/superpowers/specs/2026-10-22-character-swap-v1-design.md).
+**Status:** work in progress. Both paths are built: Wan (one live draft so far) and Seedance on PiAPI (not yet tested live). The design is in [docs/superpowers/specs/](docs/superpowers/specs/2026-10-22-character-swap-v1-design.md).
 
 Only use faces and footage you have the rights to use.
 
@@ -24,6 +24,33 @@ The final is only allowed for the exact inputs you watched in the draft. The dra
 The result is `runs/<id>/final.mp4`, with your clip's original soundtrack put back unchanged. If the clip's sound and picture already differ by more than about 0.4 s, it is refused before you pay. If Replicate is busy ("Replicate is busy..."), the tool waits and tries again by itself; it never charges twice. If a step stops, run the same command again: saved requests are resumed, never paid twice.
 
 Prices are estimates (Wan's price is not confirmed yet); check replicate.com billing for exact charges.
+
+## Try it with Seedance (best quality, real faces, on PiAPI)
+
+You need a PiAPI account on the **Creator plan or higher** (saved faces and uploads), with
+`PIAPI_API_KEY` in `.env`, plus `REPLICATE_API_TOKEN` for preparation.
+
+```bash
+uv run charswap face add me me.jpg                         # once, free: PiAPI checks the photo
+uv run charswap prepare clip.mp4 --mode depth --face me    # ~$0.06: the depth disguise
+# watch it in `uv run charswap view`, then approve with the command shown there
+uv run charswap prompt <id>                                # optional: edit prompt.txt
+uv run charswap generate <id> --draft                      # 480p, shows the price, asks first
+uv run charswap generate <id> --final                      # 1080p upgrade of that draft
+uv run charswap generate <id> --final --resolution 720p    # or: cheaper fresh 720p run
+```
+
+Prices for a 12 s clip, estimated: draft about $3, 1080p final about $16, 720p final about
+$7 (PiAPI also bills the input video). Test with 4–5 s clips first.
+
+Two people in the clip: `--subject` tells SAM what to cut out (default "person" = everyone),
+and `--face2` / `--character2` gives the second person their own character. Say in the
+prompt who becomes @image1 and who becomes @image2.
+
+Clips are trimmed to whole seconds (PiAPI works in whole seconds); the original sound is
+cut to match. `--character IMAGE` is only for characters that are not real people (PiAPI
+rejects real faces sent that way); use a saved face for a real person. Only add faces you
+have the right to use.
 
 ## License
 

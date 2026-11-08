@@ -9,11 +9,12 @@
 - [x] S4 — Live Wan draft (Task 15): 12 s talking-head clip + Frank's selfie → 480p draft in ~1 min 45 s, identity carried over, original audio restored (job 09b020f5…)
 - [ ] Confirm the real Wan charge on replicate.com billing (estimate ~$0.24 for 12 s at 480p) and update `costs.py` prices
 - [ ] Optional: retake character photo (head and shoulders, clothed, plain wall) → new draft, then `--final` 720p (~$0.60)
-- [ ] Plan 2b — hosting (R2/tmpfiles), PiAPI Seedance 2.5 + face library, face check. Must cover two-person clips: `--subject` picks who gets disguised/replaced; primary + secondary face slots (@image1/@image2) to replace both; include a 'pick one of two people' live test.
+- [x] S5 — Plan 2b — PiAPI Seedance 2.5 + face library, PiAPI upload (replaces R2/tmpfiles), two-person clips (`--subject`, @image1/@image2 slots), prompt review (751 tests, 96.5 % coverage; branch feat/plan-2b-seedance)
+- [ ] Live Seedance test (Task 14, needs Frank's OK + PiAPI Creator plan)
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
-- [ ] (2b) Decide whole-second clip length: PiAPI `duration` is an int 4–30, `normalize` keeps fractional seconds, and `restore_original_audio` refuses > 0.25 s longer / > 0.5 s shorter. Snap video+audio to whole seconds at normalize (and use that as the soundtrack source) or round up and trim the generated video. Add a normalize → restore test with an integer-length generated video.
+- [x] S5 — (2b) Decide whole-second clip length: PiAPI `duration` is an int 4–30, `normalize` keeps fractional seconds, and `restore_original_audio` refuses > 0.25 s longer / > 0.5 s shorter. Snap video+audio to whole seconds at normalize (and use that as the soundtrack source) or round up and trim the generated video. Add a normalize → restore test with an integer-length generated video.
 - [x] Persist normalize metadata in state.json (seconds, width, height, frames, aspect ratio); real-length cost estimates instead of fixed 30 s.
 - [x] Spend log: one entry per paid call (provider, model, task id, units, estimate) written when the paid request is created; don't charge depth when provider is Hugging Face. (done for generation in S3; prep still logs one 'prepare' entry; HF depth still counted, Plan 3)
 - [x] `providers/errors.py` (ProviderError, OutputExpired) + app-wide `CharSwapError` base; drop class-name matching in `stages/__init__.py`; catch prompt `ValueError` in CLI.
@@ -33,10 +34,10 @@
 
 ## Deferred from Plan 2a
 From the plan's Deferred table:
-- [ ] (2b) File hosting: R2 presigned + tmpfiles fallback (Wan uses Replicate's own upload; only PiAPI needs public URLs)
-- [ ] (2b) PiAPI Seedance 2.5 generator, draft to 1080p promote, face library, `charswap check-face` (add `generates=True` to Seedance modes)
-- [ ] (2b) Whole-second clip length (PiAPI `duration` is an int)
-- [ ] (2b) Prompt review before a Seedance draft
+- [x] S5 — (2b) File hosting: replaced by PiAPI's own temporary upload (R2 and tmpfiles dropped)
+- [x] S5 — (2b) PiAPI Seedance 2.5 generator, draft to 1080p promote (or 720p), face library (`charswap face check`), `generates=True` on Seedance modes
+- [x] S5 — (2b) Whole-second clip length (PiAPI `duration` is an int)
+- [x] S5 — (2b) Prompt review before a Seedance draft (`charswap prompt`)
 - [ ] (2b if needed) Persist the full `GenerationRequest` in state.json
 - [ ] (Plan 3) Rename `original.mp4` to `normalized.mp4` (P10)
 - [ ] (Plan 3) Per-job file lock / run lock with heartbeat (P11)
@@ -60,6 +61,17 @@ Review leftovers:
 - [ ] Partial archive failure reporting (draft-old-*/final-old-*)
 - [ ] Mode names still hardcoded in a few places (cli.py repair check, view_model, pipeline)
 - [ ] Ctrl-C at the cost question prints "not charged again"
+
+## Deferred from Plan 2b
+From the plan's Deferred table:
+- [ ] `reference` task type (if the live test shows `edit` is wrong): follow-up task after Task 14
+- [ ] BytePlus ModelArk generator (ByteDance direct, cheaper; needs Frank's verified business account + real-person access): own small plan once BytePlus confirms
+- [ ] Use `seed` / `audio` if PiAPI documents them for 2.5: after the live test
+- [ ] Seedance 2.0 fallback (15 s, no promote): only if 2.5 refuses faces
+- [ ] (Plan 3, `services.py`) `build_services` without `REPLICATE_API_TOKEN` (a Seedance-only machine)
+- [ ] (Plan 3) Delete PiAPI temporary uploads / assets from the CLI (`charswap face remove`)
+- [ ] (Plan 3 UI) Viewer: face library panel, prompt editing in the browser
+- [ ] (Backlog, with `charswap cancel`) PiAPI task cancel
 
 ## Backlog (decided S2)
 - Grey depth option (`--depth-color grey`): clearer on orange/warm backgrounds; colour kept as default because it is the proven input. Try only if results look wrong. A/B by eye in the viewer; pose-match score later.
