@@ -286,6 +286,7 @@ def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path |
     library = FaceLibrary(settings.root)
     images: dict[str, Path | None] = {}
     faces: dict[str, str] = {}
+    noted = False
     for slot, face_name, image in (
         ("primary", args.face, args.character),
         ("secondary", args.face2, args.character2),
@@ -295,17 +296,20 @@ def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path |
             raise JobError(f"Use --face{flag} or --character{flag}, not both.")
         if face_name:
             face = library.get(face_name)
-            if face.status != ACTIVE:
+            if args.generator == "seedance" and face.status != ACTIVE:
                 raise JobError(
                     f"Face {face_name!r} is {face.status} at PiAPI. Run charswap face check "
                     f"{face_name} first."
                 )
             images[slot], faces[slot] = library.image_path(face), face_name
         elif image and args.generator == "seedance":
-            env.out(
-                "Note: Seedance takes --character images only for characters that are not a real "
-                "person (PiAPI rejects real faces sent this way). For a real person, use --face."
-            )
+            if not noted:
+                env.out(
+                    "Note: Seedance takes --character images only for characters that are not a "
+                    "real person (PiAPI rejects real faces sent this way). For a real person, "
+                    "use --face."
+                )
+                noted = True
             images[slot] = check_photo(image, scratch / f"character-{slot}.jpg")
         else:
             images[slot] = image

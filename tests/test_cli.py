@@ -1260,3 +1260,48 @@ def test_prepare_wan_refuses_a_second_character(settings, video, tmp_path):
         settings,
     )
     assert code == 2 and "one character" in out.err.text
+
+
+def _processing_face(settings, tmp_path):
+    lib = FaceLibrary(settings.root, sleep=lambda _s: None, polls=0)
+    return lib.add(
+        "frank", _photo(tmp_path / "me.jpg"), FakePiAPI(assets={"asset-1": "Processing"})
+    )
+
+
+def test_wan_face_only_needs_to_exist_not_be_active(settings, video, tmp_path, monkeypatch):
+    face = _processing_face(settings, tmp_path)
+    ids = _prepare_ids(monkeypatch)
+    code, _ = run(
+        ["prepare", str(video), "--generator", "wan", "--face", "frank", "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    job = Job.load(settings.runs_dir, ids[0])
+    assert code == 0 and job.state["character_primary"] == "character-primary.jpg"
+    library_image = FaceLibrary(settings.root).image_path(face)
+    assert job.path("character-primary.jpg").read_bytes() == library_image.read_bytes()
+
+
+def test_seedance_still_refuses_a_processing_face(settings, video, tmp_path):
+    _processing_face(settings, tmp_path)
+    code, out = run(["prepare", str(video), "--face", "frank", "--yes"], settings)
+    assert code == 2 and "charswap face check frank" in out.err.text
+
+
+def test_real_person_note_prints_once_for_two_characters(settings, video, tmp_path, monkeypatch):
+    _prepare_ids(monkeypatch)
+    code, out = run(
+        [
+            "prepare",
+            str(video),
+            "--character",
+            str(_photo(tmp_path / "a.png")),
+            "--character2",
+            str(_photo(tmp_path / "b.png")),
+            "--yes",
+        ],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and out.text.count("not a real person") == 1
