@@ -88,7 +88,7 @@
       <dl class="facts">
         {% for text in section.texts %}
         <dt>{{ text.label }}</dt>
-        <dd>{% if text.code %}<code class="command">{{ text.value }}</code>{% else %}{{ text.value }}{% endif %}</dd>
+        <dd{% if text.multiline %} class="multiline"{% endif %}>{% if text.code %}<code class="command">{{ text.value }}</code>{% else %}{{ text.value }}{% endif %}</dd>
         {% endfor %}
       </dl>
       {% endif %}

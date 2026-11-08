@@ -737,3 +737,33 @@ def test_seedance_prep_sections_keep_replicate_links_and_rows(runs_dir, media):
     assert sections(view)["vocals"].links[0].url == "https://replicate.com/p/pred-separate"
     providers = {r.step: r.provider for r in view.costs.rows}
     assert providers["Separate vocals"] == "Replicate" and providers["Draft (480p)"] == "PiAPI"
+
+
+@pytest.mark.parametrize("value", ["", None, 42])
+def test_empty_or_odd_prompt_and_resolution_show_nothing(runs_dir, media, value):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    job.mark_stage("draft", fingerprint=fingerprint(job), prompt=value)
+    job.mark_stage("final", fingerprint=fingerprint(job), resolution=value)
+    by_id = sections(vm.job_view(job, runs_dir))
+    assert "Prompt sent" not in {t.label for t in by_id["draft"].texts}
+    assert "Resolution" not in {t.label for t in by_id["final"].texts}
+
+
+def test_only_the_prompt_keeps_its_line_breaks(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Line one.\nLine two.")
+    view = vm.job_view(job, runs_dir)
+    multiline = [t.label for s in view.sections for t in s.texts if t.multiline]
+    assert multiline == ["Prompt sent"]
+
+
+@pytest.mark.parametrize(("status", "shown"), [("running", True), ("failed", False)])
+def test_resolution_shows_only_for_a_started_or_finished_final(runs_dir, media, status, shown):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    job.mark_stage("final", status, resolution="720p", error="PiAPI said no")
+    texts = {t.label for t in sections(vm.job_view(job, runs_dir))["final"].texts}
+    assert ("Resolution" in texts) is shown

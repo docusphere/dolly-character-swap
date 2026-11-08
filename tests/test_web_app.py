@@ -7,9 +7,10 @@ from fastapi.testclient import TestClient
 
 from character_swap.config import Settings
 from character_swap.costs import Estimate, Line, record_spend
+from character_swap.review import fingerprint
 from character_swap.web.app import create_app
 from character_swap.web.view_model import SECTIONS, sections_for
-from viewer_jobs import make_job
+from viewer_jobs import finish_stage, make_job
 
 
 @pytest.fixture
@@ -387,3 +388,12 @@ def test_stale_final_page_badge(client, runs_dir, media):
     text = client.get(f"/jobs/{job.id}").text
     assert 'class="badge status-failed" id="job-status">Out of date' in text
     assert f"charswap generate {job.id} --draft" in text
+
+
+def test_prompt_keeps_its_line_breaks_on_the_page(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    finish_stage(job, media, "draft")
+    job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Line one.\nLine two.")
+    text = client.get(f"/jobs/{job.id}").text
+    assert text.count('class="multiline"') == 1
+    assert '<dd class="multiline">Line one.\nLine two.</dd>' in text

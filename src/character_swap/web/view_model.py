@@ -256,6 +256,7 @@ class TextItem:
     label: str
     value: str
     code: bool = False
+    multiline: bool = False  # keep the value's line breaks (a prompt.txt)
 
 
 @dataclass(frozen=True)
@@ -708,10 +709,13 @@ def _seedance_texts(state: dict[str, Any], stage: str) -> list[TextItem]:
     entry = state.get("stages", {}).get(stage)
     if not isinstance(entry, dict):
         return []
-    if stage == "draft" and isinstance(entry.get("prompt"), str):
-        return [TextItem("Prompt sent", entry["prompt"])]
-    if stage == "final" and isinstance(entry.get("resolution"), str):
-        return [TextItem("Resolution", entry["resolution"])]
+    prompt, resolution = entry.get("prompt"), entry.get("resolution")
+    if stage == "draft" and isinstance(prompt, str) and prompt:
+        return [TextItem("Prompt sent", prompt, multiline=True)]
+    # Saved when a final starts: a failed one says nothing (a plain --final may pick another)
+    started = stage_status(state, "final") in ("done", "running")
+    if stage == "final" and started and isinstance(resolution, str) and resolution:
+        return [TextItem("Resolution", resolution)]
     return []
 
 

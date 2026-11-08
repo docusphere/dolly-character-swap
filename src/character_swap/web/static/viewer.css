@@ -196,6 +196,7 @@ audio { width: 100%; }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-6); margin: var(--space-6) 0 0; }
 .facts dt { color: var(--text-muted); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts dd.multiline { white-space: pre-line; }
 .command { display: block; padding: var(--space-3); background: var(--surface-2); border-radius: var(--radius-sm); user-select: all; }
 .totals dd { font-weight: 600; }
 .totals + .meta { margin-top: var(--space-4); }
