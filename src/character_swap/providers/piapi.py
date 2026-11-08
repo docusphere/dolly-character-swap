@@ -40,6 +40,14 @@ class PiAPIError(ProviderError):
     """PiAPI rejected, failed or has not finished a request."""
 
 
+class PiAPIRejected(PiAPIError):
+    """PiAPI refused the paid create outright: no task exists and nothing was charged."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class PiAPIOutputExpired(PiAPIError, OutputExpired):
     """The finished task's video link is gone; only a new (paid) run recovers it."""
 
@@ -279,7 +287,7 @@ class PiAPIClient:
                     f"{record}; check {WORKSPACE} before deleting it."
                 )
             self._release(record, marker, rejection)
-            raise PiAPIError(rejection)
+            raise PiAPIRejected(rejection, code)
         if response.is_error:
             raise PiAPIError(unconfirmed_message(record))
         try:
@@ -300,7 +308,7 @@ class PiAPIClient:
             ):
                 rejection = f"PiAPI rejected the request (nothing was charged): {problem[:300]}"
                 self._release(record, marker, rejection)
-                raise PiAPIError(rejection)
+                raise PiAPIRejected(rejection, envelope_code)
             raise PiAPIError(unconfirmed_message(record))
         task = {"id": task_id, "status": task_status(data.get("status")), "task": data}
         self._keep(task, record, on_created)
@@ -324,12 +332,12 @@ class PiAPIClient:
         try:
             common.save(record, task)
         except OSError as error:
-            common.announce(on_created, task, what="paid PiAPI task")  # paid all the same
+            common.announce(on_created, task, what="paid PiAPI task", stacklevel=5)  # paid
             raise PiAPIError(
                 f"Paid PiAPI task {task['id']} was created but its record could not be saved "
                 f"({error}). Note this id; check {WORKSPACE}."
             ) from error
-        common.announce(on_created, task, what="paid PiAPI task")
+        common.announce(on_created, task, what="paid PiAPI task", stacklevel=5)
 
     @staticmethod
     def _release(record: Path, marker: dict, nothing_charged: str) -> None:

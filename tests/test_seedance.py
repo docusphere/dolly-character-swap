@@ -198,3 +198,57 @@ def test_video_too_big_even_compressed_stops_before_paying(tmp_path, monkeypatch
         generate(SeedanceGenerator(piapi), request(tmp_path), "draft", tmp_path)
     assert piapi.bodies == [] and piapi.uploads == []
     assert not (tmp_path / "draft-prediction.json").exists()
+
+
+@pytest.mark.parametrize("code", [400, 404, 409, 422])
+def test_a_refused_promote_suggests_the_7_day_limit_and_720p(tmp_path, monkeypatch, code):
+    from character_swap.providers.piapi import PiAPIRejected
+
+    piapi = FakePiAPI()
+
+    def refuse(**_kw):
+        raise PiAPIRejected(f"PiAPI rejected the request ({code}); nothing was charged: x", code)
+
+    monkeypatch.setattr(piapi, "run", refuse)
+    with pytest.raises(PiAPIRejected, match="about 7 days; use --resolution 720p") as caught:
+        generate(
+            SeedanceGenerator(piapi), request(tmp_path, draft_task_id="t-1"), "final", tmp_path
+        )
+    assert "nothing was charged" in str(caught.value)
+
+
+def test_a_refused_fresh_run_gets_no_promote_hint(tmp_path, monkeypatch):
+    from character_swap.providers.piapi import PiAPIRejected
+
+    piapi = FakePiAPI(assets={"a1": "Active"})
+
+    def refuse(**_kw):
+        raise PiAPIRejected("PiAPI rejected the request (400); nothing was charged: x", 400)
+
+    monkeypatch.setattr(piapi, "run", refuse)
+    with pytest.raises(PiAPIRejected) as caught:
+        generate(SeedanceGenerator(piapi), request(tmp_path), "draft", tmp_path)
+    assert "7 days" not in str(caught.value)
+
+
+def test_a_busy_promote_gets_no_7_day_hint(tmp_path, monkeypatch):
+    from character_swap.providers.piapi import PiAPIRejected
+
+    piapi = FakePiAPI()
+
+    def refuse(**_kw):
+        raise PiAPIRejected("PiAPI is busy (429). Nothing was charged.", 429)
+
+    monkeypatch.setattr(piapi, "run", refuse)
+    with pytest.raises(PiAPIRejected) as caught:
+        generate(
+            SeedanceGenerator(piapi), request(tmp_path, draft_task_id="t-1"), "final", tmp_path
+        )
+    assert "7 days" not in str(caught.value)
+
+
+def test_finals_are_defined_once():
+    from character_swap import pipeline
+
+    assert pipeline.FINAL_RESOLUTIONS["seedance"] is seedance_piapi.FINALS
+    assert pipeline.PROMOTE is seedance_piapi.PROMOTE

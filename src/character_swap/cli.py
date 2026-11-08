@@ -34,6 +34,7 @@ from character_swap.pipeline import (
     archive_stale_draft,
     build_request,
     check_can_generate,
+    draft_prompt_changed,
     final_resolution,
     generation_files,
     generation_label,
@@ -440,17 +441,20 @@ def _prompt(args, settings, env) -> int:
             f"charswap resume {job.id}"
         )
     path = write_prompt_file(job)
-    remake = stale_draft(job)  # the next draft replaces the old one: it sends prompt.txt
+    # The next draft replaces the old one (inputs or prompt.txt changed): it sends prompt.txt.
+    remake = stale_draft(job) or draft_prompt_changed(job)
     env.out(generation_prompt(job, "draft", replacing_stale=remake))
+    again = f"`charswap generate {job.id} --draft`"
     if already_paid(job, "draft") and not remake:
         env.out(
-            f"\nThe draft was already sent with this prompt. Editing {path} only changes a "
-            "new draft, made after the approved inputs change."
+            f"\nThe draft was already sent with this prompt. To try another, edit {path} "
+            f"and run {again}: that makes a new paid draft (it shows the cost and asks "
+            "first; the old one is kept as draft-old-*)."
         )
     elif remake:
         env.out(
-            f"\nSaved in {path}. The new draft (it replaces the old one) sends it exactly as "
-            "it is; edit that file to change what Seedance is told."
+            f"\nSaved in {path}. {again} makes a new paid draft with it, exactly as it is "
+            "(it shows the cost and asks first; the old one is kept as draft-old-*)."
         )
     else:
         env.out(
@@ -479,7 +483,11 @@ def _generate(args, settings, env) -> int:
     if args.resolution and stage == "draft":
         raise JobError("--resolution is only for --final (drafts are always 480p).")
     job = Job.load(settings.runs_dir, args.job)
-    remake = stage == "draft" and stale_draft(job)  # approved inputs changed since that draft
+    inputs_changed = stage == "draft" and stale_draft(job)  # approved inputs changed
+    # Seedance: a finished draft whose prompt.txt was edited since (the prompt is deliberately
+    # not part of the review, so editing it never clears the approval).
+    prompt_changed = stage == "draft" and not inputs_changed and draft_prompt_changed(job)
+    remake = inputs_changed or prompt_changed
     if stage == "final" and stale_generation(job, "final"):
         env.err(
             "This final was made from inputs that are no longer approved; run "
@@ -520,10 +528,15 @@ def _generate(args, settings, env) -> int:
                 f"{request.prompt}\n"
             )
         env.out(f"{generation_label(job, stage, resolution)} (paid):\n" + estimate.describe())
-        if remake:
+        if inputs_changed:
             env.out(
                 "This makes a new draft because the approved inputs changed since the last "
                 "one, and it costs money. The old draft files are kept as draft-old-*."
+            )
+        elif prompt_changed:
+            env.out(
+                "prompt.txt changed since the draft: this makes a new paid draft with the "
+                "prompt above. The old draft files are kept as draft-old-*."
             )
         if stage == "final":
             env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")

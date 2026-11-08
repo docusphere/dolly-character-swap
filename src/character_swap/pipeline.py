@@ -30,6 +30,8 @@ from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
 from character_swap.prompts import PromptError, build_prompt, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
+from character_swap.providers.generators.seedance_piapi import FINALS as SEEDANCE_FINALS
+from character_swap.providers.generators.seedance_piapi import PROMOTE
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
@@ -441,8 +443,8 @@ def generation_label(job: Job, stage: str, resolution: str = "") -> str:
     return f"Generating the {resolution or final_resolution(job, '')} final"
 
 
-PROMOTE = "1080p"  # Seedance's final that upgrades the draft's own task (sends no face/prompt)
-FINAL_RESOLUTIONS = {"seedance": (PROMOTE, "720p"), "wan": ("720p",)}  # first = default
+# Seedance's PROMOTE final upgrades the draft's own task (sends no face/prompt).
+FINAL_RESOLUTIONS = {"seedance": SEEDANCE_FINALS, "wan": ("720p",)}  # first = default
 
 
 def final_resolution(job: Job, requested: str = "") -> str:
@@ -456,6 +458,13 @@ def final_resolution(job: Job, requested: str = "") -> str:
     if chosen not in choices:
         raise StageError(f"{job.generator} finals can be {' or '.join(choices)}, not {chosen}.")
     if saved and chosen != saved and started:
+        record_path = job.path(generation_files("final")[0])
+        if _record_status(job, "final") == "failed":
+            raise StageError(
+                f"The {saved} final's task failed. To make a {chosen} final instead, delete "
+                f"{record_path} and run the same command again (it shows the cost and asks "
+                "first). This command charged nothing."
+            )
         raise StageError(
             f"A {saved} final was already started for this job; run the same command with "
             f"--resolution {saved} to pick it up (no new charge)."
@@ -465,6 +474,17 @@ def final_resolution(job: Job, requested: str = "") -> str:
 
 def final_resolution_for(job: Job, stage: str, requested: str) -> str:
     return final_resolution(job, requested) if stage == "final" else ""
+
+
+def _record_status(job: Job, stage: str) -> str:
+    """The saved provider record's status word, or "" when missing or unreadable."""
+    record, _, _ = generation_files(stage)
+    try:
+        data = json.loads(job.path(record).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    status = data.get("status") if isinstance(data, dict) else None
+    return status if isinstance(status, str) else ""
 
 
 def already_paid(job: Job, stage: str) -> bool:
@@ -485,7 +505,7 @@ def _character(job: Job, slot: str, faces: Any, *, face_needed: bool) -> Charact
         return None
     face_name = state.get(f"face_{slot}")
     asset_id = None
-    if face_name:
+    if face_name and job.generator == "seedance":  # Wan sends the image; no library needed
         try:
             if faces is None:
                 raise StageError("The face library is not set up for this command.")
@@ -648,11 +668,34 @@ def default_prompt(job: Job) -> str:
     )
 
 
+def draft_prompt_changed(job: Job) -> bool:
+    """A finished Seedance draft, and prompt.txt now says something else: a new draft is wanted.
+
+    No prompt.txt, or a draft that isn't finished (a resume), never counts as changed.
+    Compared as generation_prompt reads the file (stripped); a broken edit counts as changed,
+    so the remake path reports the problem before any cost question.
+    """
+    if job.generator != "seedance" or not job.stage_done("draft"):
+        return False
+    saved = job.state["stages"]["draft"].get("prompt")
+    path = job.path(PROMPT_FILE)
+    if not (isinstance(saved, str) and saved) or not path.exists():
+        return False
+    return path.read_text(encoding="utf-8").strip() != saved
+
+
 def write_prompt_file(job: Job) -> Path:
-    """Write the default prompt to prompt.txt unless the user already has one."""
+    """Write prompt.txt unless the user already has one.
+
+    After a paid draft it holds the text that draft sent (so recreating the file never looks
+    like an edit); otherwise the default prompt.
+    """
     path = job.path(PROMPT_FILE)
     if not path.exists():
-        _write_atomically(path, lambda part: part.write_text(default_prompt(job), encoding="utf-8"))
+        saved = job.state["stages"].get("draft", {}).get("prompt")
+        sent = saved if isinstance(saved, str) and saved and already_paid(job, "draft") else ""
+        text = sent or default_prompt(job)
+        _write_atomically(path, lambda part: part.write_text(text, encoding="utf-8"))
     return path
 
 

@@ -86,19 +86,6 @@ def test_check_refreshes_and_records_a_purged_face(tmp_path):
     assert lib.get("frank").status == GONE
 
 
-def test_require_active_explains_each_state(tmp_path):
-    piapi = FakePiAPI()
-    lib = library(tmp_path)
-    lib.add("frank", photo(tmp_path / "me.jpg"), piapi)
-    assert lib.require_active("frank", piapi).status == ACTIVE
-    piapi.assets["asset-1"] = "Failed"
-    with pytest.raises(FaceError, match="rejected"):
-        lib.require_active("frank", piapi)
-    piapi.assets.clear()
-    with pytest.raises(FaceError, match="charswap face renew frank"):
-        lib.require_active("frank", piapi)
-
-
 def test_renew_reuploads_the_same_saved_photo(tmp_path):
     piapi = FakePiAPI()
     lib = library(tmp_path)

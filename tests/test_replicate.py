@@ -867,3 +867,17 @@ def test_empty_input_never_creates_a_paid_prediction(tmp_path, empty):
         client().run(model="a/b", input=empty, record=record)
     assert route.call_count == 0
     assert not record.exists()
+
+
+@respx.mock
+def test_a_failing_logger_warning_points_at_the_caller(tmp_path):
+    respx.post(f"{API}/predictions").mock(
+        return_value=httpx.Response(201, json={"id": "p9", "status": "succeeded", "output": 1})
+    )
+
+    def broken(_prediction):
+        raise OSError("disk full")
+
+    with pytest.warns(UserWarning, match="p9") as caught:
+        client().run(version="v1", input=INPUT, record=tmp_path / "r.json", on_created=broken)
+    assert caught[0].filename == __file__

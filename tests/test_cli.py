@@ -1580,18 +1580,6 @@ def test_promote_without_the_draft_task_id_is_refused_before_asking(
     assert "task id is missing" in out.err.text and "Nothing was charged" in out.err.text
 
 
-def test_prompt_after_a_paid_draft_says_it_was_already_sent(piapi_settings, video, tmp_path):
-    job = _approved_seedance_job(piapi_settings, video, tmp_path)
-    job.path("prompt.txt").write_text("FIRST @image1 into @video1.")
-    run(
-        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
-    )
-    job.path("prompt.txt").write_text("EDITED @image1 into @video1.")
-    code, out = run(["prompt", job.id], piapi_settings)
-    assert code == 0 and "FIRST @image1 into @video1." in out.text
-    assert "already sent" in out.text and "exactly as it is" not in out.text
-
-
 def test_prompt_for_a_stale_draft_shows_what_the_remake_sends(piapi_settings, video, tmp_path):
     job = _approved_seedance_job(piapi_settings, video, tmp_path)
     _stale_draft(job)
@@ -1599,7 +1587,7 @@ def test_prompt_for_a_stale_draft_shows_what_the_remake_sends(piapi_settings, vi
     job.path("prompt.txt").write_text("NEW @image1 into @video1.")
     code, out = run(["prompt", job.id], piapi_settings)
     assert code == 0 and "NEW @image1 into @video1." in out.text and "OLD @image1" not in out.text
-    assert "new draft" in out.text
+    assert "new paid draft" in out.text
 
 
 def test_stale_remake_with_a_bad_prompt_is_refused_before_anything(piapi_settings, video, tmp_path):
@@ -1641,3 +1629,205 @@ def test_after_the_draft_a_malformed_face_list_only_drops_the_prices(
         ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
     )
     assert code == 0 and f"Run `charswap generate {job.id} --final`." in out.text
+
+
+# ---- prompt iteration: an edited prompt.txt makes a new paid draft --------------------
+def _drafted_seedance_job(settings, video, tmp_path, prompt="FIRST @image1 into @video1."):
+    job = _approved_seedance_job(settings, video, tmp_path)
+    job.path("prompt.txt").write_text(prompt)
+    code, _ = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=seedance_services
+    )
+    assert code == 0 and job.stage_done("draft")
+    return job
+
+
+def test_an_edited_prompt_asks_then_makes_a_new_draft(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked and "prompt.txt changed since the draft" in out.text
+    assert "SECOND @image1 into @video1." in out.text and "~$0.9900" in out.text
+    (body,) = seedance_services.last.bodies
+    assert body["input"]["prompt"] == "SECOND @image1 into @video1."
+    assert len(list(job.root.glob("draft-old-*"))) == 3
+    assert job.state["stages"]["draft"]["prompt"] == "SECOND @image1 into @video1."
+    from character_swap.review import status as review_status
+
+    assert review_status(job)["approved"] is True  # a prompt edit never clears the review
+
+
+def test_the_final_promotes_the_latest_draft(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    latest = json.loads(job.path("draft-prediction.json").read_text())["id"]
+    code, _ = run(
+        ["generate", job.id, "--final", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    assert code == 0
+    (body,) = seedance_services.last.bodies
+    assert body["input"] == {"draft_task_id": latest, "resolution": "1080p"}
+
+
+def test_the_same_prompt_is_still_already_done(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("  FIRST @image1 into @video1.\n")  # only whitespace
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked == [] and "already done" in out.text
+
+
+def test_no_prompt_file_is_still_already_done(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").unlink()
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked == [] and "already done" in out.text
+
+
+def test_declining_a_prompt_remake_archives_nothing(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    before = json.dumps(job.state["stages"], sort_keys=True)
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and not list(job.root.glob("draft-old-*"))
+    assert job.path("draft-prediction.json").exists() and seedance_services.last.bodies == []
+    assert json.dumps(job.state["stages"], sort_keys=True) == before
+
+
+def test_a_resumed_draft_ignores_prompt_edits(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "t-1", "status": "succeeded"}))
+    job.mark_stage(
+        "draft", "failed", fingerprint=review_fingerprint(job), prompt="A @image1 @video1"
+    )
+    job.path("prompt.txt").write_text("B @image1 into @video1.")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text
+    assert seedance_services.last.bodies == [] and not list(job.root.glob("draft-old-*"))
+
+
+def test_prompt_after_a_draft_says_generate_draft_makes_a_new_paid_one(
+    piapi_settings, video, tmp_path
+):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    code, out = run(["prompt", job.id], piapi_settings)
+    assert code == 0 and "FIRST @image1 into @video1." in out.text
+    assert f"charswap generate {job.id} --draft" in out.text and "new paid draft" in out.text
+
+
+def test_prompt_after_an_edit_shows_the_edited_text(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("SECOND @image1 into @video1.")
+    code, out = run(["prompt", job.id], piapi_settings)
+    assert code == 0 and "SECOND @image1 into @video1." in out.text
+    assert "FIRST" not in out.text and "new paid draft" in out.text
+
+
+# ---- Wan never needs the face library --------------------------------------------------
+def test_a_wan_job_with_a_removed_face_can_still_draft(settings, video, tmp_path, monkeypatch):
+    _saved_face(settings, tmp_path)
+    library = FaceLibrary(settings.root)
+    job = Job.create(
+        settings.runs_dir,
+        video,
+        generator="wan",
+        mode="direct",
+        character=library.image_path(library.get("frank")),
+        faces={"primary": "frank"},
+    )
+    job.path("original.mp4").write_bytes(b"normalized")
+    job.mark_stage("normalize")
+    job.update(video={"frames": 96, "fps": 24, "width": 64, "height": 64, "seconds": 4.0})
+    approve_review(job, approved=True, note="ok", fingerprint=review_fingerprint(job))
+    library.index.write_text("[]")  # the face left the library
+    seen = []
+    monkeypatch.setattr(cli, "generate_stage", _fake_generate(seen))
+
+    def services(s):
+        return Services(
+            replicate=None,
+            face_detector=lambda: None,
+            generators={"wan": FakeWan()},
+            faces=FaceLibrary(s.root),
+        )
+
+    code, out = run(["generate", job.id, "--draft", "--yes"], settings, services_factory=services)
+    assert code == 0 and seen == ["draft"], out.err.text
+
+
+# ---- a failed final at another resolution ----------------------------------------------
+def test_a_failed_final_record_names_the_failure_when_switching(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    record = job.path("final-prediction.json")
+    record.write_text(json.dumps({"id": "t-9", "status": "failed"}))
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="1080p")
+    seedance_services.last = FakePiAPI()  # the draft's fake sent the draft body
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "720p"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and seedance_services.last.bodies == []
+    assert "task failed" in out.err.text and str(record) in out.err.text
+
+
+def test_a_running_final_at_another_resolution_is_still_refused(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("final-prediction.json").write_text(json.dumps({"id": "t-9", "status": "processing"}))
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="1080p")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "720p"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and "--resolution 1080p" in out.err.text
+
+
+def test_prompt_recreates_a_deleted_file_with_what_the_draft_sent(piapi_settings, video, tmp_path):
+    job = _drafted_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").unlink()
+    code, out = run(["prompt", job.id], piapi_settings)
+    assert code == 0 and job.path("prompt.txt").read_text() == "FIRST @image1 into @video1."
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked == [] and "already done" in out.text

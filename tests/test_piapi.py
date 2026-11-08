@@ -380,3 +380,36 @@ def test_4xx_that_still_carries_a_task_id_is_saved_not_released(tmp_path):
     saved = json.loads(record.read_text())
     assert saved["id"] == "t9" and saved["status"] == "starting"
     assert [c["id"] for c in created] == ["t9"]
+
+
+@pytest.mark.parametrize("code", [400, 404, 409, 422])
+@respx.mock
+def test_a_clear_refusal_is_a_rejection_with_its_code(tmp_path, code):
+    from character_swap.providers.piapi import PiAPIRejected
+
+    respx.post(f"{API}/task").respond(code, json={"code": code, "message": "no"})
+    with pytest.raises(PiAPIRejected) as caught:
+        client().run(body=BODY, record=tmp_path / "r.json")
+    assert caught.value.status_code == code
+
+
+@respx.mock
+def test_an_envelope_refusal_is_a_rejection_with_its_code(tmp_path):
+    from character_swap.providers.piapi import PiAPIRejected
+
+    respx.post(f"{API}/task").respond(200, json={"code": 400, "message": "draft too old"})
+    with pytest.raises(PiAPIRejected) as caught:
+        client().run(body=BODY, record=tmp_path / "r.json")
+    assert caught.value.status_code == 400 and not (tmp_path / "r.json").exists()
+
+
+@respx.mock
+def test_a_failing_logger_warning_points_at_the_caller(tmp_path):
+    respx.post(f"{API}/task").respond(200, json=task_json("completed", output={"video": VIDEO}))
+
+    def broken(_task):
+        raise OSError("disk full")
+
+    with pytest.warns(UserWarning, match="Could not log") as caught:
+        assert client().run(body=BODY, record=tmp_path / "r.json", on_created=broken) == VIDEO
+    assert caught[0].filename == __file__

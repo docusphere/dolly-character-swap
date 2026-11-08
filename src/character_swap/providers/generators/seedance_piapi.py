@@ -15,7 +15,7 @@ from character_swap.providers.generators.base import (
     OnCreated,
     Stage,
 )
-from character_swap.providers.piapi import MAX_UPLOAD_BYTES
+from character_swap.providers.piapi import MAX_UPLOAD_BYTES, PiAPIRejected
 
 TASK_TYPE = "seedance-2.5-less-restriction"
 # "edit" changes the people in @video1 and keeps its length and framing. PiAPI fails a task
@@ -26,6 +26,9 @@ PROMOTE = "1080p"  # upgrades the exact draft
 FINALS = (PROMOTE, "720p")  # 720p is a fresh run with the same prompt and inputs
 PRICE = {"480p": "seedance-480", "720p": "seedance-720", "1080p": "seedance-1080"}
 UPLOAD_COPY = "upload-copy.mp4"
+# PiAPI refuses a promote with one of these when the draft can't be upgraded (e.g. too old).
+PROMOTE_REFUSALS = (400, 404, 409, 422)
+PROMOTE_HINT = "Drafts can be upgraded for about 7 days; use --resolution 720p for a fresh run."
 
 
 class SeedanceGenerator:
@@ -119,7 +122,13 @@ class SeedanceGenerator:
                 resolution=resolution,
                 draft=stage == "draft",
             )
-        url = self._piapi.run(body=body, record=record, on_created=on_created)
+        try:
+            url = self._piapi.run(body=body, record=record, on_created=on_created)
+        except PiAPIRejected as exc:
+            promote = bool(body) and "draft_task_id" in body.get("input", {})
+            if promote and exc.status_code in PROMOTE_REFUSALS:
+                raise PiAPIRejected(f"{exc} {PROMOTE_HINT}", exc.status_code) from exc
+            raise
         try:
             return self._piapi.download(url, dest)
         except OutputExpired as exc:

@@ -177,25 +177,6 @@ class FaceLibrary:
         """Ask PiAPI for the face's status (this also keeps it from being purged)."""
         return self._refresh(self.get(name), piapi)
 
-    def require_active(self, name: str, piapi: AssetsLike) -> Face:
-        face = self.check(name, piapi)
-        if face.status == ACTIVE:
-            return face
-        if face.status == PROCESSING:
-            raise FaceError(
-                f"PiAPI is still checking face {name!r}. Run charswap face check {name} in a "
-                "minute."
-            )
-        if face.status == FAILED:
-            raise FaceError(
-                f"PiAPI rejected face {name!r}: {face.error or 'no reason given'}. Try a "
-                "clearer, front-facing photo under a new name: charswap face add NAME photo.jpg"
-            )
-        raise FaceError(
-            f"PiAPI removed face {name!r} after it went unused. Run charswap face renew "
-            f"{name} (free), then try again."
-        )
-
     # ---- internals ----------------------------------------------------------------
     def _upload(self, name: str, image: str, piapi: AssetsLike) -> Face:
         url = piapi.upload_temp(self.folder / image)
