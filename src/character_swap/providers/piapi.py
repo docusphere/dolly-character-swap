@@ -49,7 +49,7 @@ def task_status(raw: object) -> str:
     word = str(raw or "").strip().lower()
     if word in ("completed", "success", "succeeded"):
         return "succeeded"
-    if word == "failed":
+    if word in ("failed", "cancelled", "canceled"):
         return "failed"
     if word in ("", "pending", "staged", "starting"):
         return "starting"
@@ -169,6 +169,11 @@ class PiAPIClient:
             if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 404:
                 return None
             raise
+        problem = _envelope_error(body)
+        if problem:
+            if body.get("code") == 404:
+                return None
+            raise PiAPIError(f"PiAPI could not check the face: {problem}")
         return _data(body)
 
     def download(self, url: str, dest: Path) -> Path:
@@ -262,6 +267,13 @@ class PiAPIClient:
         code = response.status_code
         if 400 <= code < 500 and code != 408:
             rejection = _rejection(code, response.text)
+            task = self._task_in(response)
+            if task is not None:  # a "rejection" that still names a task: it may be billed
+                self._keep(task, record, on_created)
+                raise PiAPIError(
+                    f"{rejection} PiAPI returned a task id {task['id']}; it is saved in "
+                    f"{record}; check {WORKSPACE} before deleting it."
+                )
             self._release(record, marker, rejection)
             raise PiAPIError(rejection)
         if response.is_error:
@@ -274,22 +286,46 @@ class PiAPIClient:
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not _ID.fullmatch(task_id):
             problem = _envelope_error(answer)
-            if problem is not None:  # PiAPI said no and gave no task: nothing exists
+            envelope_code = answer.get("code") if isinstance(answer, dict) else None
+            # Only a clear client error means nothing exists; 5xx/408/other: it may.
+            if (
+                problem is not None
+                and isinstance(envelope_code, int)
+                and 400 <= envelope_code < 500
+                and envelope_code != 408
+            ):
                 rejection = f"PiAPI rejected the request (nothing was charged): {problem[:300]}"
                 self._release(record, marker, rejection)
                 raise PiAPIError(rejection)
             raise PiAPIError(unconfirmed_message(record))
         task = {"id": task_id, "status": task_status(data.get("status")), "task": data}
+        self._keep(task, record, on_created)
+        return task
+
+    @staticmethod
+    def _task_in(response: httpx.Response) -> dict | None:
+        """The task a response names, if its body is JSON with a valid data.task_id."""
+        try:
+            data = _data(response.json())
+        except ValueError:
+            return None
+        task_id = data.get("task_id")
+        if not isinstance(task_id, str) or not _ID.fullmatch(task_id):
+            return None
+        return {"id": task_id, "status": task_status(data.get("status")), "task": data}
+
+    @staticmethod
+    def _keep(task: dict, record: Path, on_created: Callable[[dict], None] | None) -> None:
+        """Save a newly created (paid) task and announce it, even if saving fails."""
         try:
             common.save(record, task)
         except OSError as error:
             common.announce(on_created, task, what="paid PiAPI task")  # paid all the same
             raise PiAPIError(
-                f"Paid PiAPI task {task_id} was created but its record could not be saved "
+                f"Paid PiAPI task {task['id']} was created but its record could not be saved "
                 f"({error}). Note this id; check {WORKSPACE}."
             ) from error
         common.announce(on_created, task, what="paid PiAPI task")
-        return task
 
     @staticmethod
     def _release(record: Path, marker: dict, nothing_charged: str) -> None:
@@ -328,10 +364,17 @@ class PiAPIClient:
             except (httpx.TransportError, PiAPIError) as error:
                 raise self._lost(task, record) from error
             data = _data(answer)
-            if data.get("task_id") not in (None, task["id"]):
-                raise self._lost(task, record)
+            if (
+                _envelope_error(answer)
+                or "status" not in data
+                or data.get("task_id") not in (None, task["id"])
+            ):
+                raise self._lost(task, record)  # before saving: the record stays as it was
             task = {"id": task["id"], "status": task_status(data.get("status")), "task": data}
-            common.save(record, task)
+            try:
+                common.save(record, task)
+            except OSError as error:
+                raise self._lost(task, record) from error
             polls += 1
         if task["status"] == "failed":
             raise PiAPIError(failed_message(task, record))

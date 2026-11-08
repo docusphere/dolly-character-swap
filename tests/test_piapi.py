@@ -26,6 +26,8 @@ def client(**kw):
         ("Completed", "succeeded"),
         ("success", "succeeded"),
         ("FAILED", "failed"),
+        ("cancelled", "failed"),
+        ("Canceled", "failed"),
         ("pending", "starting"),
         ("Staged", "starting"),
         (None, "starting"),
@@ -308,3 +310,73 @@ def test_polling_backs_off_to_the_ceiling(tmp_path):
         body=BODY, record=tmp_path / "r.json"
     )
     assert waits == [10, 15, 20, 20, 20]
+
+
+@respx.mock
+def test_envelope_5xx_keeps_the_marker(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/task").respond(200, json={"code": 500, "message": "internal", "data": None})
+    with pytest.raises(PiAPIError, match="may have been charged"):
+        client().run(body=BODY, record=record)
+    assert json.loads(record.read_text())["status"] == "creating"
+
+
+@respx.mock
+def test_poll_envelope_error_is_lost_and_record_untouched(tmp_path):
+    record = tmp_path / "r.json"
+    first = {"id": "t1", "status": "processing", "task": {"task_id": "t1", "keep": 1}}
+    record.write_text(json.dumps(first))
+    respx.get(f"{API}/task/t1").respond(
+        200, json={"code": 404, "message": "task not found", "data": None}
+    )
+    with pytest.raises(PiAPIError, match="no new charge"):
+        client().run(body={}, record=record)
+    assert json.loads(record.read_text()) == first
+
+
+@respx.mock
+def test_poll_answer_without_status_is_lost(tmp_path):
+    record = tmp_path / "r.json"
+    first = {"id": "t1", "status": "processing", "task": {}}
+    record.write_text(json.dumps(first))
+    respx.get(f"{API}/task/t1").respond(200, json={"code": 200, "data": {"task_id": "t1"}})
+    with pytest.raises(PiAPIError, match="no new charge"):
+        client().run(body={}, record=record)
+    assert json.loads(record.read_text()) == first
+
+
+@respx.mock
+def test_poll_save_failure_is_resumable(tmp_path, monkeypatch):
+    from character_swap.providers import common
+
+    record = tmp_path / "r.json"
+    record.write_text(json.dumps({"id": "t1", "status": "processing", "task": {}}))
+    respx.get(f"{API}/task/t1").respond(200, json=task_json("processing"))
+    monkeypatch.setattr(common, "save", lambda *_a: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(PiAPIError, match="no new charge") as info:
+        client().run(body={}, record=record)
+    assert isinstance(info.value.__cause__, OSError)
+
+
+@respx.mock
+def test_get_asset_envelope_404_is_none_and_other_envelope_errors_raise():
+    respx.get(f"{API}/asset/as_1").respond(200, json={"code": 404, "message": "gone"})
+    assert client().get_asset("as_1") is None
+    respx.get(f"{API}/asset/as_2").respond(200, json={"code": 500, "message": "boom"})
+    with pytest.raises(PiAPIError, match="boom"):
+        client().get_asset("as_2")
+
+
+@respx.mock
+def test_4xx_that_still_carries_a_task_id_is_saved_not_released(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(f"{API}/task").respond(
+        400, json={"code": 400, "message": "odd", "data": {"task_id": "t9", "status": "pending"}}
+    )
+    created = []
+    with pytest.raises(PiAPIError, match=r"odd.*returned a task id t9.*check https") as info:
+        client().run(body=BODY, record=record, on_created=created.append)
+    assert str(record) in str(info.value)
+    saved = json.loads(record.read_text())
+    assert saved["id"] == "t9" and saved["status"] == "starting"
+    assert [c["id"] for c in created] == ["t9"]
