@@ -506,12 +506,24 @@ def _draft_task_id(job: Job) -> str:
 
 
 def build_request(
-    job: Job, *, faces: Any = None, stage: str = "draft", final_resolution: str = ""
+    job: Job,
+    *,
+    faces: Any = None,
+    stage: str = "draft",
+    final_resolution: str = "",
+    replacing_stale: bool = False,
 ) -> GenerationRequest:
+    """What the provider is sent for this step.
+
+    replacing_stale=True: the request a new draft will send once the stale one is archived
+    (the cost question for a remake is asked before archiving, so it must ignore the old
+    draft's saved prompt and record).
+    """
     state = job.state
     seedance = job.generator == "seedance"
     promote = seedance and stage == "final" and final_resolution == PROMOTE
-    face_needed = not (already_paid(job, stage) or promote)
+    paid = already_paid(job, stage) and not replacing_stale
+    face_needed = not (paid or promote)
     primary = _character(job, "primary", faces, face_needed=face_needed)
     if primary is None:
         raise StageError(
@@ -524,7 +536,9 @@ def build_request(
         secondary=_character(job, "secondary", faces, face_needed=face_needed),
         seconds=_readable_clip_seconds(job),
         seed=int(state["seed"]),
-        prompt=generation_prompt(job, stage, final_resolution) if seedance else "",
+        prompt=generation_prompt(job, stage, final_resolution, replacing_stale=replacing_stale)
+        if seedance
+        else "",
         final_resolution=final_resolution if stage == "final" else "",
         draft_task_id=_draft_task_id(job) if stage == "final" else "",
     )
@@ -641,14 +655,17 @@ def write_prompt_file(job: Job) -> Path:
     return path
 
 
-def generation_prompt(job: Job, stage: str, resolution: str = "") -> str:
+def generation_prompt(
+    job: Job, stage: str, resolution: str = "", *, replacing_stale: bool = False
+) -> str:
     """The text Seedance receives.
 
     - final: the draft's saved prompt (a 720p run must match the watched draft; a 1080p
       promote sends no prompt, so it may be "").
     - draft already paid (record or download there): the prompt saved when it was created,
       so a resume never depends on today's prompt.txt.
-    - new draft: prompt.txt (or the default), checked.
+    - new draft (or replacing_stale: a remake whose old draft is about to be archived):
+      prompt.txt (or the default), checked.
     """
     saved = job.state["stages"].get("draft", {}).get("prompt")
     saved = saved if isinstance(saved, str) and saved else ""
@@ -659,7 +676,7 @@ def generation_prompt(job: Job, stage: str, resolution: str = "") -> str:
             "The draft's prompt wasn't saved, so a 720p final can't match it. Make a new draft "
             "first; nothing was charged."
         )
-    if saved and already_paid(job, "draft"):
+    if saved and already_paid(job, "draft") and not replacing_stale:
         return saved
     path = job.path(PROMPT_FILE)
     text = (path.read_text(encoding="utf-8") if path.exists() else default_prompt(job)).strip()

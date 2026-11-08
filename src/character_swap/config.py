@@ -10,10 +10,9 @@ from pathlib import Path
 from character_swap.errors import CharSwapError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-R2_KEYS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
 WHERE_TO_GET = {
     "REPLICATE_API_TOKEN": "https://replicate.com/account/api-tokens",
-    "PIAPI_API_KEY": "https://piapi.ai (Workspace > API Keys)",
+    "PIAPI_API_KEY": "https://piapi.ai (Workspace > API Keys; saved faces need the Creator plan)",
     "HF_TOKEN": "https://huggingface.co/settings/tokens",
 }
 
@@ -58,7 +57,3 @@ class Settings:
             where = WHERE_TO_GET.get(name, "your provider dashboard")
             raise MissingSettingError(f"{name} is not set. Add it to .env (get it at {where}).")
         return value
-
-    @property
-    def hosting_mode(self) -> str:
-        return "r2" if all(self.get(key) for key in R2_KEYS) else "tmpfiles"

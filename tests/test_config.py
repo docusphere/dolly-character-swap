@@ -30,13 +30,6 @@ def test_runs_dir_defaults_to_project_runs_and_can_be_overridden(tmp_path):
     assert custom.runs_dir == tmp_path / "x"
 
 
-def test_hosting_mode_is_r2_only_when_all_r2_keys_present(tmp_path):
-    keys = {"R2_ACCOUNT_ID": "a", "R2_ACCESS_KEY_ID": "b", "R2_SECRET_ACCESS_KEY": "c"}
-    assert Settings.load(root=tmp_path, environ=keys).hosting_mode == "tmpfiles"
-    keys["R2_BUCKET"] = "d"
-    assert Settings.load(root=tmp_path, environ=keys).hosting_mode == "r2"
-
-
 def test_repr_does_not_leak_secrets(tmp_path):
     settings = Settings.load(root=tmp_path, environ={"REPLICATE_API_TOKEN": "secret-value"})
     assert "secret-value" not in repr(settings)

@@ -233,7 +233,8 @@ def test_doctor_reports_checks(settings, monkeypatch):
     code, out = run(["doctor"], settings)
     assert "rubberband" in out.text and "REPLICATE_API_TOKEN: set" in out.text
     assert "pyav (ffmpeg):" in out.text
-    assert "PIAPI_API_KEY: missing" in out.text and "hosting: tmpfiles" in out.text
+    assert "PIAPI_API_KEY: missing" in out.text
+    assert "hosting: PiAPI temporary upload" in out.text
     assert code == 0
 
 
@@ -588,17 +589,15 @@ def test_provider_errors_are_friendly(tmp_path, settings, video, monkeypatch):
     assert code == 2 and "Error: Rate limited, nothing was charged" in out.err.text
 
 
-def test_prompt_errors_are_friendly(settings, video, monkeypatch):
-    from character_swap.prompts import PromptError
+def test_prompt_errors_are_friendly(settings, video):
+    from character_swap.prompts import MAX_PROMPT
 
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
-
-    def too_long(**kwargs):
-        raise PromptError("Prompt is 5000 characters; the limit is 4000.")
-
-    monkeypatch.setattr(cli, "build_prompt", too_long)
+    for stage in _MODES["depth"].prep_stages:
+        job.mark_stage(stage)
+    job.path("prompt.txt").write_text("Put @image1 into @video1. " + "x" * MAX_PROMPT)
     code, out = run(["prompt", job.id], settings)
-    assert code == 2 and "the limit is 4000" in out.err.text
+    assert code == 2 and "limit" in out.err.text
 
 
 def test_rate_limit_wait_message():
@@ -693,7 +692,7 @@ def _interrupted_draft(job):
 
 
 def _fake_generate(seen):
-    def fake(job, services, stage, *, runs_dir, status):
+    def fake(job, services, stage, *, runs_dir, status, final_resolution=""):
         seen.append(stage)
         return job.path(f"{stage}.mp4")
 
@@ -1299,3 +1298,234 @@ def test_real_person_note_prints_once_for_two_characters(settings, video, tmp_pa
         services_factory=lambda s: object(),
     )
     assert code == 0 and out.text.count("not a real person") == 1
+
+
+from character_swap.modes import MODES as _MODES  # noqa: E402
+
+
+def _approved_seedance_job(settings, video, tmp_path):
+    _saved_face(settings, tmp_path)
+    library = FaceLibrary(settings.root)
+    job = Job.create(
+        settings.runs_dir,
+        video,
+        generator="seedance",
+        mode="depth",
+        character=library.image_path(library.get("frank")),
+        faces={"primary": "frank"},
+    )
+    for name in _MODES["depth"].review_files:
+        write_video(job.path(name), [solid((5, 5, 5))] * 96)
+    for stage in _MODES["depth"].prep_stages:
+        job.mark_stage(stage)
+    job.update(video={"seconds": 4.0}, transcript="hello there", scene="A studio.")
+    approve_review(job, approved=True, note="ok", fingerprint=review_fingerprint(job))
+    return job
+
+
+def seedance_services(settings):
+    """The real Seedance generator on a fake PiAPI that returns a real 4 s video."""
+    from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
+
+    output = write_video(settings.root / "seedance-out.mp4", [solid((20, 200, 20))] * 96)
+    piapi = FakePiAPI(files={"https://cdn.piapi.ai/out.mp4": output}, assets={"asset-1": "Active"})
+    seedance_services.last = piapi
+    return Services(
+        replicate=None,
+        face_detector=lambda: None,
+        generators={"seedance": SeedanceGenerator(piapi)},
+        faces=FaceLibrary(settings.root),
+    )
+
+
+@pytest.fixture
+def piapi_settings(tmp_path):
+    return Settings.load(root=tmp_path, environ={"REPLICATE_API_TOKEN": "t", "PIAPI_API_KEY": "k"})
+
+
+def test_seedance_draft_shows_the_prompt_and_the_price_then_asks(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=lambda q: asked.append(q) or False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and asked and seedance_services.last.bodies == []
+    assert "hello there" in out.text and f"charswap prompt {job.id}" in out.text
+    assert "Seedance draft (480p)" in out.text and "~$0.9900" in out.text  # 4 s: 0.66 + 0.33
+    assert out.text.index("hello there") < out.text.index("~$0.9900")
+
+
+def test_seedance_draft_sends_the_prompt_it_showed(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("Put @image1 into @video1, gently.")
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"],
+        piapi_settings,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and "Put @image1 into @video1, gently." in out.text
+    (body,) = seedance_services.last.bodies
+    assert body["input"]["prompt"] == "Put @image1 into @video1, gently."
+
+
+def test_seedance_remake_shows_the_new_prompt_not_the_stale_one(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    _stale_draft(job)
+    job.mark_stage("draft", fingerprint="an older approval", prompt="OLD @image1 @video1")
+    job.path("prompt.txt").write_text("NEW @image1 into @video1.")
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"],
+        piapi_settings,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and "NEW @image1 into @video1." in out.text and "OLD @image1" not in out.text
+    (body,) = seedance_services.last.bodies
+    assert body["input"]["prompt"] == "NEW @image1 into @video1."
+
+
+def test_seedance_generate_needs_the_piapi_key(settings, video, tmp_path):
+    job = _approved_seedance_job(settings, video, tmp_path)
+    code, out = run(["generate", job.id, "--draft"], settings, services_factory=seedance_services)
+    assert code == 2 and "PIAPI_API_KEY" in out.err.text
+
+
+def test_seedance_unconfirmed_marker_points_at_piapi(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and seedance_services.last.bodies == []
+    assert "PiAPI" in out.err.text and "replicate.com" not in out.err.text
+    assert str(record) in out.err.text
+
+
+def test_resolution_only_with_final(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft", "--resolution", "720p"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=lambda s: pytest.fail("no services before the refusal"),
+    )
+    assert code == 2 and "only for --final" in out.err.text and asked == []
+
+
+def test_after_the_draft_both_final_prices_are_shown(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    assert code == 0 and job.stage_done("draft")
+    assert "1080p upgrade (~$5.28)" in out.text and "--resolution 720p" in out.text
+    assert "(~$2.31)" in out.text
+
+
+def test_after_the_draft_a_missing_face_only_drops_the_prices(
+    piapi_settings, video, tmp_path, monkeypatch
+):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    original = cli._after_draft_hint
+
+    def hint(job, services):
+        (services.faces.folder / "faces.json").write_text("[]")  # the face left the library
+        return original(job, services)
+
+    monkeypatch.setattr(cli, "_after_draft_hint", hint)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    assert code == 0 and f"Run `charswap generate {job.id} --final`." in out.text
+
+
+def test_seedance_1080p_final_is_the_default_promote(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and "Seedance final (1080p)" in out.text and "~$5.2800" in out.text
+    assert "fresh run" not in out.text and seedance_services.last.bodies == []
+
+
+def test_seedance_720p_final_warns_it_is_a_fresh_run(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "720p"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and "fresh run" in out.text and "Seedance final (720p)" in out.text
+    assert seedance_services.last.bodies == []
+
+
+def test_seedance_final_resume_never_asks_or_charges(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    job.path("final-prediction.json").write_text(json.dumps({"id": "t", "status": "succeeded"}))
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="720p")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=asked.append,
+        services_factory=seedance_services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text
+    assert seedance_services.last.bodies == []
+
+
+def test_prompt_writes_an_editable_file(settings, video, tmp_path):
+    job = _approved_seedance_job(settings, video, tmp_path)
+    code, out = run(["prompt", job.id], settings)
+    assert code == 0 and job.path("prompt.txt").exists()
+    assert "hello there" in out.text and "prompt.txt" in out.text
+    job.path("prompt.txt").write_text("Put @image1 into @video1.")
+    assert "Put @image1 into @video1." in run(["prompt", job.id], settings)[1].text
+
+
+def test_prompt_waits_for_preparation(settings, video, tmp_path):
+    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
+    code, out = run(["prompt", job.id], settings)
+    assert code == 2 and "charswap resume" in out.err.text and not job.path("prompt.txt").exists()
+
+
+def test_doctor_reports_piapi_hosting_and_faces(settings):
+    code, out = run(["doctor"], settings)
+    assert "hosting: PiAPI temporary upload" in out.text and "saved faces: 0" in out.text
+
+
+def test_doctor_survives_an_unreadable_face_library(settings):
+    (settings.root / "faces").mkdir()
+    (settings.root / "faces" / "faces.json").write_text("{not json")
+    code, out = run(["doctor"], settings)
+    assert "saved faces: unreadable" in out.text
+
+
+def test_real_services_include_seedance_when_the_key_is_set(piapi_settings, settings):
+    from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
+
+    services = cli.build_services(piapi_settings)
+    assert isinstance(services.generators["seedance"], SeedanceGenerator)
+    assert services.faces is not None
+    assert "seedance" not in cli.build_services(settings).generators

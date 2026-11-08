@@ -26,13 +26,16 @@ from character_swap.costs import (
 from character_swap.errors import CharSwapError
 from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary, check_photo
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
+from character_swap.modes import MODES
 from character_swap.pipeline import (
     Services,
     archive_stale_draft,
     build_request,
     check_can_generate,
+    final_resolution,
     generation_files,
     generation_label,
+    generation_prompt,
     generator_for,
     needs_new_charge,
     next_step,
@@ -42,11 +45,12 @@ from character_swap.pipeline import (
     saved_request_unconfirmed,
     stale_draft,
     stale_generation,
+    write_prompt_file,
 )
 from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
-from character_swap.prompts import build_prompt
-from character_swap.providers.replicate import unconfirmed_message
+from character_swap.providers.piapi import unconfirmed_message as piapi_unconfirmed
+from character_swap.providers.replicate import unconfirmed_message as replicate_unconfirmed
 from character_swap.review import decide
 from character_swap.review import status as review_status
 from character_swap.stages import StageError
@@ -55,9 +59,12 @@ Out = Callable[[str], None]
 
 VIEW_HOST = "127.0.0.1"  # the viewer is never reachable from the network
 BROWSER_DELAY = 1.0  # seconds; lets the server start listening before the browser asks
+KEYS = {"wan": "REPLICATE_API_TOKEN", "seedance": "PIAPI_API_KEY"}  # each generator's paid key
+UNCONFIRMED = {"wan": replicate_unconfirmed, "seedance": piapi_unconfirmed}
 
 
 def build_services(settings: Settings) -> Services:
+    from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
     from character_swap.providers.generators.wan_replicate import WanGenerator
     from character_swap.providers.replicate import ReplicateClient
     from character_swap.stages.face_mesh import MediaPipeDetector, ensure_model
@@ -67,11 +74,15 @@ def build_services(settings: Settings) -> Services:
         settings.require("REPLICATE_API_TOKEN"),
         on_wait=lambda *wait: _stderr(rate_limit_message(*wait)),
     )
+    generators = {"wan": WanGenerator(replicate)}
+    if settings.get("PIAPI_API_KEY"):
+        generators["seedance"] = SeedanceGenerator(build_piapi(settings))
     return Services(
         replicate=replicate,
         face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),  # pragma: no cover
         hf_token=settings.get("HF_TOKEN") or None,
-        generators={"wan": WanGenerator(replicate)},
+        generators=generators,
+        faces=FaceLibrary(settings.root),
     )
 
 
@@ -134,11 +145,14 @@ class Env:
 
 EPILOG = """example:
   charswap face add frank me.jpg
-  charswap prepare clip.mp4 --mode depth
+  charswap prepare clip.mp4 --mode depth --face frank
   charswap prepare clip.mp4 --generator wan --character me.jpg
   charswap status <id>
   charswap review <id> --approve --note "watched all" --fingerprint <fp>
+  charswap prompt <id>
   charswap generate <id> --draft
+  charswap generate <id> --final
+  charswap generate <id> --final --resolution 720p
   charswap view
 """
 
@@ -177,7 +191,9 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
     sub.add_parser("status", help="show stages and review fingerprint as JSON").add_argument("job")
-    sub.add_parser("prompt", help="print the editable Seedance prompt").add_argument("job")
+    sub.add_parser(
+        "prompt", help="show and save the editable Seedance prompt (prompt.txt)"
+    ).add_argument("job")
     resume = sub.add_parser(
         "resume",
         help="continue an interrupted job "
@@ -195,13 +211,20 @@ def _parser() -> argparse.ArgumentParser:
     repair = sub.add_parser("repair", help="re-cut the subject using original colors")
     repair.add_argument("job")
     repair.add_argument("--yes", action="store_true")
-    gen = sub.add_parser(
-        "generate", help="make the 480p draft or the 720p final (paid; asks first)"
-    )
+    gen = sub.add_parser("generate", help="make the 480p draft or the final (paid; asks first)")
     gen.add_argument("job")
     which = gen.add_mutually_exclusive_group(required=True)
     which.add_argument("--draft", action="store_true", help="480p test run")
-    which.add_argument("--final", action="store_true", help="720p, same seed as the draft")
+    which.add_argument(
+        "--final",
+        action="store_true",
+        help="Wan: 720p, same seed. Seedance: 1080p upgrade of the draft, or --resolution 720p",
+    )
+    gen.add_argument(
+        "--resolution",
+        choices=["1080p", "720p"],
+        help="Seedance final: 1080p (default, upgrades the draft) or 720p (cheaper fresh run)",
+    )
     gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     sub.add_parser("doctor", help="check this machine's setup")
     face = sub.add_parser("face", help="save and check faces in your PiAPI face library (free)")
@@ -409,9 +432,16 @@ def _prompt(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     if job.generator != "seedance":
         raise JobError("Prompts are only for Seedance jobs; Wan takes no text prompt.")
-    state = job.state
+    if not all(job.stage_done(name) for name in MODES[job.mode].prep_stages):
+        raise JobError(
+            "Finish preparing first (the prompt uses the transcript and the scene): "
+            f"charswap resume {job.id}"
+        )
+    path = write_prompt_file(job)
+    env.out(generation_prompt(job, "draft"))
     env.out(
-        build_prompt(mode=job.mode, scene=state.get("scene"), transcript=state.get("transcript"))
+        f"\nSaved in {path}. Edit that file to change what Seedance is told; the draft sends "
+        "it exactly as it is."
     )
     return 0
 
@@ -431,8 +461,10 @@ def _repair(args, settings, env) -> int:
 
 
 def _generate(args, settings, env) -> int:
-    job = Job.load(settings.runs_dir, args.job)
     stage = "final" if args.final else "draft"
+    if args.resolution and stage == "draft":
+        raise JobError("--resolution is only for --final (drafts are always 480p).")
+    job = Job.load(settings.runs_dir, args.job)
     remake = stage == "draft" and stale_draft(job)  # approved inputs changed since that draft
     if stage == "final" and stale_generation(job, "final"):
         env.err(
@@ -444,19 +476,34 @@ def _generate(args, settings, env) -> int:
         env.out(f"The {stage} is already done: {job.path(f'{stage}.mp4')}")
         return 0
     check_can_generate(job, stage)  # mode, approved review, draft first: before any cost
+    resolution = final_resolution(job, args.resolution or "") if stage == "final" else ""
     env.track(job, f"generate {{id}} --{stage}")  # after the refusals: their text says what to do
-    settings.require("REPLICATE_API_TOKEN")
+    settings.require(KEYS[job.generator])
     services = env.services_factory(settings)
     if saved_request_unconfirmed(job, stage):
         env.out(
             "A request for this step was sent but never confirmed. It may have been charged; "
             "follow the steps below before running again."
         )
-        env.err(unconfirmed_message(job.path(generation_files(stage)[0])))
+        env.err(UNCONFIRMED[job.generator](job.path(generation_files(stage)[0])))
         return 2
     if remake or needs_new_charge(job, stage):
-        estimate = generator_for(job, services).estimate(build_request(job), stage)
-        env.out(f"{generation_label(job, stage)} (paid):\n" + estimate.describe())
+        # Built exactly as pipeline.generate will build it (a remake: once the old draft is
+        # archived), so the prompt and price shown are what is sent and charged.
+        request = build_request(
+            job,
+            faces=services.faces,
+            stage=stage,
+            final_resolution=resolution,
+            replacing_stale=remake,
+        )
+        estimate = generator_for(job, services).estimate(request, stage)
+        if stage == "draft" and request.prompt:
+            env.out(
+                f"Prompt sent to Seedance (change it with `charswap prompt {job.id}`):\n"
+                f"{request.prompt}\n"
+            )
+        env.out(f"{generation_label(job, stage, resolution)} (paid):\n" + estimate.describe())
         if remake:
             env.out(
                 "This makes a new draft because the approved inputs changed since the last "
@@ -464,17 +511,53 @@ def _generate(args, settings, env) -> int:
             )
         if stage == "final":
             env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")
+        if job.generator == "seedance" and stage == "final" and resolution == "720p":
+            env.out(
+                "720p is a fresh run with the same prompt and inputs, so it can differ a little "
+                "from the draft. 1080p (the default) upgrades the exact draft."
+            )
         if not args.yes and not env.proceed():
             return 1
         if remake:
             archive_stale_draft(job)
     elif resumes_without_charge(job, stage):
         env.out(f"Found a saved {stage} request; resuming it (no new charge).")
-    result = generate_stage(job, services, stage, runs_dir=settings.runs_dir, status=env.out)
+    result = generate_stage(
+        job,
+        services,
+        stage,
+        runs_dir=settings.runs_dir,
+        status=env.out,
+        final_resolution=resolution,
+    )
     env.out(f"Watch: {result}")
     if stage == "draft":
-        env.out(f"Happy with it? Run `charswap generate {job.id} --final`.")
+        env.out(_after_draft_hint(job, services))
     return 0
+
+
+def _after_draft_hint(job: Job, services: Services) -> str:
+    plain = f"Happy with it? Run `charswap generate {job.id} --final`."
+    if job.generator != "seedance":
+        return plain
+    generator = generator_for(job, services)
+    try:
+        price = {
+            res: generator.estimate(
+                build_request(job, faces=services.faces, stage="final", final_resolution=res),
+                "final",
+            ).total
+            for res in ("1080p", "720p")
+        }
+    except CharSwapError:
+        # The draft is done and paid for; a price we can't work out now (e.g. a face that
+        # left the library) must not turn that into an error. --final shows it and asks.
+        return plain
+    return (
+        f"Happy with it? `charswap generate {job.id} --final` makes the 1080p upgrade "
+        f"(~${price['1080p']:.2f}); add `--resolution 720p` for a cheaper fresh 720p run "
+        f"(~${price['720p']:.2f})."
+    )
 
 
 def _doctor(args, settings, env) -> int:
@@ -488,7 +571,11 @@ def _doctor(args, settings, env) -> int:
         out(f"{binary}: {'found' if found else 'MISSING (macOS: brew install rubberband)'}")
     for key in ("REPLICATE_API_TOKEN", "PIAPI_API_KEY"):
         out(f"{key}: {'set' if settings.get(key) else 'missing'}")
-    out(f"hosting: {settings.hosting_mode}")
+    out("hosting: PiAPI temporary upload (Seedance; needs the PiAPI Creator plan)")
+    try:
+        out(f"saved faces: {len(FaceLibrary(settings.root).all())}")
+    except CharSwapError as error:
+        out(f"saved faces: unreadable ({error})")
     return 0 if ok else 1
 
 
