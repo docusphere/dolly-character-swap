@@ -523,10 +523,13 @@ def _face(args, settings, env) -> int:
     try:
         face = action()
     except KeyboardInterrupt:
-        env.err(
-            "Stopped waiting. The face is saved if PiAPI accepted the upload; "
-            "run: charswap face check NAME"
-        )
+        if args.face_command == "add":
+            env.err(
+                "Stopped waiting. The face is saved if PiAPI accepted the upload; "
+                f"run: charswap face check {args.name}"
+            )
+        else:
+            env.err(f"Stopped waiting; run: charswap face check {args.name}")
         return 130
     env.out(_face_line(face))
     return 0 if face.status in (ACTIVE, PROCESSING) else 2

@@ -216,6 +216,7 @@ class FaceLibrary:
             face = self._refresh(face, piapi)
             if face.status == GONE:  # a brief 404 right after creating: still checking
                 face = replace(face, status=PROCESSING)
+                self._put(face)
         return face
 
     def _refresh(self, face: Face, piapi: AssetsLike) -> Face:

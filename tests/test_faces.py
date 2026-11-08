@@ -186,3 +186,13 @@ def test_unknown_keys_in_a_row_are_ignored(tmp_path):
     rows[0]["future"] = 1
     lib.index.write_text(json.dumps(rows))
     assert lib.get("frank").name == "frank"
+
+
+def test_gone_during_the_first_wait_is_saved_as_processing(tmp_path):
+    class Missing(FakePiAPI):
+        def get_asset(self, asset_id):
+            return None
+
+    lib = library(tmp_path, polls=2)
+    face = lib.add("frank", photo(tmp_path / "me.jpg"), Missing())
+    assert face.status == PROCESSING and lib.get("frank").status == PROCESSING

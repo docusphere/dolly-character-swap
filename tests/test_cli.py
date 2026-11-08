@@ -1085,7 +1085,7 @@ def test_face_add_ctrl_c_gives_a_face_hint(settings, tmp_path):
         settings,
         piapi_factory=lambda s: Interrupted(),
     )
-    assert code == 130 and "charswap face check NAME" in out.err.text
+    assert code == 130 and "charswap face check frank" in out.err.text
 
 
 def test_face_add_bad_name_fails_before_consent_and_client(settings, tmp_path):
