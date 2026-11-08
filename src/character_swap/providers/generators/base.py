@@ -16,7 +16,8 @@ OnCreated = Callable[[dict], None]
 @dataclass(frozen=True)
 class CharacterRef:
     image_path: Path  # local copy in the job folder (Wan uploads this file)
-    face_asset_id: str | None = None  # PiAPI face-library id (Plan 2b)
+    face_asset_id: str | None = None  # PiAPI face-library id (a saved face)
+    name: str = ""  # the saved face's name, for messages
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,8 @@ class GenerationRequest:
     seed: int  # chosen once per job; the final reuses it
     prompt: str = ""  # Wan has no prompt input
     secondary: CharacterRef | None = None  # Seedance only
+    final_resolution: str = ""  # final only: "720p" | "1080p" (Seedance; Wan is always 720p)
+    draft_task_id: str = ""  # final only: the finished draft's provider task (Seedance promote)
 
 
 class Generator(Protocol):
