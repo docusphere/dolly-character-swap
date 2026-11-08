@@ -27,9 +27,8 @@ def test_paid_stages_are_prep_stages_and_generation_is_separate():
         assert not set(GENERATION_STAGES) & set(mode.prep_stages)
 
 
-def test_only_wan_generates_in_this_version():
-    assert [name for name, mode in MODES.items() if mode.generates] == ["direct"]
-    assert MODES["direct"].generator == "wan"
+def test_every_mode_generates():
+    assert all(mode.generates for mode in MODES.values())
 
 
 def test_review_files_come_from_the_table(runs_dir, tmp_path):

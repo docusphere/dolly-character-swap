@@ -27,12 +27,12 @@ from character_swap.errors import CharSwapError
 from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary, check_photo
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import (
-    GENERATION_LABELS,
     Services,
     archive_stale_draft,
     build_request,
     check_can_generate,
     generation_files,
+    generation_label,
     generator_for,
     needs_new_charge,
     next_step,
@@ -456,7 +456,7 @@ def _generate(args, settings, env) -> int:
         return 2
     if remake or needs_new_charge(job, stage):
         estimate = generator_for(job, services).estimate(build_request(job), stage)
-        env.out(f"{GENERATION_LABELS[stage]} (paid):\n" + estimate.describe())
+        env.out(f"{generation_label(job, stage)} (paid):\n" + estimate.describe())
         if remake:
             env.out(
                 "This makes a new draft because the approved inputs changed since the last "

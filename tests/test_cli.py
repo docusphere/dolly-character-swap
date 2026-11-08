@@ -959,12 +959,6 @@ def test_generate_needs_the_replicate_token(tmp_path, video):
     assert code == 2 and "REPLICATE_API_TOKEN" in out.err.text
 
 
-def test_seedance_jobs_cannot_generate_yet(settings, video):
-    job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
-    code, out = run(["generate", job.id, "--draft"], settings)
-    assert code == 2 and "next version" in out.err.text
-
-
 def test_status_says_what_to_do_next(settings, video, tmp_path):
     job = _approved_wan_job(settings, video, tmp_path)
     data = json.loads(run(["status", job.id], settings)[1].text)

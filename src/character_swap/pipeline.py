@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import av
 
@@ -27,6 +27,7 @@ from character_swap.media.audio import (
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
+from character_swap.prompts import PromptError, build_prompt, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
@@ -45,7 +46,6 @@ PAID_STAGES: dict[str, list[str]] = {name: list(mode.paid_stages) for name, mode
 PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
     name: mode.prep_stages for name, mode in MODES.items()
 }
-GENERATION_LABELS = {"draft": "Generating the 480p draft", "final": "Generating the 720p final"}
 
 
 def remaining_paid_stages(job: Job) -> list[str]:
@@ -86,6 +86,7 @@ class Services:
     rubberband: str = "rubberband"
     hf_token: str | None = None
     generators: dict[str, Generator] = field(default_factory=dict)
+    faces: Any = None  # faces.FaceLibrary (Seedance jobs with saved faces)
 
 
 def _notify(status: Status, message: str) -> None:
@@ -287,9 +288,7 @@ def check_can_generate(job: Job, stage: str) -> None:
     if stage not in GENERATION_STAGES:
         raise StageError(f"Unknown generation step {stage!r}; use draft or final.")
     if not MODES[job.mode].generates:
-        raise StageError(
-            "Generating Seedance jobs arrives in the next version; Wan jobs can generate now."
-        )
+        raise StageError("This mode can't generate.")
     require_approved(job)
     if stage == "final":
         if not job.stage_done("draft"):
@@ -436,21 +435,91 @@ def generator_for(job: Job, services: Services) -> Generator:
         raise StageError(f"No {job.generator} generator is set up.") from None
 
 
-def build_request(job: Job) -> GenerationRequest:
+def generation_label(job: Job, stage: str, resolution: str = "") -> str:
+    if stage == "draft":
+        return "Generating the 480p draft"
+    return f"Generating the {resolution or final_resolution(job, '')} final"
+
+
+FINAL_RESOLUTIONS = {"seedance": ("1080p", "720p"), "wan": ("720p",)}  # first = default
+
+
+def final_resolution(job: Job, requested: str = "") -> str:
+    """The final's resolution: the one a started final used, else the request, else default."""
+    choices = FINAL_RESOLUTIONS[job.generator]
+    saved = job.state["stages"].get("final", {}).get("resolution", "")
+    chosen = requested or saved or choices[0]
+    if chosen not in choices:
+        raise StageError(f"{job.generator} finals can be {' or '.join(choices)}, not {chosen}.")
+    record, raw, _ = generation_files("final")
+    started = job.path(record).exists() or job.path(raw).exists()
+    if saved and chosen != saved and started:
+        raise StageError(
+            f"A {saved} final was already started for this job; run the same command with "
+            f"--resolution {saved} to pick it up (no new charge)."
+        )
+    return chosen
+
+
+def final_resolution_for(job: Job, stage: str, requested: str) -> str:
+    return final_resolution(job, requested) if stage == "final" else ""
+
+
+def _character(job: Job, slot: str, faces: Any) -> CharacterRef | None:
     state = job.state
-    character = state.get("character_primary")
-    if not character:
-        raise StageError("This job has no character image. Prepare a new job with --character.")
+    image = state.get(f"character_{slot}")
+    if not image:
+        return None
+    face_name = state.get(f"face_{slot}")
+    asset_id = None
+    if face_name:
+        if faces is None:
+            raise StageError("The face library is not set up for this command.")
+        asset_id = faces.get(face_name).asset_id  # the current id (charswap face renew)
+    return CharacterRef(job.path(image), face_asset_id=asset_id, name=face_name or "")
+
+
+def _draft_task_id(job: Job) -> str:
+    record, _, _ = generation_files("draft")
+    try:
+        data = json.loads(job.path(record).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    found = data.get("id") if isinstance(data, dict) else None
+    return found if isinstance(found, str) else ""
+
+
+def build_request(
+    job: Job, *, faces: Any = None, stage: str = "draft", final_resolution: str = ""
+) -> GenerationRequest:
+    state = job.state
+    primary = _character(job, "primary", faces)
+    if primary is None:
+        raise StageError(
+            "This job has no character image. Prepare a new job with --face NAME or "
+            "--character IMAGE."
+        )
+    seedance = job.generator == "seedance"
     return GenerationRequest(
-        video=job.path("original.mp4"),
-        primary=CharacterRef(job.path(character)),
+        video=job.path("prepared.mp4" if seedance else "original.mp4"),
+        primary=primary,
+        secondary=_character(job, "secondary", faces),
         seconds=_readable_clip_seconds(job),
         seed=int(state["seed"]),
+        prompt=generation_prompt(job, stage) if seedance else "",
+        final_resolution=final_resolution if stage == "final" else "",
+        draft_task_id=_draft_task_id(job) if stage == "final" else "",
     )
 
 
 def generate(
-    job: Job, services: Services, stage: str, *, runs_dir: Path, status: Status = print
+    job: Job,
+    services: Services,
+    stage: str,
+    *,
+    runs_dir: Path,
+    status: Status = print,
+    final_resolution: str = "",
 ) -> Path:
     """Make the draft or final video. Paid: the caller showed the estimate and got a yes."""
     check_can_generate(job, stage)
@@ -460,13 +529,15 @@ def generate(
             f"draft: charswap generate {job.id} --draft (it costs money; the old files are "
             "kept). Nothing was charged."
         )
-    label = GENERATION_LABELS[stage]
     record, raw, result = (job.path(name) for name in generation_files(stage))
     if job.stage_done(stage):
-        _notify(status, f"{label} · already done")
+        _notify(status, f"{generation_label(job, stage)} · already done")
         return result
+    # The keyword shadows the module function; final_resolution_for reaches the function.
+    resolution = final_resolution_for(job, stage, final_resolution)
+    request = build_request(job, faces=services.faces, stage=stage, final_resolution=resolution)
+    label = generation_label(job, stage, resolution)
     generator = generator_for(job, services)
-    request = build_request(job)
     estimate = generator.estimate(request, stage)
     inputs = fingerprint(job)  # what was approved; the final checks the draft used the same
 
@@ -484,7 +555,17 @@ def generate(
 
     _notify(status, label)
     # No clear_review: generating changes no input.
-    with _tracked(job, stage, fingerprint=inputs), _wrap(label):
+    extra: dict[str, str] = {}
+    if stage == "draft" and request.prompt:
+        # The final (720p) reuses exactly the text PiAPI received: on a resume (record or
+        # download already there) keep the prompt saved when the task was created.
+        saved = job.state["stages"].get("draft", {}).get("prompt")
+        sent_before = record.exists() or raw.exists()
+        keep = sent_before and isinstance(saved, str) and saved
+        extra["prompt"] = saved if keep else request.prompt
+    if stage == "final":
+        extra["resolution"] = resolution
+    with _tracked(job, stage, fingerprint=inputs, **extra), _wrap(label):
         if not raw.exists():  # downloaded already: never ask the provider again
             generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
         _notify(status, "Putting the original soundtrack back")
@@ -517,10 +598,61 @@ def next_step(job: Job, *, approved: bool) -> str:
     if not approved:
         return "watch the prepared files, then run charswap review with the fingerprint above"
     if not mode.generates:
-        return "generating this mode arrives in the next version"
+        return "this mode can't generate"
     if stale_draft(job):  # the final would be refused: the approved inputs changed
         return f"charswap generate {job.id} --draft"
     for stage in GENERATION_STAGES:
         if not job.stage_done(stage):
             return f"charswap generate {job.id} --{stage}"
     return f"done: {job.path('final.mp4')}"
+
+
+PROMPT_FILE = "prompt.txt"  # Seedance: the editable prompt (charswap prompt <job>)
+
+
+def default_prompt(job: Job) -> str:
+    state = job.state
+    return build_prompt(
+        mode=job.mode,
+        scene=state.get("scene"),
+        transcript=state.get("transcript"),
+        has_secondary=bool(state.get("character_secondary")),
+    )
+
+
+def write_prompt_file(job: Job) -> Path:
+    """Write the default prompt to prompt.txt unless the user already has one."""
+    path = job.path(PROMPT_FILE)
+    if not path.exists():
+        _write_atomically(path, lambda part: part.write_text(default_prompt(job), encoding="utf-8"))
+    return path
+
+
+def generation_prompt(job: Job, stage: str) -> str:
+    """The text Seedance receives: the draft's saved prompt for a final, else prompt.txt."""
+    if stage == "final":
+        saved = job.state["stages"].get("draft", {}).get("prompt")
+        if isinstance(saved, str) and saved:
+            return saved
+    path = job.path(PROMPT_FILE)
+    text = (path.read_text(encoding="utf-8") if path.exists() else default_prompt(job)).strip()
+    if not text:
+        raise PromptError(
+            f"{path} is empty. Write what Seedance should do, or delete the file to use the "
+            "default prompt."
+        )
+    _check_placeholders(text, has_secondary=bool(job.state.get("character_secondary")))
+    return validate_prompt(text)
+
+
+def _check_placeholders(text: str, *, has_secondary: bool) -> None:
+    """PiAPI refuses prompts whose @video1/@image1/@image2 don't match what is sent."""
+    for needed in ("@video1", "@image1"):
+        if needed not in text:
+            raise PromptError(f"The prompt must mention {needed} (the clip and your character).")
+    if has_secondary and "@image2" not in text:
+        raise PromptError("This job has a second character: the prompt must mention @image2.")
+    if not has_secondary and "@image2" in text:
+        raise PromptError(
+            "The prompt mentions @image2 but this job has no second character; remove it."
+        )

@@ -10,7 +10,17 @@ from character_swap.web import view_model as vm
 from viewer_jobs import finish_stage, make_job, write_record
 
 SECTION_IDS = {
-    "depth": ["upload", "vocals", "transcript", "depth", "mask", "prepared", "review"],
+    "depth": [
+        "upload",
+        "vocals",
+        "transcript",
+        "depth",
+        "mask",
+        "prepared",
+        "review",
+        "draft",
+        "final",
+    ],
     "depth_mesh": [
         "upload",
         "vocals",
@@ -20,8 +30,19 @@ SECTION_IDS = {
         "face-mesh",
         "prepared",
         "review",
+        "draft",
+        "final",
     ],
-    "face_mesh": ["upload", "vocals", "transcript", "face-mesh", "prepared", "review"],
+    "face_mesh": [
+        "upload",
+        "vocals",
+        "transcript",
+        "face-mesh",
+        "prepared",
+        "review",
+        "draft",
+        "final",
+    ],
     "direct": ["upload", "source", "review", "draft", "final"],
 }
 
@@ -552,11 +573,6 @@ def test_failed_draft_says_which_command_to_run(runs_dir, media):
     assert draft.error == "Generating the 480p draft failed: boom"
     assert draft.retry == f"charswap generate {job.id} --draft"
     assert sections(view)["upload"].retry == f"charswap resume {job.id}"
-
-
-def test_seedance_jobs_have_no_generation_sections_yet():
-    for mode in ("depth", "face_mesh", "depth_mesh"):
-        assert not {"draft", "final"} & {s.id for s in vm.sections_for(mode)}
 
 
 def test_stale_final_says_make_a_new_draft(runs_dir, media):

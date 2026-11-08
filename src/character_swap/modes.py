@@ -24,7 +24,7 @@ class Mode:
     review_files: tuple[str, ...]  # hashed by the review gate (Wan adds the character image)
     uses_depth: bool
     uses_mesh: bool
-    generates: bool  # draft/final available in this version (Seedance arrives in Plan 2b)
+    generates: bool  # draft/final available (every mode since Plan 2b)
 
 
 _TEXT = ("separate", "transcribe", "describe")
@@ -55,7 +55,7 @@ MODES: dict[str, Mode] = {
         ),
         uses_depth=True,
         uses_mesh=False,
-        generates=False,
+        generates=True,
     ),
     "face_mesh": Mode(
         name="face_mesh",
@@ -78,7 +78,7 @@ MODES: dict[str, Mode] = {
         ),
         uses_depth=False,
         uses_mesh=True,
-        generates=False,
+        generates=True,
     ),
     "depth_mesh": Mode(
         name="depth_mesh",
@@ -107,7 +107,7 @@ MODES: dict[str, Mode] = {
         ),
         uses_depth=True,
         uses_mesh=True,
-        generates=False,
+        generates=True,
     ),
     "direct": Mode(
         name="direct",

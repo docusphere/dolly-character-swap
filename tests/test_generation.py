@@ -2,20 +2,29 @@ import json
 
 import av
 import pytest
+from PIL import Image
 
 from character_swap import pipeline
 from character_swap.costs import Estimate, Line
+from character_swap.faces import FaceError, FaceLibrary
 from character_swap.jobs import Job
+from character_swap.media.video import stream_seconds
+from character_swap.modes import MODES
 from character_swap.pipeline import (
     Services,
     check_can_generate,
+    final_resolution,
     generate,
+    generation_prompt,
     needs_new_charge,
     next_step,
     prepare,
+    write_prompt_file,
 )
+from character_swap.prompts import PromptError
 from character_swap.review import ReviewError, decide, fingerprint
 from character_swap.stages import StageError
+from fakes import FakePiAPI
 from helpers import solid, write_video
 
 QUIET = {"status": lambda _m: None}
@@ -80,13 +89,6 @@ def test_final_needs_a_draft(wan_job, services, runs_dir):
     approve(wan_job, services)
     with pytest.raises(StageError, match="draft first"):
         generate(wan_job, services, "final", runs_dir=runs_dir, **QUIET)
-
-
-def test_seedance_jobs_cannot_generate_yet(runs_dir, tmp_path):
-    upload = write_video(tmp_path / "s.mp4", [solid((1, 1, 1))] * 96, audio_seconds=4)
-    job = Job.create(runs_dir, upload, generator="seedance", mode="depth")
-    with pytest.raises(StageError, match="next version"):
-        check_can_generate(job, "draft")
 
 
 def test_draft_restores_the_original_soundtrack(wan_job, services, runs_dir):
@@ -342,14 +344,6 @@ def test_next_step_asks_for_a_new_draft_when_the_final_is_stale(wan_job, service
     assert next_step(wan_job, approved=True) == f"charswap generate {wan_job.id} --draft"
 
 
-def test_next_step_for_seedance_waits_for_the_next_version(runs_dir, tmp_path):
-    upload = write_video(tmp_path / "s.mp4", [solid((1, 1, 1))] * 96, audio_seconds=4)
-    job = Job.create(runs_dir, upload, generator="seedance", mode="face_mesh")
-    for name in pipeline.PREP_STAGES_BY_MODE["face_mesh"]:
-        job.mark_stage(name)
-    assert "next version" in next_step(job, approved=True)
-
-
 def test_unreadable_upload_is_refused_before_paying(wan_job, services, runs_dir):
     approve(wan_job, services)
     wan_job.path("upload.mp4").write_bytes(b"not a video")  # not hashed by review
@@ -438,3 +432,131 @@ def test_embed_cuts_the_pitched_vocals_to_the_picture(runs_dir, tmp_path):
     write_wav(job.path("vocals-plus3.wav"), tone(2.6))
     pipeline._embed(job)
     assert stream_seconds(job.path("prepared.mp4"), "audio") <= 2.05
+
+
+# ---- Seedance (Plan 2b) -------------------------------------------------------------
+@pytest.fixture
+def seedance(runs_dir, tmp_path):
+    """An approved depth job with a saved face, as if prepare() had run."""
+    upload = write_video(tmp_path / "talk.mp4", [solid((90, 60, 30))] * 108, audio_seconds=4.5)
+    photo = tmp_path / "me.jpg"
+    Image.new("RGB", (828, 1086), (200, 150, 120)).save(photo, "JPEG")
+    library = FaceLibrary(tmp_path, sleep=lambda _s: None)
+    face = library.add("frank", photo, FakePiAPI())
+    job = Job.create(
+        runs_dir,
+        upload,
+        generator="seedance",
+        mode="depth",
+        character=library.image_path(face),
+        faces={"primary": "frank"},
+    )
+    for name in MODES["depth"].review_files:
+        write_video(job.path(name), [solid((5, 5, 5))] * 96)
+    for stage in MODES["depth"].prep_stages:
+        job.mark_stage(stage)
+    job.update(video={"seconds": 4.0}, transcript="lets get it", scene="A hotel lobby.")
+    decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
+    output = write_video(tmp_path / "seedance-out.mp4", [solid((20, 200, 20))] * 96)
+    services = Services(
+        replicate=None,
+        face_detector=lambda: None,
+        generators={"seedance": FakeGenerator(output)},
+        faces=library,
+    )
+    return job, services
+
+
+def test_seedance_draft_sends_the_prepared_video_face_and_default_prompt(seedance, runs_dir):
+    job, services = seedance
+    result = generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    ((stage, request),) = services.generators["seedance"].calls
+    assert stage == "draft" and request.video == job.path("prepared.mp4")
+    assert request.primary.face_asset_id == "asset-1" and request.primary.name == "frank"
+    assert "lets get it" in request.prompt and "@image1" in request.prompt
+    assert job.state["stages"]["draft"]["prompt"] == request.prompt
+    assert stream_seconds(result, "audio") <= 4.05  # the 4.5 s sound was cut to the picture
+
+
+def test_an_edited_prompt_file_is_what_is_sent(seedance, runs_dir):
+    job, services = seedance
+    path = write_prompt_file(job)
+    path.write_text("Make the person in @video1 look like @image1. Keep everything else.")
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    request = services.generators["seedance"].calls[0][1]
+    assert request.prompt == "Make the person in @video1 look like @image1. Keep everything else."
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        ("", "empty"),
+        ("Swap @video1 please.", "@image1"),
+        ("@video1 @image1 and @image2", "@image2"),
+    ],
+)
+def test_prompt_file_problems_are_plain_errors(seedance, text, words):
+    job, _ = seedance
+    write_prompt_file(job).write_text(text)
+    with pytest.raises(PromptError, match=words):
+        generation_prompt(job, "draft")
+
+
+def test_1080p_final_carries_the_draft_task_and_records_the_resolution(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    generate(job, services, "final", runs_dir=runs_dir, **QUIET)
+    request = services.generators["seedance"].calls[1][1]
+    assert request.draft_task_id == "p-draft" and request.final_resolution == "1080p"
+    assert job.state["stages"]["final"]["resolution"] == "1080p"
+
+
+def test_720p_final_reuses_the_drafts_prompt(seedance, runs_dir):
+    job, services = seedance
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    sent = job.state["stages"]["draft"]["prompt"]
+    write_prompt_file(job).write_text("@video1 @image1 changed after the draft")
+    generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
+    request = services.generators["seedance"].calls[1][1]
+    assert request.prompt == sent and request.final_resolution == "720p"
+
+
+def test_a_started_final_keeps_its_resolution(seedance):
+    job, _ = seedance
+    job.mark_stage("final", "failed", resolution="1080p", error="lost connection")
+    job.path("final-prediction.json").write_text('{"id": "t9", "status": "processing"}')
+    with pytest.raises(StageError, match="--resolution 1080p"):
+        final_resolution(job, "720p")
+    assert final_resolution(job, "") == "1080p"
+
+
+def test_wan_finals_are_720p_only(wan_job):
+    assert final_resolution(wan_job, "") == "720p"
+    with pytest.raises(StageError, match="720p"):
+        final_resolution(wan_job, "1080p")
+
+
+def test_next_step_for_an_approved_seedance_job_is_the_draft(seedance):
+    job, _ = seedance
+    assert next_step(job, approved=True) == f"charswap generate {job.id} --draft"
+
+
+def test_a_deleted_saved_face_is_a_plain_error(seedance, runs_dir):
+    job, services = seedance
+    (services.faces.folder / "faces.json").write_text("[]")
+    with pytest.raises(FaceError, match="charswap face add frank"):
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert services.generators["seedance"].calls == []
+
+
+def test_a_resumed_draft_keeps_the_prompt_it_was_created_with(seedance, runs_dir):
+    job, services = seedance
+    sent = "Put @image1 on the person in @video1."
+    # an interrupted draft: the task was created with `sent`, then the user edited prompt.txt
+    job.mark_stage("draft", "failed", fingerprint=fingerprint(job), prompt=sent, error="x")
+    job.path("draft-prediction.json").write_text('{"id": "p-draft", "status": "succeeded"}')
+    write_prompt_file(job).write_text("@video1 @image1 edited after the task was created")
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert job.state["stages"]["draft"]["prompt"] == sent
+    generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
+    assert services.generators["seedance"].calls[-1][1].prompt == sent
