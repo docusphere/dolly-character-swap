@@ -23,7 +23,7 @@ from character_swap.costs import (
     record_spend,
 )
 from character_swap.errors import CharSwapError
-from character_swap.faces import ACTIVE, CONSENT, PROCESSING, FaceLibrary
+from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.pipeline import (
     GENERATION_LABELS,
@@ -481,7 +481,7 @@ def _view(args, settings, env) -> int:
     return 0
 
 
-def _face_line(face, library: FaceLibrary) -> str:
+def _face_line(face) -> str:
     if face.status == ACTIVE:
         return (
             f"Face {face.name} is ready (PiAPI id {face.asset_id}). Use it with: "
@@ -489,7 +489,7 @@ def _face_line(face, library: FaceLibrary) -> str:
         )
     if face.status == PROCESSING:
         return f"PiAPI is still checking {face.name}. Run: charswap face check {face.name}"
-    if face.status == "Failed":
+    if face.status == FAILED:
         return f"PiAPI rejected {face.name}: {face.error or 'no reason given'}."
     return f"PiAPI removed {face.name} after it went unused. Run: charswap face renew {face.name}"
 
@@ -506,18 +506,29 @@ def _face(args, settings, env) -> int:
             )
         return 0
     if args.face_command == "add":
+        library.validate_new_name(args.name)
         env.out(CONSENT)
         if not args.yes and not env.confirm("Do you have the right to use this face?"):
             env.err("Cancelled. Nothing was uploaded.")
             return 1
         piapi = env.piapi_factory(settings)
         env.out("Uploading, then waiting for PiAPI's face check (free, up to ~5 minutes)...")
-        face = library.add(args.name, args.photo, piapi)
+        action = lambda: library.add(args.name, args.photo, piapi)  # noqa: E731
     elif args.face_command == "renew":
-        face = library.renew(args.name, env.piapi_factory(settings))
+        piapi = env.piapi_factory(settings)
+        action = lambda: library.renew(args.name, piapi)  # noqa: E731
     else:
-        face = library.check(args.name, env.piapi_factory(settings))
-    env.out(_face_line(face, library))
+        piapi = env.piapi_factory(settings)
+        action = lambda: library.check(args.name, piapi)  # noqa: E731
+    try:
+        face = action()
+    except KeyboardInterrupt:
+        env.err(
+            "Stopped waiting. The face is saved if PiAPI accepted the upload; "
+            "run: charswap face check NAME"
+        )
+        return 130
+    env.out(_face_line(face))
     return 0 if face.status in (ACTIVE, PROCESSING) else 2
 
 

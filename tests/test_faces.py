@@ -127,3 +127,62 @@ def test_failed_status_keeps_piapis_reason(tmp_path):
 
     face = library(tmp_path).add("frank", photo(tmp_path / "me.jpg"), Rejecting())
     assert face.status == FAILED and face.error == "no face found"
+
+
+def test_renew_does_not_upload_when_the_face_is_still_there(tmp_path):
+    piapi = FakePiAPI()
+    lib = library(tmp_path)
+    lib.add("frank", photo(tmp_path / "me.jpg"), piapi)
+    assert lib.renew("frank", piapi).status == ACTIVE
+    assert len(piapi.uploads) == 1
+
+
+def test_renew_explains_a_rejected_face(tmp_path):
+    piapi = FakePiAPI()
+    lib = library(tmp_path)
+    lib.add("frank", photo(tmp_path / "me.jpg"), piapi)
+    piapi.assets["asset-1"] = "Failed"
+    with pytest.raises(FaceError, match="clearer photo under a new name"):
+        lib.renew("frank", piapi)
+    assert len(piapi.uploads) == 1
+
+
+def test_transparency_is_flattened_onto_white(tmp_path):
+    src = tmp_path / "t.png"
+    Image.new("RGBA", (400, 400), (0, 0, 0, 0)).save(src)
+    out = check_photo(src, tmp_path / "out.jpg")
+    with Image.open(out) as image:
+        assert min(image.getpixel((10, 10))) > 250
+
+
+def test_a_brief_404_right_after_creating_is_not_gone(tmp_path):
+    class Late(FakePiAPI):
+        def get_asset(self, asset_id):
+            self.asset_checks.append(asset_id)
+            return (
+                None if len(self.asset_checks) == 1 else {"asset_id": asset_id, "status": "Active"}
+            )
+
+    assert library(tmp_path).add("frank", photo(tmp_path / "me.jpg"), Late()).status == ACTIVE
+
+
+def test_validate_new_name_is_public(tmp_path):
+    lib = library(tmp_path)
+    lib.validate_new_name("frank")
+    with pytest.raises(FaceError, match="lowercase"):
+        lib.validate_new_name("Bad Name")
+
+
+def test_decompression_bomb_gets_the_export_advice(tmp_path, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    with pytest.raises(FaceError, match="Export it as JPEG"):
+        check_photo(photo(tmp_path / "big.jpg", size=(400, 400)), tmp_path / "out.jpg")
+
+
+def test_unknown_keys_in_a_row_are_ignored(tmp_path):
+    lib = library(tmp_path)
+    lib.add("frank", photo(tmp_path / "me.jpg"), FakePiAPI())
+    rows = json.loads(lib.index.read_text())
+    rows[0]["future"] = 1
+    lib.index.write_text(json.dumps(rows))
+    assert lib.get("frank").name == "frank"

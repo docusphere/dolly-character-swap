@@ -8,7 +8,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -67,7 +67,7 @@ def check_photo(photo: Path, dest: Path) -> Path:
             image.load()
     except FileNotFoundError:
         raise FaceError(f"Photo not found: {photo}") from None
-    except (UnidentifiedImageError, OSError) as error:
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
         raise FaceError(
             f"{photo.name} isn't a photo this tool can read. Export it as JPEG or PNG "
             "(iPhone photos: select it in Photos, then File > Export)."
@@ -85,7 +85,12 @@ def check_photo(photo: Path, dest: Path) -> Path:
         )
     if max(width, height) > FIT_SIDE:
         image.thumbnail((FIT_SIDE, FIT_SIDE), Image.Resampling.LANCZOS)
-    rgb = image.convert("RGB")
+    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        rgb = Image.new("RGB", rgba.size, (255, 255, 255))
+        rgb.paste(rgba, mask=rgba.getchannel("A"))
+    else:
+        rgb = image.convert("RGB")
     for quality in (92, 80):
         rgb.save(dest, "JPEG", quality=quality)
         if Path(dest).stat().st_size <= MAX_BYTES:
@@ -115,7 +120,8 @@ class FaceLibrary:
             return []
         try:
             rows = json.loads(self.index.read_text(encoding="utf-8"))
-            return [Face(**row) for row in rows]
+            known = {f.name for f in fields(Face)}
+            return [Face(**{k: v for k, v in row.items() if k in known}) for row in rows]
         except (OSError, ValueError, TypeError) as error:
             raise FaceError(
                 f"{self.index} is damaged. Fix or delete it (your faces stay in your PiAPI "
@@ -132,7 +138,7 @@ class FaceLibrary:
         return self.folder / face.image
 
     # ---- PiAPI (free calls) --------------------------------------------------------
-    def add(self, name: str, photo: Path, piapi: AssetsLike) -> Face:
+    def validate_new_name(self, name: str) -> None:
         if not NAME.fullmatch(name):
             raise FaceError(
                 "Face names are 1-40 lowercase letters, digits, - or _ (for example: frank)."
@@ -142,6 +148,9 @@ class FaceLibrary:
                 f"A face called {name!r} is already saved. Pick another name, or run "
                 f"charswap face renew {name} if PiAPI removed it."
             )
+
+    def add(self, name: str, photo: Path, piapi: AssetsLike) -> Face:
+        self.validate_new_name(name)
         self.folder.mkdir(parents=True, exist_ok=True)
         image = check_photo(Path(photo), self.folder / f"{name}.jpg")
         return self._upload(name, image.name, piapi)
@@ -154,6 +163,14 @@ class FaceLibrary:
                 f"The saved photo {self.image_path(face)} is missing; add the face again "
                 "under a new name."
             )
+        face = self._refresh(face, piapi)
+        if face.status == FAILED:
+            raise FaceError(
+                f"PiAPI rejected face {name!r}: {face.error or 'no reason given'}. Add a "
+                "clearer photo under a new name: charswap face add NAME photo.jpg"
+            )
+        if face.status != GONE:
+            return face  # still in your library: nothing to upload
         return self._upload(name, face.image, piapi)
 
     def check(self, name: str, piapi: AssetsLike) -> Face:
@@ -197,6 +214,8 @@ class FaceLibrary:
             if attempt:  # the first check is immediate; later ones wait in between
                 self._sleep(self._poll_seconds)
             face = self._refresh(face, piapi)
+            if face.status == GONE:  # a brief 404 right after creating: still checking
+                face = replace(face, status=PROCESSING)
         return face
 
     def _refresh(self, face: Face, piapi: AssetsLike) -> Face:

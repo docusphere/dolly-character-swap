@@ -1073,3 +1073,30 @@ def test_face_list_when_empty(settings):
 def test_face_commands_need_the_piapi_key(settings, tmp_path):
     code, out = run(["face", "add", "frank", str(_photo(tmp_path / "me.jpg")), "--yes"], settings)
     assert code == 2 and "PIAPI_API_KEY" in out.err.text
+
+
+def test_face_add_ctrl_c_gives_a_face_hint(settings, tmp_path):
+    class Interrupted(FakePiAPI):
+        def get_asset(self, asset_id):
+            raise KeyboardInterrupt
+
+    code, out = run(
+        ["face", "add", "frank", str(_photo(tmp_path / "me.jpg")), "--yes"],
+        settings,
+        piapi_factory=lambda s: Interrupted(),
+    )
+    assert code == 130 and "charswap face check NAME" in out.err.text
+
+
+def test_face_add_bad_name_fails_before_consent_and_client(settings, tmp_path):
+    def boom(_s):
+        raise AssertionError("client built")
+
+    asked = []
+    code, out = run(
+        ["face", "add", "Bad Name", str(_photo(tmp_path / "me.jpg"))],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+        piapi_factory=boom,
+    )
+    assert code == 2 and not asked and "lowercase" in out.err.text
