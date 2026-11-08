@@ -43,3 +43,18 @@ def test_too_big_even_compressed_is_refused_and_leaves_nothing(tmp_path):
     with pytest.raises(UploadTooLarge, match="shorter clip"):
         fit_for_upload(clip, tmp_path / "copy.mp4", 100)
     assert not (tmp_path / "copy.mp4").exists()
+
+
+def test_failed_reencode_leaves_no_partial_copy(tmp_path, monkeypatch):
+    from character_swap.media import upload
+
+    clip = noisy_clip(tmp_path)
+
+    def half_written(src, dst, crf):
+        dst.write_bytes(b"partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(upload, "_reencode", half_written)
+    with pytest.raises(RuntimeError, match="disk full"):
+        fit_for_upload(clip, tmp_path / "copy.mp4", 100)
+    assert not (tmp_path / "copy.mp4").exists()

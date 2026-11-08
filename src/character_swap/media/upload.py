@@ -18,15 +18,20 @@ def fit_for_upload(src: Path, dst: Path, max_bytes: int) -> Path:
     """`src` itself when it is small enough; otherwise a re-encoded copy at `dst`.
 
     The copy keeps every frame, the frame rate, the size and the audio packets exactly;
-    only the picture is compressed harder.
+    only the picture is compressed harder. Input must be constant frame rate (prepared
+    clips always are); frames are renumbered at its average rate.
     """
     src, dst = Path(src), Path(dst)
     if src.stat().st_size <= max_bytes:
         return src
-    for crf in QUALITIES:
-        _reencode(src, dst, crf)
-        if dst.stat().st_size <= max_bytes:
-            return dst
+    try:
+        for crf in QUALITIES:
+            _reencode(src, dst, crf)
+            if dst.stat().st_size <= max_bytes:
+                return dst
+    except BaseException:
+        dst.unlink(missing_ok=True)  # never leave a half-written copy behind
+        raise
     dst.unlink(missing_ok=True)
     raise UploadTooLarge(
         f"{src.name} is still over {max_bytes / 1e6:.0f} MB after compressing. Use a shorter clip."
