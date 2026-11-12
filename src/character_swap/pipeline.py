@@ -28,7 +28,7 @@ from character_swap.media.audio import (
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
-from character_swap.prompts import PromptError, build_prompt, validate_prompt
+from character_swap.prompts import PromptError, build_prompt, check_placeholders, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
 from character_swap.providers.generators.seedance_piapi import FINALS as SEEDANCE_FINALS
 from character_swap.providers.generators.seedance_piapi import PROMOTE
@@ -661,6 +661,7 @@ PROMPT_FILE = "prompt.txt"  # Seedance: the editable prompt (charswap prompt <jo
 def default_prompt(job: Job) -> str:
     state = job.state
     return build_prompt(
+        provider="piapi",  # Task 7: the job's provider
         mode=job.mode,
         scene=state.get("scene"),
         transcript=state.get("transcript"),
@@ -729,18 +730,9 @@ def generation_prompt(
             f"{path} is empty. Write what Seedance should do, or delete the file to use the "
             "default prompt."
         )
-    _check_placeholders(text, has_secondary=bool(job.state.get("character_secondary")))
+    check_placeholders(
+        text,
+        provider="piapi",  # Task 7: the job's provider
+        has_secondary=bool(job.state.get("character_secondary")),
+    )
     return validate_prompt(text)
-
-
-def _check_placeholders(text: str, *, has_secondary: bool) -> None:
-    """PiAPI refuses prompts whose @video1/@image1/@image2 don't match what is sent."""
-    for needed in ("@video1", "@image1"):
-        if needed not in text:
-            raise PromptError(f"The prompt must mention {needed} (the clip and your character).")
-    if has_secondary and "@image2" not in text:
-        raise PromptError("This job has a second character: the prompt must mention @image2.")
-    if not has_secondary and "@image2" in text:
-        raise PromptError(
-            "The prompt mentions @image2 but this job has no second character; remove it."
-        )
