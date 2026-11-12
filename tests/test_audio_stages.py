@@ -135,3 +135,13 @@ def test_pitch_clips_to_full_scale(tmp_path, monkeypatch):
     )
     pitch_vocals(source, tmp_path / "p.wav")
     assert np.abs(written["data"]).max() <= 1.0
+
+
+def test_separate_cuts_audio_to_the_trimmed_clip(runs_dir, tmp_path):
+    upload = write_video(tmp_path / "in.mp4", [solid((1, 1, 1))] * 48, audio_seconds=2)
+    long_job = Job.create(runs_dir, upload, generator="seedance", mode="depth")
+    write_video(long_job.path("original.mp4"), [solid((1, 1, 1))] * 24)  # whole-second trim: 1 s
+    _, urls, files = stem_files(tmp_path)
+    separate_vocals(long_job, FakeReplicate(outputs={DEMUCS_VERSION: urls}, files=files))
+    seconds = read_audio(long_job.path("original-audio.wav")).shape[1] / 44100
+    assert seconds == pytest.approx(1.0, abs=0.01)

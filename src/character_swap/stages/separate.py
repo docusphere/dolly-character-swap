@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 from character_swap.jobs import Job
-from character_swap.media.audio import read_audio, write_wav
+from character_swap.media.audio import RATE, read_audio, write_wav
+from character_swap.media.video import stream_seconds
 from character_swap.stages import StageError, bad_output, download_or_fail
 
 DEMUCS_VERSION = "25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953"
@@ -14,6 +15,9 @@ STEMS = frozenset({"vocals", "drums", "bass", "other"})
 
 def separate_vocals(job: Job, replicate) -> None:
     original = read_audio(job.path("upload.mp4"))
+    clip = job.path("original.mp4")
+    if clip.exists():  # match the whole-second trim, so vocals and transcript end with the clip
+        original = original[:, : round(stream_seconds(clip, "video") * RATE)]
     write_wav(job.path("original-audio.wav"), original)
     url = replicate.upload(job.path("original-audio.wav"))
     record = job.path("demucs-prediction.json")
