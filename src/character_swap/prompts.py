@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from character_swap.errors import CharSwapError
 
 MAX_PROMPT = 4000
@@ -74,13 +76,17 @@ def validate_prompt(text: str) -> str:
 def check_placeholders(text: str, *, provider: str, has_secondary: bool) -> None:
     """The provider refuses (or misreads) prompts whose input names don't match what is sent."""
     names = _names(provider)
+
+    def mentions(name: str) -> bool:
+        return re.search(re.escape(name) + r"(?!\d)", text) is not None
+
     for needed in (names["video"], names["image1"]):
-        if needed not in text:
+        if not mentions(needed):
             raise PromptError(f"The prompt must mention {needed} (the clip and your character).")
     second = names["image2"]
-    if has_secondary and second not in text:
+    if has_secondary and not mentions(second):
         raise PromptError(f"This job has a second character: the prompt must mention {second}.")
-    if not has_secondary and second in text:
+    if not has_secondary and mentions(second):
         raise PromptError(
             f"The prompt mentions {second} but this job has no second character; remove it."
         )

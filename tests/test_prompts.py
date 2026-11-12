@@ -123,3 +123,39 @@ def test_check_placeholders_accepts_the_providers_names(provider, text, secondar
 def test_check_placeholders_refuses_names_that_do_not_match(provider, text, secondary, words):
     with pytest.raises(PromptError, match=words):
         check_placeholders(text, provider=provider, has_secondary=secondary)
+
+
+@pytest.mark.parametrize(
+    ("provider", "text", "secondary", "words"),
+    [
+        ("wavespeed", "@Video 10 and @Image 1", False, "must mention @Video 1"),
+        ("wavespeed", "@Video 1 and @Image 12", False, "must mention @Image 1"),
+        ("wavespeed", "@Video 1 @Image 1 @Image 20", True, "must mention @Image 2"),
+        ("piapi", "@video10 and @image1", False, "must mention @video1"),
+        ("piapi", "@video1 and @image10", False, "must mention @image1"),
+        ("piapi", "@video1 @image1 @image20", True, "must mention @image2"),
+    ],
+)
+def test_check_placeholders_does_not_count_longer_numbers(provider, text, secondary, words):
+    with pytest.raises(PromptError, match=words):
+        check_placeholders(text, provider=provider, has_secondary=secondary)
+
+
+@pytest.mark.parametrize(
+    ("provider", "text"),
+    [
+        ("wavespeed", "@Video 1 @Image 1 and @Image 20."),
+        ("piapi", "@video1 @image1 and @image20."),
+    ],
+)
+def test_check_placeholders_allows_longer_numbers_when_there_is_no_second_character(provider, text):
+    check_placeholders(text, provider=provider, has_secondary=False)
+
+
+@pytest.mark.parametrize("provider", ["piapi", "wavespeed"])
+def test_braces_in_scene_and_transcript_survive_unchanged(provider):
+    text = build_prompt(
+        provider=provider, mode="depth", scene="{video} {0} {", transcript="{image1} }{"
+    )
+    assert "Setting: {video} {0} {" in text
+    assert '"{image1} }{"' in text
