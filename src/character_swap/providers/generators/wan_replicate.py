@@ -27,6 +27,8 @@ class WanGenerator:
     min_seconds, max_seconds = GENERATOR_LIMITS["wan"]
     supports_real_faces = True  # open model, no face filter
     supports_secondary = False
+    finals = ("720p",)
+    promotes = False
 
     def __init__(self, replicate: ReplicateLike) -> None:
         self._replicate = replicate

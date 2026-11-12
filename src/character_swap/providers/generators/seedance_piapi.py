@@ -38,6 +38,8 @@ class SeedanceGenerator:
     min_seconds, max_seconds = GENERATOR_LIMITS["seedance"]
     supports_real_faces = True  # through saved faces (PiAPI's face library)
     supports_secondary = True
+    finals = FINALS  # 1080p (default) upgrades the draft; 720p is a fresh run
+    promotes = True
 
     def __init__(self, piapi) -> None:
         self._piapi = piapi

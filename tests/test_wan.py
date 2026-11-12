@@ -99,3 +99,7 @@ def test_limits_and_capabilities():
     assert (WanGenerator.min_seconds, WanGenerator.max_seconds) == (1, 30)
     assert WanGenerator.supports_secondary is False and WanGenerator.provider == "replicate"
     assert WanGenerator.model == WAN_MODEL == "wan-video/wan-2.2-animate-replace"
+
+
+def test_wan_has_one_final_and_never_upgrades():
+    assert WanGenerator.finals == ("720p",) and WanGenerator.promotes is False

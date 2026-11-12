@@ -40,6 +40,8 @@ class Generator(Protocol):
     max_seconds: int
     supports_real_faces: bool
     supports_secondary: bool
+    finals: tuple[str, ...]  # final resolutions this generator offers; the first is the default
+    promotes: bool  # True: the default final upgrades the draft's own task (PiAPI 1080p)
 
     def estimate(self, request: GenerationRequest, stage: Stage) -> Estimate: ...
 
