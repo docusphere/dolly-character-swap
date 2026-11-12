@@ -39,7 +39,7 @@ PiAPI keeps working unchanged as `--provider piapi` (saved faces, two people, th
 - `web.view_model.SECTIONS`, `Section`, `read_state`, `cost_rows`, `_generation_name`, `_seedance_texts`, `_section_view`
 - tests: `tests/fakes.py` (`FakePiAPI`), `tests/test_generation.py` (`FakeGenerator`, `seedance` fixture), `tests/test_cli.py` (`run`, `_photo`, `_approved_seedance_job`, `seedance_services`, `piapi_settings`), `tests/viewer_jobs.py` (`make_job`, `finish_stage`)
 
-**Dry run:** every code block in this plan was applied in order to a scratch copy of `feat/wavespeed` and checked: after Task 12 the suite has 930 passing tests (1 live test deselected), 96.5 % coverage, ruff clean. Line numbers below are from the branch before Task 1; later tasks shift them, so anchor on the quoted code.
+**Dry run:** every code block in this plan was applied in order to a scratch copy of `feat/wavespeed` and checked: after Task 12 the suite has 932 passing tests, 96.5 % coverage, ruff clean. Task 14 then adds the live test, which the default run deselects (`1 deselected`). Line numbers below are from the branch before Task 1; later tasks shift them, so anchor on the quoted code.
 
 **WaveSpeed facts (verified 2026-11-12 from WaveSpeed's docs and 3 live runs; recorded in Task 1):**
 - **Auth:** header `Authorization: Bearer <key>`; key in `WAVESPEED_API_KEY`.
@@ -853,7 +853,8 @@ Error mapping on the create POST (decision P5):
 | 400 / 401 / 403 / 404 / 422 | `WaveSpeedRejected(code)`: "WaveSpeed rejected the request (...); nothing was charged" (401 names `WAVESPEED_API_KEY`) | released |
 | 429 | `WaveSpeedRejected(429)`: "WaveSpeed is busy (429); nothing was charged, try again in a minute" | released |
 | one of those, but the body names a prediction id | that prediction is saved; error says it may be charged and to check the dashboard | replaced by the prediction |
-| 5xx, other 4xx, timeout, unreadable body, 2xx without `data.id` | ambiguous: "check your WaveSpeed dashboard (Predictions) before running again" | kept |
+| 5xx, other 4xx (e.g. 402), unreadable body, 2xx without `data.id` | ambiguous: "WaveSpeed answered <code>: <first 200 characters of its answer, on one line>." plus "check your WaveSpeed dashboard (Predictions) before running again" (never the key or our request headers) | kept |
+| timeout or lost connection (no answer) | ambiguous: the same dashboard message | kept |
 
 - [ ] **Step 1: The fake.** Append to `tests/fakes.py`:
 
@@ -1133,9 +1134,23 @@ def test_429_is_busy_not_retried_and_releases_the_marker(tmp_path):
 def test_unclear_answers_keep_the_marker_and_point_at_the_dashboard(tmp_path, reply):
     record = tmp_path / "r.json"
     create = respx.post(SUBMIT_URL).mock(return_value=reply)
-    with pytest.raises(WaveSpeedError, match="may have been charged.*WaveSpeed dashboard"):
+    with pytest.raises(WaveSpeedError, match="may have been charged.*WaveSpeed dashboard") as caught:
         client().run(body=BODY, record=record)
     assert json.loads(record.read_text())["status"] == "creating" and create.call_count == 1
+    assert f"WaveSpeed answered {reply.status_code}: " in str(caught.value)
+    assert KEY not in str(caught.value) and "Bearer" not in str(caught.value)
+
+
+@respx.mock
+def test_an_unclear_answer_shows_one_short_line_of_what_wavespeed_said(tmp_path):
+    respx.post(SUBMIT_URL).respond(402, text="insufficient\n   balance " + "x" * 500)
+    with pytest.raises(WaveSpeedError) as caught:
+        client().run(body=BODY, record=tmp_path / "r.json")
+    message = str(caught.value)
+    said = message.split("WaveSpeed answered 402: ", 1)[1].split(". The request was sent", 1)[0]
+    assert said.startswith("insufficient balance x")  # whitespace and line breaks collapsed
+    assert "\n" not in message and len(said) <= 200 and said.endswith("…")
+    assert KEY not in message
 
 
 @respx.mock
@@ -1559,11 +1574,11 @@ class WaveSpeedClient:
             message = BUSY_MESSAGE if code == 429 else _rejection(code, response.text)
             self._release(record, marker, message)
             raise WaveSpeedRejected(message, code)
-        if response.is_error:  # 5xx or another 4xx: a prediction may exist
-            raise WaveSpeedError(unconfirmed_message(record))
+        if response.is_error:  # 5xx or another 4xx (e.g. 402): a prediction may exist
+            raise WaveSpeedError(_ambiguous(response, record))
         prediction = _prediction_in(response)
         if prediction is None:  # unreadable, or no id: it may still have been created
-            raise WaveSpeedError(unconfirmed_message(record))
+            raise WaveSpeedError(_ambiguous(response, record))
         self._keep(prediction, record, on_created)
         return prediction
 
@@ -1684,6 +1699,18 @@ def _taken_over(record: Path) -> str:
         "this run sent nothing more and was not charged for it. Let the other run finish, "
         "or run the command again to resume what it saved."
     )
+
+
+def _excerpt(text: str, limit: int = 200) -> str:
+    """One line of a response body, for messages (WaveSpeed's answer only: never our headers)."""
+    line = " ".join(str(text).split())
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+def _ambiguous(response: httpx.Response, record: Path) -> str:
+    """An unclear create answer: show what WaveSpeed said (e.g. a low balance), keep the marker."""
+    said = _excerpt(response.text) or "(empty answer)"
+    return f"WaveSpeed answered {response.status_code}: {said}. {unconfirmed_message(record)}"
 
 
 def _rejection(code: int, body: str) -> str:
@@ -1943,7 +1970,7 @@ git commit -m "feat: WaveSpeed Seedance generator: free checks, uploads, one fre
 
 After this task:
 - `Job.create(provider=...)` saves `provider` for Seedance jobs (prepare passes it in Task 10).
-- `pipeline.generator_key(job)` is `wan`, `seedance:wavespeed` or `seedance:piapi`. A Seedance job without `provider` is PiAPI's when it has a saved face, a second person, a draft/final record or raw file, or a done draft/final; otherwise WaveSpeed's. It never writes.
+- `pipeline.generator_key(job)` is `wan`, `seedance:wavespeed` or `seedance:piapi`. A Seedance job without `provider` is PiAPI's when it has a saved face, a second person, a draft/final record or raw file, a done draft/final, or a logged charge with `provider: "piapi"`; otherwise WaveSpeed's. It never writes.
 - `pin_provider(job)` writes the resolved provider once; `charswap prompt`, `charswap generate` and `pipeline.generate` call it right after loading the job, before any paid create.
 - The services registry, `KEYS`, `UNCONFIRMED` and `FINAL_RESOLUTIONS` are keyed by `generator_key`. `build_services` builds each Seedance generator only when its key is set.
 - The default prompt and the placeholder check use the job's provider.
@@ -2001,6 +2028,7 @@ PIAPI_SIGNS = {
     "final video": lambda job: job.path("final-raw.mp4").write_bytes(b"v"),
     "finished draft": lambda job: job.mark_stage("draft"),
     "finished final": lambda job: job.mark_stage("final"),
+    "PiAPI charge": lambda job: job.append_cost({"step": "draft", "usd": 0.99, "provider": "piapi"}),
 }
 
 
@@ -2014,6 +2042,8 @@ def test_an_old_seedance_job_with_piapi_work_is_piapi(runs_dir, tmp_path, sign):
 def test_an_old_seedance_job_without_piapi_work_is_wavespeed(runs_dir, tmp_path):
     job = _old_seedance_job(runs_dir, tmp_path)
     job.mark_stage("draft", "failed", error="x")  # failed before any record: not PiAPI work
+    job.append_cost({"step": "prepare", "usd": 0.06})  # prep charges name no provider
+    job.append_cost({"step": "draft", "usd": 0.88, "provider": "wavespeed"})
     assert pipeline.generator_key(job) == "seedance:wavespeed"
 
 
@@ -2339,6 +2369,11 @@ def test_finals_are_defined_once():
     def _old_job_provider(job: Job, state: dict[str, Any]) -> str:
         if any(state.get(name) for name in _PIAPI_ONLY):
             return "piapi"
+        costs = state.get("costs")
+        if isinstance(costs, list) and any(
+            isinstance(entry, dict) and entry.get("provider") == "piapi" for entry in costs
+        ):
+            return "piapi"  # a logged PiAPI charge
         stages = state.get("stages")
         stages = stages if isinstance(stages, dict) else {}
         for stage in GENERATION_STAGES:
@@ -3832,6 +3867,7 @@ git commit -m "test: live WaveSpeed draft through charswap generate (marked live
   4. Ask Frank for the OK (about $0.88). Then: `CHARSWAP_LIVE_JOB=<id> uv run pytest tests/test_live_wavespeed.py -m live --no-cov -q`.
   5. Record in `docs/research/2026-10-22-provider-api-facts.md`: run time, the first status words WaveSpeed returned, the output size/fps/length, whether the sound lines up, the real charge on WaveSpeed's dashboard compared with the $0.88 estimate, and Frank's verdict. Update `costs.py` if the price differs. Log the session.
   6. Only if Frank likes the draft and says yes: `uv run charswap generate <id> --final` (about $1.76) and record the same facts.
+  7. Low balance: never trigger it on purpose (a POST with enough credit is a real charge). If a create is ever refused for low balance (for example once the free $1 is used up), record in the research doc the HTTP status and the one-line answer the error message shows ("WaveSpeed answered <code>: ..."), and check the dashboard that nothing was created. Once that is confirmed, a small follow-up adds that code to `REJECTED` in `providers/wavespeed.py` (released marker, "nothing was charged") with its own test.
 
 ---
 
@@ -3854,10 +3890,11 @@ The spec fit the code with these small adjustments; none changes a decision or a
 2. **`generator_key(job, state=None)`.** The spec says it takes the `Job`, not a bare state dict. It still does; the optional `state` lets the viewer pass the `state.json` it already read and validated for the page. It remains a pure read of the job folder and never writes.
 3. **`pipeline.generate` also pins the provider.** The spec names `charswap prompt` and `charswap generate` as the only writers. `pipeline.generate` is only reached through `charswap generate` and pins again (a no-op there) so the paid path is safe on its own; the viewer and every other command still never write `provider`.
 4. **A too-large upload is refused after the yes, not before the cost question.** Rule 5 lists "an upload that is too large" among the refusals before the cost question. Checking that needs the compressed copy (`fit_for_upload`), which is slow local work, so it stays inside `generate`, as it is for PiAPI today: after the yes, but before any upload or POST, so nothing is charged. For a remake, the old draft has already been moved to `draft-old-*` (kept, never deleted). With WaveSpeed's 200 MB limit this practically never triggers. Listed under Deferred.
-5. **WaveSpeed create answers the spec does not list (decision P5).** Other 4xx codes (for example 402 for no credit, 409) are treated as ambiguous and keep the marker, because the spec only names 400/401/403/404/422 as clean refusals. A refusal whose body still names a prediction id saves that prediction (resumable, "may be charged") instead of releasing the marker, as the PiAPI client does.
+5. **WaveSpeed create answers the spec does not list (decision P5).** Other 4xx codes (for example 402 for no credit, 409) are treated as ambiguous and keep the marker, because the spec only names 400/401/403/404/422 as clean refusals. A refusal whose body still names a prediction id saves that prediction (resumable, "may be charged") instead of releasing the marker, as the PiAPI client does. Every ambiguous create message starts with the HTTP status and a one-line, 200-character excerpt of WaveSpeed's answer, so a low-balance reply is readable; Task 14 records the real low-balance code so it can move to the clean-refusal list.
 6. **Poll limit.** The spec gives the back-off (5 s to 15 s) but no ceiling; this plan stops waiting after 720 polls (about 3 hours) with a resumable "still running; no new charge" message (decision P6).
 7. **WaveSpeed expiry wording.** `download_now` says "This video link has expired (WaveSpeed does not say how long it keeps results)."; the generator adds "Delete <record> and run the same command again to make a new one (costs about $X)". PiAPI's message is unchanged ("PiAPI keeps results 24 hours").
-8. **Unknown `provider` in `state.json`** is an error in the pipeline (`JobError`) and the viewer (`ViewError`); the spec does not cover damaged values (decision P8).
-9. **Photo-check wording.** `faces.check_photo` messages say "Seedance" instead of "PiAPI", because WaveSpeed jobs use the same free check (decision P10). Tests match only the unchanged parts.
-10. **Housekeeping beyond the spec's README item:** `.env.example` gets `WAVESPEED_API_KEY`; `CLAUDE.md`, `activity.md` and `docs/scratchpad.md` are updated (Task 13), and the research facts doc records the WaveSpeed facts (Task 1).
-11. **Price line names.** WaveSpeed estimate lines reuse PiAPI's item names ("Seedance draft (480p)", "Seedance input video (480p)", ...); the provider shows in the spend log, the cost rows and the viewer.
+8. **Old-job rule, one extra sign.** Besides the spec's signs, a logged charge with `provider: "piapi"` in `state["costs"]` also marks an old job as PiAPI's (a cheap check that survives a deleted record).
+9. **Unknown `provider` in `state.json`** is an error in the pipeline (`JobError`) and the viewer (`ViewError`); the spec does not cover damaged values (decision P8).
+10. **Photo-check wording.** `faces.check_photo` messages say "Seedance" instead of "PiAPI", because WaveSpeed jobs use the same free check (decision P10). Tests match only the unchanged parts.
+11. **Housekeeping beyond the spec's README item:** `.env.example` gets `WAVESPEED_API_KEY`; `CLAUDE.md`, `activity.md` and `docs/scratchpad.md` are updated (Task 13), and the research facts doc records the WaveSpeed facts (Task 1).
+12. **Price line names.** WaveSpeed estimate lines reuse PiAPI's item names ("Seedance draft (480p)", "Seedance input video (480p)", ...); the provider shows in the spend log, the cost rows and the viewer.
