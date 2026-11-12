@@ -74,6 +74,25 @@ PRICES: dict[str, Price] = {
             ("seedance-1080-input", "Seedance input video (1080p)", 0.44),
         )
     },
+    # WaveSpeed Seedance 2.5 video-edit, per second (wavespeed.ai model page, 2026-11-12).
+    # Billed on the input video's seconds (clamped to 4-30) plus the output's seconds.
+    **{
+        key: Price(
+            item,
+            usd,
+            "second",
+            "2026-11-12",
+            "wavespeed.ai/models/bytedance/seedance-2.5/video-edit",
+        )
+        for key, item, usd in (
+            ("wavespeed-480", "Seedance draft (480p)", 0.11),
+            ("wavespeed-480-input", "Seedance input video (480p)", 0.11),
+            ("wavespeed-720", "Seedance final (720p)", 0.22),
+            ("wavespeed-720-input", "Seedance input video (720p)", 0.22),
+            ("wavespeed-1080", "Seedance final (1080p)", 0.55),
+            ("wavespeed-1080-input", "Seedance input video (1080p)", 0.55),
+        )
+    },
 }
 
 STAGE_PRICE = {

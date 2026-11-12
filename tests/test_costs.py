@@ -183,3 +183,17 @@ def test_seedance_prices_are_per_second_and_include_the_input_video():
     for key in ("seedance-480", "seedance-720", "seedance-1080"):
         assert PRICES[key].unit == "second" and PRICES[key].checked_on == "2026-11-08"
         assert PRICES[f"{key}-input"].usd == pytest.approx(PRICES[key].usd / 2)
+
+
+def test_wavespeed_prices_bill_input_and_output_seconds():
+    rates = {"480": 0.11, "720": 0.22, "1080": 0.55}
+    for resolution, usd in rates.items():
+        for key in (f"wavespeed-{resolution}", f"wavespeed-{resolution}-input"):
+            assert PRICES[key].unit == "second" and PRICES[key].checked_on == "2026-11-12"
+            assert PRICES[key].usd == pytest.approx(usd)
+            assert PRICES[key].source == "wavespeed.ai/models/bytedance/seedance-2.5/video-edit"
+    seconds = 4
+    draft = Estimate(
+        lines=(cost_line("wavespeed-480", seconds), cost_line("wavespeed-480-input", seconds))
+    )
+    assert draft.total == pytest.approx(0.88)

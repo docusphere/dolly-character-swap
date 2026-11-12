@@ -84,6 +84,32 @@ Sources:
 - https://piapi.ai/blogs/seedance-2-5-less-restriction
 - https://piapi.ai/pricing
 
+## WaveSpeed (Seedance 2.5 video-edit) — verified 2026-11-12 (for the WaveSpeed plan)
+
+Sources: https://wavespeed.ai/models/bytedance/seedance-2.5/video-edit (model page and
+prices), WaveSpeed's API docs (media uploads, submit, prediction result), and three live
+runs on 2026-11-12 (480p, 4 s clip, about 3 minutes and about $0.88 each).
+
+- Auth: `Authorization: Bearer <WAVESPEED_API_KEY>`.
+- Upload (free): `POST https://api.wavespeed.ai/api/v3/media/uploads` with `{filename, size}`
+  returns `data.download_url` and `data.upload {method: "PUT", url, headers}`. PUT the raw
+  bytes to `data.upload.url` with `data.upload.headers` and no Authorization header.
+  Limit 200 MB (209 715 200 bytes); files are kept 7 days.
+- Submit (paid): `POST https://api.wavespeed.ai/api/v3/bytedance/seedance-2.5/video-edit`
+  with `{prompt, video, reference_images: [...], resolution: "480p"|"720p"|"1080p",
+  generate_audio: false}` returns `{code, message, data: {id, status, outputs, error}}`.
+  Live runs answered `created`, then `processing`. Ids are 32 hex characters.
+- Poll (free): `GET https://api.wavespeed.ai/api/v3/predictions/{id}/result`. Final
+  statuses: `completed`, `failed`, `cancelled`, `timeout`, `deleted`; anything else is still
+  running. `data.outputs[0]` is the video URL (a string; the docs also allow `{url}`);
+  `data.error` is the failure text.
+- Prompt input names: `@Video 1`, `@Image 1`. A real face works as a plain photo (no face
+  library).
+- No draft upgrade and no seed: every final is a fresh run.
+- Prices per second, billed on input seconds (clamped to 4–30) plus output seconds:
+  480p $0.11, 720p $0.22, 1080p $0.55. A 4 s draft costs (4 + 4) × 0.11 = $0.88.
+- How long result links stay valid is not documented: download right away.
+
 ## Replicate
 
 | Model | Call by | Inputs | Output | Cost |
