@@ -18,7 +18,10 @@ from typing import Any
 
 import httpx
 
+from character_swap.providers.errors import OutputExpired, ProviderError
+
 FREE_ATTEMPTS = 3
+EXPIRED_CODES = (403, 404, 410)  # a result link that is gone or no longer signed
 
 
 def retry_free(
@@ -126,3 +129,40 @@ def announce(
         callback(data)
     except Exception as exc:
         warnings.warn(f"Could not log {what} {data.get('id')}: {exc}", stacklevel=stacklevel)
+
+
+def download_now(
+    url: str,
+    dest: Path,
+    *,
+    http: httpx.Client,
+    sleep: Callable[[float], None],
+    provider: str,
+    keeps: str,
+    expired: type[OutputExpired] = OutputExpired,
+    error: type[Exception] = ProviderError,
+) -> Path:
+    """Download a finished video right away, without any API key (the link is the access).
+
+    `keeps` finishes the expiry message, e.g. "keeps results 24 hours". The file is written
+    next to `dest` first and then moved into place, so a crash never leaves half a video.
+    """
+
+    def fetch() -> bytes:
+        response = http.get(url, follow_redirects=True)
+        response.raise_for_status()
+        return response.content
+
+    dest = Path(dest)
+    try:
+        data = retry_free(fetch, sleep=sleep)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in EXPIRED_CODES:
+            raise expired(f"This video link has expired ({provider} {keeps}).") from exc
+        raise error(f"Download failed ({exc.response.status_code}): {url}") from exc
+    except httpx.TransportError as exc:
+        raise error(f"Download failed: {exc!r}") from exc
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(data)
+    os.replace(part, dest)
+    return dest

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import time
 from collections.abc import Callable
@@ -190,27 +189,16 @@ class PiAPIClient:
 
     def download(self, url: str, dest: Path) -> Path:
         """Download a finished video without the API key (it is not an API call)."""
-
-        def fetch() -> bytes:
-            response = self._http.get(url, follow_redirects=True)
-            response.raise_for_status()
-            return response.content
-
-        dest = Path(dest)
-        try:
-            data = common.retry_free(fetch, sleep=self._sleep)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code in (403, 404, 410):
-                raise PiAPIOutputExpired(
-                    "This video link has expired (PiAPI keeps results 24 hours)."
-                ) from error
-            raise PiAPIError(f"Download failed ({error.response.status_code}): {url}") from error
-        except httpx.TransportError as error:
-            raise PiAPIError(f"Download failed: {error!r}") from error
-        part = dest.with_suffix(dest.suffix + ".part")
-        part.write_bytes(data)
-        os.replace(part, dest)
-        return dest
+        return common.download_now(
+            url,
+            dest,
+            http=self._http,
+            sleep=self._sleep,
+            provider="PiAPI",
+            keeps="keeps results 24 hours",
+            expired=PiAPIOutputExpired,
+            error=PiAPIError,
+        )
 
     # ---- paid call (never retried) -------------------------------------------
     def run(

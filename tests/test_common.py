@@ -3,8 +3,10 @@ import warnings
 
 import httpx
 import pytest
+import respx
 
 from character_swap.providers import common
+from character_swap.providers.errors import OutputExpired, ProviderError
 
 
 class Boom(Exception):
@@ -95,3 +97,55 @@ def test_retry_free_never_retries_a_4xx():
     with pytest.raises(httpx.HTTPStatusError):
         common.retry_free(call, sleep=lambda _s: None)
     assert calls == [1]
+
+
+def _download(tmp_path, url, **kw):
+    options = {
+        "http": httpx.Client(),
+        "sleep": lambda _s: None,
+        "provider": "WaveSpeed",
+        "keeps": "does not say how long it keeps results",
+    }
+    options.update(kw)
+    return common.download_now(url, tmp_path / "raw.mp4", **options)
+
+
+@respx.mock
+def test_download_now_writes_the_file_without_any_key(tmp_path):
+    route = respx.get("https://cdn.example/out.mp4").respond(200, content=b"mp4")
+    dest = _download(tmp_path, "https://cdn.example/out.mp4")
+    assert dest.read_bytes() == b"mp4"
+    sent = route.calls[0].request.headers
+    assert "authorization" not in sent and "x-api-key" not in sent
+    assert [p.name for p in tmp_path.iterdir()] == ["raw.mp4"]  # no .part left behind
+
+
+@pytest.mark.parametrize("code", [403, 404, 410])
+@respx.mock
+def test_download_now_names_the_provider_when_the_link_expired(tmp_path, code):
+    respx.get("https://cdn.example/old.mp4").respond(code)
+    with pytest.raises(OutputExpired, match=r"expired \(PiAPI keeps results 24 hours\)\."):
+        _download(
+            tmp_path,
+            "https://cdn.example/old.mp4",
+            provider="PiAPI",
+            keeps="keeps results 24 hours",
+        )
+
+
+@respx.mock
+def test_download_now_retries_5xx_then_raises_the_given_error(tmp_path):
+    class Mine(ProviderError):
+        pass
+
+    route = respx.get("https://cdn.example/out.mp4").respond(503)
+    with pytest.raises(Mine, match=r"Download failed \(503\)"):
+        _download(tmp_path, "https://cdn.example/out.mp4", error=Mine)
+    assert route.call_count == 3 and not (tmp_path / "raw.mp4").exists()
+
+
+@respx.mock
+def test_download_now_reports_a_lost_connection(tmp_path):
+    respx.get("https://cdn.example/out.mp4").mock(side_effect=httpx.ConnectError("down"))
+    with pytest.raises(ProviderError, match="Download failed"):
+        _download(tmp_path, "https://cdn.example/out.mp4")
