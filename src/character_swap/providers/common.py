@@ -2,6 +2,7 @@
 
 Every paid request is guarded the same way: an exclusive "creating" marker is written
 BEFORE the paid POST, so a crash, a timeout or a second run can never pay twice.
+`download_now` is the shared, keyless download of a finished result.
 """
 
 from __future__ import annotations
@@ -140,7 +141,7 @@ def download_now(
     provider: str,
     keeps: str,
     expired: type[OutputExpired] = OutputExpired,
-    error: type[Exception] = ProviderError,
+    error: type[ProviderError] = ProviderError,
 ) -> Path:
     """Download a finished video right away, without any API key (the link is the access).
 
@@ -160,7 +161,7 @@ def download_now(
         if exc.response.status_code in EXPIRED_CODES:
             raise expired(f"This video link has expired ({provider} {keeps}).") from exc
         raise error(f"Download failed ({exc.response.status_code}): {url}") from exc
-    except httpx.TransportError as exc:
+    except httpx.RequestError as exc:
         raise error(f"Download failed: {exc!r}") from exc
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(data)

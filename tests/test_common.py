@@ -101,13 +101,13 @@ def test_retry_free_never_retries_a_4xx():
 
 def _download(tmp_path, url, **kw):
     options = {
-        "http": httpx.Client(),
         "sleep": lambda _s: None,
         "provider": "WaveSpeed",
         "keeps": "does not say how long it keeps results",
     }
     options.update(kw)
-    return common.download_now(url, tmp_path / "raw.mp4", **options)
+    with httpx.Client() as http:
+        return common.download_now(url, tmp_path / "raw.mp4", http=http, **options)
 
 
 @respx.mock
@@ -149,3 +149,16 @@ def test_download_now_reports_a_lost_connection(tmp_path):
     respx.get("https://cdn.example/out.mp4").mock(side_effect=httpx.ConnectError("down"))
     with pytest.raises(ProviderError, match="Download failed"):
         _download(tmp_path, "https://cdn.example/out.mp4")
+
+
+@respx.mock
+def test_download_now_reports_a_redirect_loop_as_the_given_error(tmp_path):
+    class Mine(ProviderError):
+        pass
+
+    respx.get("https://cdn.example/loop.mp4").respond(
+        302, headers={"Location": "https://cdn.example/loop.mp4"}
+    )
+    with pytest.raises(Mine, match="Download failed"):
+        _download(tmp_path, "https://cdn.example/loop.mp4", error=Mine)
+    assert not (tmp_path / "raw.mp4").exists()
