@@ -698,8 +698,21 @@ def test_pin_provider_saves_the_resolved_provider_once(runs_dir, tmp_path, wan_j
 def test_an_unknown_saved_provider_is_an_error(runs_dir, tmp_path):
     job = _old_seedance_job(runs_dir, tmp_path)
     job.update(provider="sora")
-    with pytest.raises(JobError, match="unknown Seedance provider 'sora'"):
+    with pytest.raises(JobError, match="unknown Seedance provider 'sora'") as caught:
         pipeline.generator_key(job)
+    assert str(job.path("state.json")) in str(caught.value)
+
+
+def test_seedance_provider_refuses_a_wan_job(wan_job):
+    with pytest.raises(ValueError, match="only Seedance jobs have a provider"):
+        pipeline.seedance_provider(wan_job)
+
+
+def test_a_null_provider_is_pinned_like_a_missing_one(runs_dir, tmp_path):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    job.update(provider=None)
+    assert pipeline.pin_provider(job) == "seedance:wavespeed"
+    assert job.state["provider"] == "wavespeed"
 
 
 def test_finals_come_from_each_generator():

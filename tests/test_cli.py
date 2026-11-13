@@ -1508,6 +1508,7 @@ def test_prompt_waits_for_preparation(settings, video, tmp_path):
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
     code, out = run(["prompt", job.id], settings)
     assert code == 2 and "charswap resume" in out.err.text and not job.path("prompt.txt").exists()
+    assert "provider" not in job.state  # a refused prompt saves nothing
 
 
 def test_doctor_reports_piapi_hosting_and_faces(settings):

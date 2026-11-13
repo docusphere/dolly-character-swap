@@ -15,7 +15,7 @@ import av
 
 from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
-from character_swap.jobs import Job, JobError
+from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.modes import GENERATION_STAGES, MODES
 from character_swap.pipeline import (
@@ -351,6 +351,9 @@ def read_state(job: Job) -> dict[str, Any]:
         raise ViewError(f"state.json has an unknown mode: {state.get('mode')!r}.")
     if not isinstance(state.get("stages"), dict):
         raise ViewError("state.json has no stages table.")
+    provider = state.get("provider")
+    if provider is not None and provider not in SEEDANCE_PROVIDERS:
+        raise ViewError(f"state.json has an unknown provider: {provider!r}.")
     return state
 
 

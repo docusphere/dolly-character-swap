@@ -450,7 +450,7 @@ def generator_key(job: Job, state: dict[str, Any] | None = None) -> str:
         provider = _old_job_provider(job, state)
     if provider not in SEEDANCE_PROVIDERS:
         raise JobError(
-            f"state.json names an unknown Seedance provider {provider!r}; use "
+            f"{job.path('state.json')} names an unknown Seedance provider {provider!r}; use "
             f"{' or '.join(SEEDANCE_PROVIDERS)}."
         )
     return f"seedance:{provider}"
@@ -478,7 +478,10 @@ def _old_job_provider(job: Job, state: dict[str, Any]) -> str:
 
 def seedance_provider(job: Job) -> str:
     """'wavespeed' or 'piapi' for a Seedance job: whose input names its prompt uses."""
-    return generator_key(job).partition(":")[2]
+    key = generator_key(job)
+    if not key.startswith("seedance:"):
+        raise ValueError(f"This is a {key} job; only Seedance jobs have a provider.")
+    return key.partition(":")[2]
 
 
 def pin_provider(job: Job) -> str:
@@ -489,7 +492,7 @@ def pin_provider(job: Job) -> str:
     saved would read as PiAPI's under the old-job rule.
     """
     key = generator_key(job)
-    if key.startswith("seedance:") and "provider" not in job.state:
+    if key.startswith("seedance:") and job.state.get("provider") is None:
         job.update(provider=key.partition(":")[2])
     return key
 

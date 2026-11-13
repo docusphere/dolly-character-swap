@@ -451,6 +451,17 @@ def test_damaged_state_raises_view_error(runs_dir, media, content, message):
     assert summary.id == job.id and message in summary.error
 
 
+def test_an_unknown_provider_is_a_readable_error_row(runs_dir, media):
+    bad = make_job(runs_dir, media, "depth", done=0)
+    good = make_job(runs_dir, media, "direct")
+    bad.update(provider="sora")
+    with pytest.raises(vm.ViewError, match="unknown provider: 'sora'"):
+        vm.job_view(bad, runs_dir)
+    summaries = {s.id: s for s in vm.list_jobs(runs_dir)}
+    assert "unknown provider" in summaries[bad.id].error
+    assert summaries[good.id].error is None
+
+
 def test_list_jobs_newest_first_with_progress(runs_dir, media):
     old = make_job(runs_dir, media, "depth", done=4)  # separate + transcribe are paid
     new = make_job(runs_dir, media, "direct")

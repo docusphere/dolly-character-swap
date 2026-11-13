@@ -455,12 +455,12 @@ def _prompt(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     if job.generator != "seedance":
         raise JobError("Prompts are only for Seedance jobs; Wan takes no text prompt.")
-    pin_provider(job)  # before anything else reads which provider's names to use
     if not all(job.stage_done(name) for name in MODES[job.mode].prep_stages):
         raise JobError(
             "Finish preparing first (the prompt uses the transcript and the scene): "
             f"charswap resume {job.id}"
         )
+    pin_provider(job)  # before anything reads which provider's names to use
     path = write_prompt_file(job)
     # The next draft replaces the old one (inputs or prompt.txt changed): it sends prompt.txt.
     remake = stale_draft(job) or draft_prompt_changed(job)
