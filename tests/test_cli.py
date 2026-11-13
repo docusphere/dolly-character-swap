@@ -2239,6 +2239,61 @@ def test_a_started_wavespeed_1080p_final_keeps_its_resolution(ws_settings, video
     assert job.stage_done("final") and job.state["stages"]["final"]["resolution"] == "1080p"
 
 
+def test_a_wavespeed_1080p_final_after_a_done_720p_one_is_refused(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    run(["generate", job.id, "--final", "--yes"], ws_settings, services_factory=wavespeed_services)
+    assert job.stage_done("final")
+    final_fake = wavespeed_services.last
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "1080p"],
+        ws_settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=wavespeed_services,
+    )
+    words = (
+        f"A 720p final is already done ({job.path('final.mp4')}). Making a 1080p take as well "
+        "isn't supported yet. Nothing was charged."
+    )
+    assert code == 2 and asked == [] and words in out.err.text
+    assert "already done:" not in out.text and wavespeed_services.last is final_fake
+    assert [b["resolution"] for b in final_fake.bodies] == ["720p"]  # nothing new sent
+    assert job.state["stages"]["final"]["resolution"] == "720p"
+
+
+@pytest.mark.parametrize("extra", [[], ["--resolution", "720p"]])
+def test_a_done_wavespeed_final_at_the_same_resolution_is_already_done(
+    ws_settings, video, tmp_path, extra
+):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    run(["generate", job.id, "--final", "--yes"], ws_settings, services_factory=wavespeed_services)
+    code, out = run(
+        ["generate", job.id, "--final", *extra], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 0 and "The final is already done" in out.text
+
+
+def test_a_piapi_720p_final_after_a_done_1080p_one_is_refused(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    for argv in (["--draft", "--yes"], ["--final", "--yes"]):
+        run(["generate", job.id, *argv], piapi_settings, services_factory=seedance_services)
+    assert job.stage_done("final")
+    final_fake = seedance_services.last
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "720p"],
+        piapi_settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and seedance_services.last is final_fake
+    assert len(final_fake.bodies) == 1  # only the promote; nothing new sent
+    assert "A 1080p final is already done" in out.err.text
+    assert "Making a 720p take as well isn't supported yet. Nothing was charged." in out.err.text
+
+
 # ---- prepare: WaveSpeed is the default ----------------------------------------------------
 def test_prepare_defaults_to_wavespeed_and_depth_mesh(tmp_path, prep_settings, video, monkeypatch):
     ids = _prepare_ids(monkeypatch)

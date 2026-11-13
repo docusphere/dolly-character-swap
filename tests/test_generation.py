@@ -825,6 +825,17 @@ def test_a_wavespeed_final_is_a_fresh_run_with_the_drafts_prompt(wavespeed, runs
     assert job.state["stages"]["final"]["resolution"] == resolution
 
 
+def test_a_done_final_is_never_redone_at_another_resolution(wavespeed, runs_dir):
+    job, services = wavespeed
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    generate(job, services, "final", runs_dir=runs_dir, **QUIET)  # 720p, done
+    with pytest.raises(StageError, match="A 720p final is already done .*1080p take"):
+        generate(job, services, "final", runs_dir=runs_dir, final_resolution="1080p", **QUIET)
+    same = generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
+    assert same == job.path("final.mp4")
+    assert len(services.generators["seedance:wavespeed"].calls) == 2
+
+
 @pytest.mark.parametrize("resolution", ["720p", "1080p"])
 def test_a_wavespeed_final_needs_the_drafts_saved_prompt(wavespeed, runs_dir, resolution):
     job, services = wavespeed

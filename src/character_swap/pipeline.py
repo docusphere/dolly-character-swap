@@ -564,6 +564,18 @@ def final_resolution(job: Job, requested: str = "") -> str:
     return chosen
 
 
+def refuse_another_final(job: Job, stage: str, requested: str) -> None:
+    """A done final, and --resolution asks for another: refuse instead of saying "done"."""
+    if stage != "final" or not requested or not job.stage_done("final"):
+        return
+    saved = job.state["stages"]["final"].get("resolution", "")
+    if saved and requested != saved:
+        raise StageError(
+            f"A {saved} final is already done ({job.path('final.mp4')}). Making a {requested} "
+            "take as well isn't supported yet. Nothing was charged."
+        )
+
+
 def final_resolution_for(job: Job, stage: str, requested: str) -> str:
     return final_resolution(job, requested) if stage == "final" else ""
 
@@ -676,6 +688,7 @@ def generate(
             "kept). Nothing was charged."
         )
     record, raw, result = (job.path(name) for name in generation_files(stage))
+    refuse_another_final(job, stage, final_resolution)
     if job.stage_done(stage):
         _notify(status, f"{generation_label(job, stage)} · already done")
         return result

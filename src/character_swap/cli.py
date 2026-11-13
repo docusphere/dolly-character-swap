@@ -54,6 +54,7 @@ from character_swap.pipeline import (
     needs_new_charge,
     next_step,
     pin_provider,
+    refuse_another_final,
     remaining_paid_stages,
     rename_old_prompt_names,
     repair_with_rgb,
@@ -601,6 +602,7 @@ def _generate(args, settings, env) -> int:
             f"`charswap generate {job.id} --draft` to make a new draft first."
         )
         return 2
+    refuse_another_final(job, stage, args.resolution or "")  # before "already done"
     if job.stage_done(stage) and not remake:
         env.out(f"The {stage} is already done: {job.path(f'{stage}.mp4')}")
         return 0
