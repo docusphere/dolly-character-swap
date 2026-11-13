@@ -44,6 +44,8 @@ STEP_NAMES = {
     "draft": "Draft (480p)",
     "final": "Final (720p)",
 }
+# What each pipeline.generator_key is called on the page (cost rows, the prompt line).
+PROVIDER_NAMES = {"wan": "Replicate", "seedance:wavespeed": "WaveSpeed", "seedance:piapi": "PiAPI"}
 _PREDICTION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
@@ -78,6 +80,7 @@ class Section:
     retry: str = "resume {id}"  # after `charswap`; {id} = job id (one form: generate <id> --draft)
     seedance_title: str = ""  # used instead of title/why on Seedance jobs (draft/final)
     seedance_why: str = ""
+    wavespeed_why: str = ""  # used instead of seedance_why on WaveSpeed jobs
 
 
 ON_REPLICATE = "View on Replicate ↗"
@@ -219,6 +222,11 @@ SECTIONS: tuple[Section, ...] = (
             "characters, guided by the prompt, then your original soundtrack is put back "
             "unchanged."
         ),
+        wavespeed_why=(
+            "A cheaper 480p test run on WaveSpeed. Seedance redraws the disguised person as "
+            "your character, guided by the prompt, then your original soundtrack is put back "
+            "unchanged."
+        ),
     ),
     Section(
         id="final",
@@ -236,6 +244,11 @@ SECTIONS: tuple[Section, ...] = (
         seedance_why=(
             "1080p upgrades the exact draft you watched. 720p is a cheaper fresh run with the "
             "same prompt, so it can differ a little. The original soundtrack is restored again."
+        ),
+        wavespeed_why=(
+            "A new take at 720p (or 1080p if you choose it) with the same prompt and inputs, "
+            "so it will look a little different from the draft. The original soundtrack is "
+            "restored again."
         ),
     ),
 )
@@ -612,7 +625,8 @@ def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     """One row per paid stage that is done. Derived from state, never stored."""
     rows = []
-    seedance = state.get("generator") == "seedance"
+    key = generator_key(job, state)
+    seedance = key.startswith("seedance")
     for stage in PAID_STAGES[state["mode"]]:
         if stage_status(state, stage) != "done":
             continue
@@ -628,8 +642,8 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
             continue
         rows.append(
             CostRow(
-                _generation_name(state, stage, generator_key(job, state)),
-                "PiAPI" if seedance else "Replicate",
+                _generation_name(state, stage, key),
+                PROVIDER_NAMES.get(key, "Replicate"),
                 _generation_cost(job, state, stage),
                 None if seedance else prediction_url(job, PAID_RECORD[stage]),
             )
@@ -713,18 +727,29 @@ def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
     )
 
 
-def _seedance_texts(state: dict[str, Any], stage: str) -> list[TextItem]:
+def _seedance_texts(state: dict[str, Any], stage: str, key: str) -> list[TextItem]:
     entry = state.get("stages", {}).get(stage)
     if not isinstance(entry, dict):
         return []
     prompt, resolution = entry.get("prompt"), entry.get("resolution")
     if stage == "draft" and isinstance(prompt, str) and prompt:
-        return [TextItem("Prompt sent", prompt, multiline=True)]
+        label = f"Prompt sent to {PROVIDER_NAMES.get(key, 'Seedance')}"
+        return [TextItem(label, prompt, multiline=True)]
     # Saved when a final starts: a failed one says nothing (a plain --final may pick another)
     started = stage_status(state, "final") in ("done", "running")
     if stage == "final" and started and isinstance(resolution, str) and resolution:
         return [TextItem("Resolution", resolution)]
     return []
+
+
+def section_text(section: Section, key: str) -> tuple[str, str]:
+    """The section's (title, why) for a job's generator_key."""
+    if not key.startswith("seedance"):
+        return section.title, section.why
+    why = section.seedance_why or section.why
+    if key == "seedance:wavespeed" and section.wavespeed_why:
+        why = section.wavespeed_why
+    return section.seedance_title or section.title, why
 
 
 def _stale_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
@@ -744,8 +769,9 @@ def _section_view(
     number: int,
     decision: dict[str, Any],
     stale: frozenset[str] = frozenset(),
+    key: str = "",
 ) -> SectionView:
-    seedance = state.get("generator") == "seedance"
+    key = key or generator_key(job, state)
     if section.id == "review":
         status = _review_section_status(decision)
         texts = review_texts(job, decision)
@@ -760,14 +786,15 @@ def _section_view(
             texts = _tracking_texts(job, state)
         elif section.id in stale:
             texts = _stale_texts(job, decision)
-        if section.id in GENERATION_STAGES and seedance:
-            texts = [*texts, *_seedance_texts(state, section.id)]
+        if section.id in GENERATION_STAGES and key.startswith("seedance"):
+            texts = [*texts, *_seedance_texts(state, section.id, key)]
     error = _error(state, section)
+    title, why = section_text(section, key)
     return SectionView(
         id=section.id,
         number=number,
-        title=(section.seedance_title or section.title) if seedance else section.title,
-        why=(section.seedance_why or section.why) if seedance else section.why,
+        title=title,
+        why=why,
         status=status,
         media=tuple(_media(job, state, asset) for asset in section.assets),
         texts=tuple(texts),
@@ -783,8 +810,9 @@ def job_view(job: Job, runs_dir: Path) -> JobView:
     mode = state["mode"]
     decision = review_status(job)
     stale = stale_stages(job, state) if MODES[mode].generates else frozenset()
+    key = generator_key(job, state)
     sections = tuple(
-        _section_view(job, state, section, number, decision, stale)
+        _section_view(job, state, section, number, decision, stale, key)
         for number, section in enumerate(sections_for(mode), start=1)
     )
     nav = tuple(

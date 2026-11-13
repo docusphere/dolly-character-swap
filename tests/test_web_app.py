@@ -7,9 +7,10 @@ from fastapi.testclient import TestClient
 
 from character_swap.config import Settings
 from character_swap.costs import Estimate, Line, record_spend
+from character_swap.pipeline import generator_key
 from character_swap.review import fingerprint
 from character_swap.web.app import create_app
-from character_swap.web.view_model import SECTIONS, sections_for
+from character_swap.web.view_model import SECTIONS, section_text, sections_for
 from viewer_jobs import finish_stage, make_job
 
 
@@ -63,10 +64,9 @@ def test_job_page_has_every_section_and_anchor(client, runs_dir, media, mode):
         assert f'<section id="{section_id}"' in response.text
         assert f'href="#{section_id}"' in response.text
     text = response.text.replace("&#39;", "'")
+    key = generator_key(job)  # a fresh Seedance job with no draft reads as WaveSpeed's
     for section in sections_for(mode):
-        seedance = mode != "direct"
-        why = (section.seedance_why or section.why) if seedance else section.why
-        title = (section.seedance_title or section.title) if seedance else section.title
+        title, why = section_text(section, key)
         assert why in text and title.replace("&", "&amp;") in response.text, section.id
     assert 'data-active="false"' in response.text
     assert "Ready for review" in response.text

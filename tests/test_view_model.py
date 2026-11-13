@@ -80,6 +80,9 @@ def test_every_section_explains_why():
         assert "—" not in section.why  # UI guide: no em dashes in body copy
         if section.seedance_why:
             assert len(section.seedance_why) > 40 and "—" not in section.seedance_why
+        if section.wavespeed_why:
+            assert len(section.wavespeed_why) > 40 and "—" not in section.wavespeed_why
+            assert "PiAPI" not in section.wavespeed_why and "upgrade" not in section.wavespeed_why
         assert "—" not in section.seedance_title
 
 
@@ -704,7 +707,9 @@ def test_seedance_draft_shows_the_prompt_and_piapi_costs(runs_dir, media):
     view = vm.job_view(job, runs_dir)
     draft = sections(view)["draft"]
     assert "Seedance" in draft.why and not draft.links
-    assert {t.label: t.value for t in draft.texts}["Prompt sent"] == "Put @image1 into @video1."
+    assert {t.label: t.value for t in draft.texts}[
+        "Prompt sent to PiAPI"
+    ] == "Put @image1 into @video1."
     row = next(r for r in view.costs.rows if r.step.startswith("Draft"))
     assert row.provider == "PiAPI" and row.link is None and row.usd == 0.99
 
@@ -758,7 +763,7 @@ def test_empty_or_odd_prompt_and_resolution_show_nothing(runs_dir, media, value)
     job.mark_stage("draft", fingerprint=fingerprint(job), prompt=value)
     job.mark_stage("final", fingerprint=fingerprint(job), resolution=value)
     by_id = sections(vm.job_view(job, runs_dir))
-    assert "Prompt sent" not in {t.label for t in by_id["draft"].texts}
+    assert "Prompt sent to PiAPI" not in {t.label for t in by_id["draft"].texts}
     assert "Resolution" not in {t.label for t in by_id["final"].texts}
 
 
@@ -768,7 +773,7 @@ def test_only_the_prompt_keeps_its_line_breaks(runs_dir, media):
     job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Line one.\nLine two.")
     view = vm.job_view(job, runs_dir)
     multiline = [t.label for s in view.sections for t in s.texts if t.multiline]
-    assert multiline == ["Prompt sent"]
+    assert multiline == ["Prompt sent to PiAPI"]
 
 
 @pytest.mark.parametrize(("status", "shown"), [("running", True), ("failed", False)])
@@ -778,3 +783,40 @@ def test_resolution_shows_only_for_a_started_or_finished_final(runs_dir, media, 
     job.mark_stage("final", status, resolution="720p", error="PiAPI said no")
     texts = {t.label for t in sections(vm.job_view(job, runs_dir))["final"].texts}
     assert ("Resolution" in texts) is shown
+
+
+# ---- WaveSpeed jobs (WaveSpeed plan) ------------------------------------------------------
+def _wavespeed_job(runs_dir, media):
+    job = make_job(runs_dir, media, "depth_mesh")
+    job.update(provider="wavespeed")
+    return job
+
+
+def test_wavespeed_draft_and_final_name_wavespeed(runs_dir, media):
+    job = _wavespeed_job(runs_dir, media)
+    finish_stage(job, media, "draft")
+    job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Put @Image 1 into @Video 1.")
+    job.append_cost(
+        {"step": "draft", "usd": 0.88, "task_id": "pred-draft", "provider": "wavespeed"}
+    )
+    finish_stage(job, media, "final")
+    view = vm.job_view(job, runs_dir)
+    by_id = sections(view)
+    assert "WaveSpeed" in by_id["draft"].why and "PiAPI" not in by_id["draft"].why
+    assert "PiAPI" not in by_id["final"].why and "upgrade" not in by_id["final"].why
+    assert by_id["final"].title == "Final" and not by_id["draft"].links
+    texts = {t.label: t.value for t in by_id["draft"].texts}
+    assert texts["Prompt sent to WaveSpeed"] == "Put @Image 1 into @Video 1."
+    rows = {r.step: r for r in view.costs.rows}
+    assert rows["Draft (480p)"].provider == "WaveSpeed" and rows["Draft (480p)"].usd == 0.88
+    assert rows["Final (720p)"].provider == "WaveSpeed" and rows["Final (720p)"].link is None
+    assert rows["Separate vocals"].provider == "Replicate"
+
+
+def test_the_viewer_never_writes_the_provider(runs_dir, media):
+    job = make_job(runs_dir, media, "depth_mesh")  # no provider saved: read as WaveSpeed's
+    before = job.path("state.json").read_bytes()
+    view = vm.job_view(job, runs_dir)
+    vm.list_jobs(runs_dir)
+    assert "WaveSpeed" in sections(view)["draft"].why
+    assert job.path("state.json").read_bytes() == before
