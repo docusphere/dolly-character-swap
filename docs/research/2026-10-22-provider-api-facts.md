@@ -112,7 +112,7 @@ runs on 2026-11-12 (480p, 4 s clip, about 3 minutes and about $0.88 each).
 - First run through `charswap generate --draft` (2026-11-13, job ea899aff…, 4 s, depth_mesh):
   succeeded; WaveSpeed reported 227 s of inference. Output 854×480, 24 fps, 4.0 s, with an
   audio track (the tool replaces it with the original soundtrack; sound lines up). Recorded
-  cost $0.88 (estimate); the real dashboard charge is still to be checked. No low-balance
+  cost $0.88; the dashboard total ($3.564 for about four such runs) matches $0.88 per run. No low-balance
   answer seen yet.
 
 ## Replicate

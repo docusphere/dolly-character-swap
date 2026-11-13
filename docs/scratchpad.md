@@ -13,7 +13,7 @@
 - [ ] Live Seedance test (Task 14, needs Frank's OK + PiAPI Creator plan)
 - [x] WaveSpeed Seedance generator (default provider; 968 tests, 96.92 % coverage; branch feat/wavespeed)
 - [x] S7 — Live WaveSpeed draft through charswap (Task 14): job ea899aff…, 227 s, ~$0.88, clean 4 s result
-- [ ] Check the real WaveSpeed charge on the dashboard against the $0.88 estimate
+- [x] S7 — Real WaveSpeed charge checked: dashboard shows $3.564 for about four 4 s 480p runs, so $0.88 per run holds
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
