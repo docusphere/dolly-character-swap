@@ -249,10 +249,16 @@ def test_doctor_reports_checks(settings, monkeypatch):
 
 
 def test_doctor_never_prints_secret_values(tmp_path, monkeypatch):
-    secret = Settings.load(root=tmp_path, environ={"REPLICATE_API_TOKEN": "sekrit-value-123"})
+    values = {
+        "REPLICATE_API_TOKEN": "sekrit-value-123",
+        "WAVESPEED_API_KEY": "sekrit-wavespeed-456",
+        "PIAPI_API_KEY": "sekrit-piapi-789",
+    }
+    secret = Settings.load(root=tmp_path, environ=values)
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     code, out = run(["doctor"], secret)
-    assert "sekrit-value-123" not in out.text
+    for value in values.values():
+        assert value not in out.text
     assert code == 1 and "MISSING" in out.text
 
 
