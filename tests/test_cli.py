@@ -242,8 +242,9 @@ def test_doctor_reports_checks(settings, monkeypatch):
     code, out = run(["doctor"], settings)
     assert "rubberband" in out.text and "REPLICATE_API_TOKEN: set" in out.text
     assert "pyav (ffmpeg):" in out.text
-    assert "PIAPI_API_KEY: missing" in out.text
-    assert "hosting: PiAPI temporary upload" in out.text
+    assert "WAVESPEED_API_KEY: missing" in out.text
+    assert "PIAPI_API_KEY: missing (optional; only for --provider piapi)" in out.text
+    assert "hosting: WaveSpeed temporary upload" in out.text
     assert code == 0
 
 
@@ -1556,9 +1557,15 @@ def test_prompt_waits_for_preparation(settings, video, tmp_path):
     assert "provider" not in job.state  # a refused prompt saves nothing
 
 
-def test_doctor_reports_piapi_hosting_and_faces(settings):
+def test_doctor_reports_both_uploads_and_faces(settings):
     code, out = run(["doctor"], settings)
-    assert "hosting: PiAPI temporary upload" in out.text and "saved faces: 0" in out.text
+    assert "WaveSpeed temporary upload (kept 7 days)" in out.text
+    assert "PiAPI temporary upload (24 hours" in out.text and "saved faces: 0" in out.text
+
+
+def test_doctor_says_when_the_wavespeed_key_is_set(ws_settings):
+    code, out = run(["doctor"], ws_settings)
+    assert "WAVESPEED_API_KEY: set" in out.text
 
 
 def test_doctor_survives_an_unreadable_face_library(settings):

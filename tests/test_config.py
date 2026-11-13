@@ -33,3 +33,11 @@ def test_runs_dir_defaults_to_project_runs_and_can_be_overridden(tmp_path):
 def test_repr_does_not_leak_secrets(tmp_path):
     settings = Settings.load(root=tmp_path, environ={"REPLICATE_API_TOKEN": "secret-value"})
     assert "secret-value" not in repr(settings)
+
+
+def test_require_wavespeed_names_where_to_get_it(tmp_path):
+    settings = Settings.load(root=tmp_path, environ={})
+    with pytest.raises(
+        MissingSettingError, match=r"WAVESPEED_API_KEY.*wavespeed\.ai \(Dashboard > API Keys\)"
+    ):
+        settings.require("WAVESPEED_API_KEY")

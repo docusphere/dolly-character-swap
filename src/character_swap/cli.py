@@ -736,9 +736,16 @@ def _doctor(args, settings, env) -> int:
         found = shutil.which(binary)
         ok &= bool(found)
         out(f"{binary}: {'found' if found else 'MISSING (macOS: brew install rubberband)'}")
-    for key in ("REPLICATE_API_TOKEN", "PIAPI_API_KEY"):
-        out(f"{key}: {'set' if settings.get(key) else 'missing'}")
-    out("hosting: PiAPI temporary upload (Seedance; needs the PiAPI Creator plan)")
+    for key, note in (
+        ("REPLICATE_API_TOKEN", ""),
+        ("WAVESPEED_API_KEY", ""),
+        ("PIAPI_API_KEY", " (optional; only for --provider piapi)"),
+    ):
+        out(f"{key}: {'set' if settings.get(key) else 'missing'}{note}")
+    out(
+        "hosting: WaveSpeed temporary upload (kept 7 days); PiAPI temporary upload (24 hours; "
+        "--provider piapi, needs the PiAPI Creator plan)"
+    )
     try:
         out(f"saved faces: {len(FaceLibrary(settings.root).all())}")
     except CharSwapError as error:

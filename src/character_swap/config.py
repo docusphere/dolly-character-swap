@@ -12,6 +12,7 @@ from character_swap.errors import CharSwapError
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WHERE_TO_GET = {
     "REPLICATE_API_TOKEN": "https://replicate.com/account/api-tokens",
+    "WAVESPEED_API_KEY": "https://wavespeed.ai (Dashboard > API Keys)",
     "PIAPI_API_KEY": "https://piapi.ai (Workspace > API Keys; saved faces need the Creator plan)",
     "HF_TOKEN": "https://huggingface.co/settings/tokens",
 }
