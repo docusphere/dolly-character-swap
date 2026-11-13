@@ -564,7 +564,7 @@ def _review_section_status(decision: dict[str, Any]) -> str:
 
 def _links(job: Job, state: dict[str, Any], section: Section) -> list[Link]:
     if state.get("generator") == "seedance" and section.id in GENERATION_STAGES:
-        return []  # PiAPI has no public page per task
+        return []  # Seedance providers (PiAPI, WaveSpeed) have no public page per task
     if section.id == "mask" and state.get("mask_source") == "rgb":
         pairs = [
             ("First attempt ↗", PAID_RECORD["masks"]),
@@ -626,7 +626,7 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     """One row per paid stage that is done. Derived from state, never stored."""
     rows = []
     key = generator_key(job, state)
-    seedance = key.startswith("seedance")
+    seedance = _is_seedance(key)
     for stage in PAID_STAGES[state["mode"]]:
         if stage_status(state, stage) != "done":
             continue
@@ -742,9 +742,13 @@ def _seedance_texts(state: dict[str, Any], stage: str, key: str) -> list[TextIte
     return []
 
 
+def _is_seedance(key: str) -> bool:
+    return key.startswith("seedance")
+
+
 def section_text(section: Section, key: str) -> tuple[str, str]:
     """The section's (title, why) for a job's generator_key."""
-    if not key.startswith("seedance"):
+    if not _is_seedance(key):
         return section.title, section.why
     why = section.seedance_why or section.why
     if key == "seedance:wavespeed" and section.wavespeed_why:
@@ -768,10 +772,9 @@ def _section_view(
     section: Section,
     number: int,
     decision: dict[str, Any],
-    stale: frozenset[str] = frozenset(),
-    key: str = "",
+    stale: frozenset[str],
+    key: str,
 ) -> SectionView:
-    key = key or generator_key(job, state)
     if section.id == "review":
         status = _review_section_status(decision)
         texts = review_texts(job, decision)
@@ -786,7 +789,7 @@ def _section_view(
             texts = _tracking_texts(job, state)
         elif section.id in stale:
             texts = _stale_texts(job, decision)
-        if section.id in GENERATION_STAGES and key.startswith("seedance"):
+        if section.id in GENERATION_STAGES and _is_seedance(key):
             texts = [*texts, *_seedance_texts(state, section.id, key)]
     error = _error(state, section)
     title, why = section_text(section, key)
