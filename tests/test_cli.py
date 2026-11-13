@@ -11,7 +11,7 @@ from PIL import Image
 from character_swap import cli
 from character_swap.config import Settings
 from character_swap.costs import Estimate, Line
-from character_swap.faces import FaceLibrary
+from character_swap.faces import PHOTO_CONSENT, FaceLibrary
 from character_swap.jobs import Job
 from character_swap.pipeline import PREP_STAGES_BY_MODE, Services
 from character_swap.review import decide as approve_review
@@ -54,7 +54,7 @@ def test_prepare_declined_creates_nothing(tmp_path, settings, video):
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--mode", "depth"],
         settings,
-        confirm=lambda _q: False,
+        confirm=lambda q: q != "Continue?",
     )
     assert code == 1 and "Depth video" in out.text and "Cancelled" in out.err.text
     assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
@@ -1171,17 +1171,29 @@ def test_prepare_seedance_with_a_saved_face(settings, video, tmp_path, monkeypat
     _saved_face(settings, tmp_path)
     ids = _prepare_ids(monkeypatch)
     code, _ = run(
-        ["prepare", str(video), "--mode", "depth", "--face", "frank", "--yes"],
+        [
+            "prepare",
+            str(video),
+            "--provider",
+            "piapi",
+            "--mode",
+            "depth",
+            "--face",
+            "frank",
+            "--yes",
+        ],
         settings,
         services_factory=lambda s: object(),
     )
     state = Job.load(settings.runs_dir, ids[0]).state
-    assert code == 0 and state["face_primary"] == "frank"
+    assert code == 0 and state["face_primary"] == "frank" and state["provider"] == "piapi"
     assert state["character_primary"] == "character-primary.jpg"
 
 
 def test_prepare_seedance_needs_a_character(settings, video):
-    code, out = run(["prepare", str(video), "--mode", "depth", "--yes"], settings)
+    code, out = run(
+        ["prepare", str(video), "--provider", "piapi", "--mode", "depth", "--yes"], settings
+    )
     assert code == 2 and "--face NAME" in out.err.text and "--character IMAGE" in out.err.text
 
 
@@ -1191,6 +1203,8 @@ def test_prepare_refuses_face_and_character_together(settings, video, tmp_path):
         [
             "prepare",
             str(video),
+            "--provider",
+            "piapi",
             "--face",
             "frank",
             "--character",
@@ -1205,7 +1219,9 @@ def test_prepare_refuses_face_and_character_together(settings, video, tmp_path):
 def test_prepare_refuses_a_face_that_is_not_active(settings, video, tmp_path):
     lib = FaceLibrary(settings.root, sleep=lambda _s: None, polls=0)
     lib.add("frank", _photo(tmp_path / "me.jpg"), FakePiAPI(assets={"asset-1": "Processing"}))
-    code, out = run(["prepare", str(video), "--face", "frank", "--yes"], settings)
+    code, out = run(
+        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], settings
+    )
     assert code == 2 and "charswap face check frank" in out.err.text
 
 
@@ -1214,7 +1230,15 @@ def test_prepare_seedance_character_image_is_checked_and_warned(
 ):
     ids = _prepare_ids(monkeypatch)
     code, out = run(
-        ["prepare", str(video), "--character", str(_photo(tmp_path / "toon.png")), "--yes"],
+        [
+            "prepare",
+            str(video),
+            "--provider",
+            "piapi",
+            "--character",
+            str(_photo(tmp_path / "toon.png")),
+            "--yes",
+        ],
         settings,
         services_factory=lambda s: object(),
     )
@@ -1230,6 +1254,8 @@ def test_prepare_two_people(settings, video, tmp_path, monkeypatch):
         [
             "prepare",
             str(video),
+            "--provider",
+            "piapi",
             "--face",
             "frank",
             "--face2",
@@ -1278,7 +1304,9 @@ def test_wan_face_only_needs_to_exist_not_be_active(settings, video, tmp_path, m
 
 def test_seedance_still_refuses_a_processing_face(settings, video, tmp_path):
     _processing_face(settings, tmp_path)
-    code, out = run(["prepare", str(video), "--face", "frank", "--yes"], settings)
+    code, out = run(
+        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], settings
+    )
     assert code == 2 and "charswap face check frank" in out.err.text
 
 
@@ -1288,6 +1316,8 @@ def test_real_person_note_prints_once_for_two_characters(settings, video, tmp_pa
         [
             "prepare",
             str(video),
+            "--provider",
+            "piapi",
             "--character",
             str(_photo(tmp_path / "a.png")),
             "--character2",
@@ -2179,3 +2209,108 @@ def test_a_started_wavespeed_1080p_final_keeps_its_resolution(ws_settings, video
     assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
     assert "1080p final" in out.text and wavespeed_services.last.bodies == []
     assert job.stage_done("final") and job.state["stages"]["final"]["resolution"] == "1080p"
+
+
+# ---- prepare: WaveSpeed is the default ----------------------------------------------------
+def test_prepare_defaults_to_wavespeed_and_depth_mesh(tmp_path, settings, video, monkeypatch):
+    ids = _prepare_ids(monkeypatch)
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg")), "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    state = Job.load(settings.runs_dir, ids[0]).state
+    assert code == 0 and state["provider"] == "wavespeed" and state["mode"] == "depth_mesh"
+    assert state["character_primary"] == "character-primary.jpg"
+    assert PHOTO_CONSENT in out.text  # --yes answers the question, the sentence still shows
+    assert "not a real person" not in out.text
+
+
+def test_wavespeed_asks_about_rights_before_the_cost(tmp_path, settings, video):
+    asked = []
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg"))],
+        settings,
+        confirm=lambda q: asked.append(q) or len(asked) == 1,  # yes to rights, no to the cost
+    )
+    assert code == 1 and asked == [cli.RIGHTS_QUESTION, "Continue?"]
+    assert out.text.index(PHOTO_CONSENT) < out.text.index("Preparation cost")
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+def test_declining_the_rights_question_stops_before_the_cost(tmp_path, settings, video):
+    asked = []
+    code, out = run(
+        ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg"))],
+        settings,
+        confirm=lambda q: asked.append(q) or False,
+    )
+    assert code == 1 and asked == [cli.RIGHTS_QUESTION]
+    assert "Preparation cost" not in out.text and "Cancelled. Nothing was charged." in out.err.text
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+@pytest.mark.parametrize("option", ["--face", "--face2", "--character2"])
+def test_wavespeed_refuses_piapi_only_options_before_any_question(
+    tmp_path, settings, video, option
+):
+    _saved_face(settings, tmp_path)  # even a real saved face is refused on WaveSpeed
+    value = str(_photo(tmp_path / "b.jpg")) if option == "--character2" else "frank"
+    argv = ["prepare", str(video), option, value]
+    if option != "--face":
+        argv += ["--character", str(_photo(tmp_path / "me.jpg"))]
+    asked = []
+    code, out = run(argv, settings, confirm=lambda q: asked.append(q) or True)
+    words = (
+        "Saved faces are a PiAPI feature; use --character me.jpg with WaveSpeed, or "
+        "--provider piapi."
+        if option == "--face"
+        else "Two people need --provider piapi for now."
+    )
+    assert code == 2 and asked == [] and words in out.err.text
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+def test_provider_is_refused_with_wan(tmp_path, settings, video):
+    asked = []
+    code, out = run(
+        _wan_args(video, _photo(tmp_path / "a.jpg"), "--provider", "piapi"),
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+    )
+    assert code == 2 and asked == [] and "--provider is only for Seedance" in out.err.text
+
+
+def test_wavespeed_needs_a_character_photo(settings, video):
+    code, out = run(["prepare", str(video), "--yes"], settings)
+    assert code == 2 and "--character IMAGE" in out.err.text and "--face" not in out.err.text
+
+
+def test_piapi_with_a_character_image_asks_no_rights_question(
+    tmp_path, settings, video, monkeypatch
+):
+    ids = _prepare_ids(monkeypatch)
+    asked = []
+    code, out = run(
+        [
+            "prepare",
+            str(video),
+            "--provider",
+            "piapi",
+            "--character",
+            str(_photo(tmp_path / "toon.png")),
+        ],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and asked == ["Continue?"] and PHOTO_CONSENT not in out.text
+    assert Job.load(settings.runs_dir, ids[0]).state["provider"] == "piapi"
+
+
+def test_help_lists_wavespeed_first(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    text = capsys.readouterr().out
+    first = text.index("charswap prepare clip.mp4 --character me.jpg")
+    assert first < text.index("charswap prepare clip.mp4 --provider piapi --face frank")

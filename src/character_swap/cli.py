@@ -24,8 +24,16 @@ from character_swap.costs import (
     record_spend,
 )
 from character_swap.errors import CharSwapError
-from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrary, check_photo
-from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
+from character_swap.faces import (
+    ACTIVE,
+    CONSENT,
+    FAILED,
+    PHOTO_CONSENT,
+    PROCESSING,
+    FaceLibrary,
+    check_photo,
+)
+from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError
 from character_swap.modes import MODES
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
@@ -172,16 +180,19 @@ class Env:
 
 
 EPILOG = """example:
-  charswap face add frank me.jpg
-  charswap prepare clip.mp4 --mode depth --face frank
-  charswap prepare clip.mp4 --generator wan --character me.jpg
+  charswap prepare clip.mp4 --character me.jpg
   charswap status <id>
   charswap review <id> --approve --note "watched all" --fingerprint <fp>
   charswap prompt <id>
   charswap generate <id> --draft
   charswap generate <id> --final
-  charswap generate <id> --final --resolution 720p
+  charswap generate <id> --final --resolution 1080p
   charswap view
+
+other providers:
+  charswap face add frank me.jpg
+  charswap prepare clip.mp4 --provider piapi --face frank
+  charswap prepare clip.mp4 --generator wan --character me.jpg
 """
 
 
@@ -198,17 +209,28 @@ def _parser() -> argparse.ArgumentParser:
     prep = sub.add_parser("prepare", help="prepare a video for review")
     prep.add_argument("video", type=Path)
     prep.add_argument("--generator", choices=["seedance", "wan"], default="seedance")
-    prep.add_argument("--mode", choices=["depth", "face_mesh", "depth_mesh", "direct"])
+    prep.add_argument(
+        "--provider",
+        choices=list(SEEDANCE_PROVIDERS),
+        help="Seedance only: wavespeed (default; pay per use, a real face as a plain photo) "
+        "or piapi (saved faces, two people)",
+    )
+    prep.add_argument(
+        "--mode",
+        choices=["depth", "face_mesh", "depth_mesh", "direct"],
+        help="default: depth_mesh for Seedance, direct for Wan",
+    )
     prep.add_argument("--subject", default="person", help="what SAM 3 should cut out")
     prep.add_argument("--depth-provider", choices=["replicate", "huggingface"], default="replicate")
-    prep.add_argument("--face", help="a saved face to put in the video (see charswap face add)")
+    prep.add_argument("--face", help="PiAPI: a saved face to put in the video (charswap face add)")
     prep.add_argument(
         "--character",
         type=Path,
-        help="character image: Wan, any picture; Seedance, a character that is not a real person",
+        help="photo of the person or character to put in the video (WaveSpeed: real people "
+        "too; PiAPI: only characters that are not a real person; Wan: any picture)",
     )
-    prep.add_argument("--face2", help="Seedance: a second saved face, for a second person")
-    prep.add_argument("--character2", type=Path, help="Seedance: a second character image")
+    prep.add_argument("--face2", help="PiAPI: a second saved face, for a second person")
+    prep.add_argument("--character2", type=Path, help="PiAPI: a second character image")
     prep.add_argument(
         "--language",
         default="auto",
@@ -216,7 +238,9 @@ def _parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="spoken language code for the transcript, e.g. en or es (default: auto, detect it)",
     )
-    prep.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    prep.add_argument(
+        "--yes", action="store_true", help="answer yes to the questions (rights and cost)"
+    )
 
     sub.add_parser("status", help="show stages and review fingerprint as JSON").add_argument("job")
     sub.add_parser(
@@ -334,7 +358,15 @@ def main(
         return 1
 
 
-def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path | None, dict]:
+PIAPI_CHARACTER_NOTE = (
+    "Note: Seedance on PiAPI takes --character images only for characters that are not a "
+    "real person (PiAPI rejects real faces sent this way). For a real person, use --face."
+)
+
+
+def _characters(
+    args, settings, env, scratch: Path, provider: str
+) -> tuple[Path | None, Path | None, dict]:
     """Resolve --face/--character (and the second slot) to image files + face names. Free."""
     library = FaceLibrary(settings.root)
     images: dict[str, Path | None] = {}
@@ -356,12 +388,8 @@ def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path |
                 )
             images[slot], faces[slot] = library.image_path(face), face_name
         elif image and args.generator == "seedance":
-            if not noted:
-                env.out(
-                    "Note: Seedance takes --character images only for characters that are not a "
-                    "real person (PiAPI rejects real faces sent this way). For a real person, "
-                    "use --face."
-                )
+            if provider == "piapi" and not noted:
+                env.out(PIAPI_CHARACTER_NOTE)
                 noted = True
             images[slot] = check_photo(image, scratch / f"character-{slot}.jpg")
         else:
@@ -369,26 +397,60 @@ def _characters(args, settings, env, scratch: Path) -> tuple[Path | None, Path |
     return images.get("primary"), images.get("secondary"), faces
 
 
+FACE_ON_WAVESPEED = (
+    "Saved faces are a PiAPI feature; use --character me.jpg with WaveSpeed, or --provider piapi."
+)
+TWO_PEOPLE_ON_WAVESPEED = "Two people need --provider piapi for now."
+NEEDS_CHARACTER = {
+    "wavespeed": (
+        "Seedance needs --character IMAGE: a clear photo of the person (or character) to "
+        "put in the video."
+    ),
+    "piapi": (
+        "Seedance on PiAPI needs --face NAME (a saved face; see charswap face add) or "
+        "--character IMAGE (a character that is not a real person)."
+    ),
+}
+RIGHTS_QUESTION = "Do you have the right to use this person's face?"
+
+
+def _provider_for(args) -> str:
+    """The new job's Seedance provider ("" for Wan). Free; refuses before any question."""
+    if args.generator == "wan":
+        if args.provider:
+            raise JobError("--provider is only for Seedance; Wan always runs on Replicate.")
+        return ""
+    return args.provider or SEEDANCE_PROVIDERS[0]
+
+
 def _prepare(args, settings, env) -> int:
-    mode = args.mode or ("direct" if args.generator == "wan" else "depth")
+    mode = args.mode or ("direct" if args.generator == "wan" else "depth_mesh")
+    provider = _provider_for(args)
     if args.generator == "wan" and args.character is None and args.face is None:
         raise JobError(
             "Wan needs --character IMAGE or --face NAME (your face or character picture)."
         )
     if args.generator == "wan" and (args.character2 or args.face2):
         raise JobError("Wan takes one character; a second one only works with Seedance.")
+    if provider == "wavespeed":
+        if args.face:
+            raise JobError(FACE_ON_WAVESPEED)
+        if args.face2 or args.character2:
+            raise JobError(TWO_PEOPLE_ON_WAVESPEED)
     if args.generator == "seedance" and not (args.face or args.character):
-        raise JobError(
-            "Seedance needs --face NAME (a saved face; see charswap face add) or --character "
-            "IMAGE (a character that is not a real person)."
-        )
+        raise JobError(NEEDS_CHARACTER[provider])
     if mode == "direct" and args.language != "auto":
         raise JobError("--language only matters for Seedance modes (Wan has no transcript step).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     with tempfile.TemporaryDirectory() as scratch:
-        # Free checks first, so a bad photo or face is refused before any cost question.
-        character, character2, faces = _characters(args, settings, env, Path(scratch))
+        # Free checks first, so a bad photo or face is refused before any question.
+        character, character2, faces = _characters(args, settings, env, Path(scratch), provider)
+        if provider == "wavespeed":
+            # A real face goes to WaveSpeed as a plain photo: rights first, then the cost.
+            env.out(PHOTO_CONSENT)
+            if not args.yes and not env.proceed(RIGHTS_QUESTION):
+                return 1
         estimate = estimate_prepare(mode, seconds=30)
         free = estimate.total == 0
         if free:
@@ -408,6 +470,7 @@ def _prepare(args, settings, env) -> int:
             character2=character2,
             faces=faces,
             language=args.language,
+            provider=provider,
         )
         env.track(job, "resume {id}")
         env.out(f"JOB {job.id}")

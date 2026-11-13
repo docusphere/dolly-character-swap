@@ -22,6 +22,11 @@ CONSENT = (
     "Only add a face you have the right to use: your own, or someone who agreed to it. "
     "PiAPI checks the photo and keeps it in your private face library."
 )
+# Asked by `charswap prepare` when a plain photo is sent (WaveSpeed); provider-neutral.
+PHOTO_CONSENT = (
+    "You confirm you have the right to use this person's face: your own, or someone who "
+    "agreed to it. The photo is sent with your clip to the video provider."
+)
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 MIN_SIDE = 300  # PiAPI: 300-6000 px per side, aspect 0.4-2.5, under 30 MB
 MIN_RATIO, MAX_RATIO = 0.4, 2.5
@@ -59,7 +64,7 @@ def _now() -> str:
 
 
 def check_photo(photo: Path, dest: Path) -> Path:
-    """Check a photo against PiAPI's limits and save it as an upright RGB JPEG at `dest`."""
+    """Check a photo against the Seedance limits (PiAPI's) and save it as an upright RGB JPEG."""
     photo = Path(photo)
     try:
         with Image.open(photo) as opened:
@@ -75,12 +80,12 @@ def check_photo(photo: Path, dest: Path) -> Path:
     width, height = image.size
     if not MIN_RATIO <= width / height <= MAX_RATIO:
         raise FaceError(
-            f"{photo.name} is {width}x{height} px: too wide or too narrow for PiAPI. Crop it "
+            f"{photo.name} is {width}x{height} px: too wide or too narrow for Seedance. Crop it "
             "closer to a portrait or square shape."
         )
     if min(width, height) < MIN_SIDE:
         raise FaceError(
-            f"{photo.name} is {width}x{height} px; PiAPI needs at least {MIN_SIDE} px on each "
+            f"{photo.name} is {width}x{height} px; Seedance needs at least {MIN_SIDE} px on each "
             "side. Use the original photo, not a screenshot."
         )
     if max(width, height) > FIT_SIDE:
