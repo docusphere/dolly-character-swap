@@ -9,10 +9,15 @@ Only use faces and footage you have the rights to use.
 ## Try it with Seedance on WaveSpeed (best quality, real faces)
 
 Sign up at [WaveSpeed](https://wavespeed.ai): pay per use, $1 of free credit, no
-subscription. Put your key in `.env` as `WAVESPEED_API_KEY=...` (Dashboard > API Keys), plus
-`REPLICATE_API_TOKEN` for preparation and Rubber Band (`brew install rubberband`).
+subscription. Put your key in `.env` as `WAVESPEED_API_KEY=...` (Dashboard > API Keys),
+plus `REPLICATE_API_TOKEN` for preparation, and install Rubber Band
+(`brew install rubberband`). You also need [uv](https://docs.astral.sh/uv/).
+
+Put your clip and your character photo in the `inputs/` folder (git-ignored, so footage and
+faces are never committed), then:
 
 ```bash
+uv sync                                                      # once: installs the tool
 uv run charswap prepare inputs/clip.mp4 --character inputs/me.jpg  # asks about rights, then ~$0.06
 # watch it in `uv run charswap view`, then approve with the command shown there
 uv run charswap prompt <id>                                  # optional: edit prompt.txt
@@ -21,16 +26,20 @@ uv run charswap generate <id> --final                        # a new 720p take
 uv run charswap generate <id> --final --resolution 1080p     # or a new 1080p take
 ```
 
-The default mode is `depth_mesh`: a depth disguise with a face mesh on top, which gave the
-best lip sync in tests. Prices for a 4 s clip, estimated: draft about $0.88, 720p final about
-$1.76, 1080p final about $4.40 (WaveSpeed bills the input video as well as the result, and at
-least 4 s). A 4 s draft takes about 3 minutes. Test with 4–5 s clips first.
+The default mode is `depth_mesh`: it turns the person into a colored silhouette with
+face-tracking lines, so the new face comes from your photo while the lips follow the
+original. It gave the best lip sync in tests.
+
+Prices for a 4 s clip, estimated: draft about $0.88, 720p final about $1.76, 1080p final
+about $4.40 (WaveSpeed bills the input video as well as the result, and at least 4 s). A
+4 s draft takes about 3 minutes. Test with 4–5 s clips first.
 
 WaveSpeed cannot upgrade the draft itself, so the final is a new take: it will look a little
 different from the draft. A real person's face works as a plain photo; only use faces you
 have the right to use (prepare asks). One person per clip for now; two people need
 `--provider piapi`. Clips are trimmed to whole seconds; the original sound is cut to match
-and put back unchanged.
+and put back unchanged. The draft is saved as `runs/<id>/draft.mp4` and the final as
+`runs/<id>/final.mp4`.
 
 ## Try it with Wan (open source, on Replicate)
 
