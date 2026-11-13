@@ -39,6 +39,15 @@ def settings(tmp_path):
 
 
 @pytest.fixture
+def prep_settings(tmp_path):
+    """The keys a Seedance prepare checks first: Replicate (prep) and both Seedance providers."""
+    return Settings.load(
+        root=tmp_path,
+        environ={"REPLICATE_API_TOKEN": "t", "WAVESPEED_API_KEY": "w", "PIAPI_API_KEY": "k"},
+    )
+
+
+@pytest.fixture
 def video(tmp_path):
     return write_video(tmp_path / "in.mp4", [solid((9, 9, 9))] * 96, audio_seconds=4)
 
@@ -50,17 +59,17 @@ def run(argv, settings, **kw):
     return code, out
 
 
-def test_prepare_declined_creates_nothing(tmp_path, settings, video):
+def test_prepare_declined_creates_nothing(tmp_path, prep_settings, video):
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--mode", "depth"],
-        settings,
+        prep_settings,
         confirm=lambda q: q != "Continue?",
     )
     assert code == 1 and "Depth video" in out.text and "Cancelled" in out.err.text
-    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+    assert not prep_settings.runs_dir.exists() or not any(prep_settings.runs_dir.iterdir())
 
 
-def test_prepare_runs_pipeline_and_prints_job(tmp_path, settings, video, monkeypatch):
+def test_prepare_runs_pipeline_and_prints_job(tmp_path, prep_settings, video, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: calls.append(job.id))
     code, out = run(
@@ -73,7 +82,7 @@ def test_prepare_runs_pipeline_and_prints_job(tmp_path, settings, video, monkeyp
             "depth",
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 0 and calls and f"JOB {calls[0]}" in out.text
@@ -98,18 +107,18 @@ def test_prepare_wan_direct_needs_no_token(tmp_path, video, monkeypatch):
     assert code == 0 and calls
 
 
-def test_prepare_stage_error_is_friendly(tmp_path, settings, video, monkeypatch):
+def test_prepare_stage_error_is_friendly(tmp_path, prep_settings, video, monkeypatch):
     def boom(job, services, status):
         raise StageError("Normalizing failed: too short")
 
     monkeypatch.setattr(cli, "prepare_job", boom)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 2 and "too short" in out.err.text
-    assert not any(settings.runs_dir.glob("spend-log.csv"))  # nothing logged on failure
+    assert not any(prep_settings.runs_dir.glob("spend-log.csv"))  # nothing logged on failure
 
 
 def _finish_stages(job):
@@ -250,35 +259,35 @@ def _job(settings, video, mode="depth"):
     return Job.create(settings.runs_dir, video, generator="seedance", mode=mode)
 
 
-def test_keyboard_interrupt_is_reported_with_job_id(tmp_path, settings, video, monkeypatch):
+def test_keyboard_interrupt_is_reported_with_job_id(tmp_path, prep_settings, video, monkeypatch):
     def stop(job, services, status):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "prepare_job", stop)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
+    job_id = next(p.name for p in prep_settings.runs_dir.iterdir() if p.is_dir())
     assert code == 130 and "Interrupted" in out.err.text
     assert f"charswap resume {job_id}" in out.err.text and "not charged again" in out.err.text
 
 
-def test_unexpected_error_is_summarised(tmp_path, settings, video, monkeypatch):
+def test_unexpected_error_is_summarised(tmp_path, prep_settings, video, monkeypatch):
     def bad(job, services, status):
         raise ValueError("kaboom")
 
     monkeypatch.setattr(cli, "prepare_job", bad)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 1 and "Unexpected error: kaboom. Run with --debug for details." in out.err.text
 
 
-def test_debug_reraises(tmp_path, settings, video, monkeypatch):
+def test_debug_reraises(tmp_path, prep_settings, video, monkeypatch):
     def bad(job, services, status):
         raise ValueError("kaboom")
 
@@ -293,22 +302,22 @@ def test_debug_reraises(tmp_path, settings, video, monkeypatch):
                 str(_photo(tmp_path / "c.jpg")),
                 "--yes",
             ],
-            settings,
+            prep_settings,
             services_factory=lambda s: object(),
         )
 
 
-def test_stage_error_prints_resume_hint(tmp_path, settings, video, monkeypatch):
+def test_stage_error_prints_resume_hint(tmp_path, prep_settings, video, monkeypatch):
     def fail(job, services, status):
         raise StageError("Depth failed: x")
 
     monkeypatch.setattr(cli, "prepare_job", fail)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
+    job_id = next(p.name for p in prep_settings.runs_dir.iterdir() if p.is_dir())
     assert code == 2 and f"Fix the issue, then run: charswap resume {job_id}" in out.err.text
 
 
@@ -574,7 +583,7 @@ def test_help_lists_view(capsys):
     assert "open the read-only job viewer" in capsys.readouterr().out
 
 
-def test_provider_errors_are_friendly(tmp_path, settings, video, monkeypatch):
+def test_provider_errors_are_friendly(tmp_path, prep_settings, video, monkeypatch):
     from character_swap.providers.replicate import ReplicateError
 
     def throttled(job, services, status):
@@ -583,7 +592,7 @@ def test_provider_errors_are_friendly(tmp_path, settings, video, monkeypatch):
     monkeypatch.setattr(cli, "prepare_job", throttled)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 2 and "Error: Rate limited, nothing was charged" in out.err.text
@@ -608,7 +617,7 @@ def test_rate_limit_wait_message():
     )
 
 
-def test_prepare_passes_the_language(tmp_path, settings, video, monkeypatch):
+def test_prepare_passes_the_language(tmp_path, prep_settings, video, monkeypatch):
     monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
     code, _ = run(
         [
@@ -622,11 +631,11 @@ def test_prepare_passes_the_language(tmp_path, settings, video, monkeypatch):
             "en",
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    job_id = next(p.name for p in settings.runs_dir.iterdir() if p.is_dir())
-    assert code == 0 and Job.load(settings.runs_dir, job_id).state["language"] == "en"
+    job_id = next(p.name for p in prep_settings.runs_dir.iterdir() if p.is_dir())
+    assert code == 0 and Job.load(prep_settings.runs_dir, job_id).state["language"] == "en"
 
 
 @pytest.mark.parametrize("language", ["eng", "zz", "English"])
@@ -1040,22 +1049,23 @@ def test_prepare_wan_direct_is_free_asks_nothing_and_logs_no_cost(tmp_path, vide
     character.write_bytes(b"x")
     ids = []
     monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: ids.append(job.id))
-
-    def never(_q):
-        raise AssertionError("must not ask")
-
+    asked = []
     code, out = run(
-        _wan_args(video, character), empty, confirm=never, services_factory=lambda s: object()
+        _wan_args(video, character),
+        empty,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=lambda s: object(),
     )
     assert code == 0 and "free for this mode" in out.text
+    assert asked == [] and cli.RIGHTS_QUESTION not in asked and PHOTO_CONSENT not in out.text
     assert Job.load(empty.runs_dir, ids[0]).state.get("costs", []) == []
 
 
-def test_prepare_seedance_still_asks(tmp_path, settings, video):
+def test_prepare_seedance_still_asks(tmp_path, prep_settings, video):
     asked = []
     code, _ = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "c.jpg")), "--mode", "depth"],
-        settings,
+        prep_settings,
         confirm=lambda q: asked.append(q) or False,
     )
     assert code == 1 and asked
@@ -1167,8 +1177,8 @@ def _prepare_ids(monkeypatch):
     return ids
 
 
-def test_prepare_seedance_with_a_saved_face(settings, video, tmp_path, monkeypatch):
-    _saved_face(settings, tmp_path)
+def test_prepare_seedance_with_a_saved_face(prep_settings, video, tmp_path, monkeypatch):
+    _saved_face(prep_settings, tmp_path)
     ids = _prepare_ids(monkeypatch)
     code, _ = run(
         [
@@ -1182,10 +1192,10 @@ def test_prepare_seedance_with_a_saved_face(settings, video, tmp_path, monkeypat
             "frank",
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    state = Job.load(settings.runs_dir, ids[0]).state
+    state = Job.load(prep_settings.runs_dir, ids[0]).state
     assert code == 0 and state["face_primary"] == "frank" and state["provider"] == "piapi"
     assert state["character_primary"] == "character-primary.jpg"
 
@@ -1197,8 +1207,8 @@ def test_prepare_seedance_needs_a_character(settings, video):
     assert code == 2 and "--face NAME" in out.err.text and "--character IMAGE" in out.err.text
 
 
-def test_prepare_refuses_face_and_character_together(settings, video, tmp_path):
-    _saved_face(settings, tmp_path)
+def test_prepare_refuses_face_and_character_together(prep_settings, video, tmp_path):
+    _saved_face(prep_settings, tmp_path)
     code, out = run(
         [
             "prepare",
@@ -1211,22 +1221,22 @@ def test_prepare_refuses_face_and_character_together(settings, video, tmp_path):
             str(_photo(tmp_path / "c.jpg")),
             "--yes",
         ],
-        settings,
+        prep_settings,
     )
     assert code == 2 and "not both" in out.err.text
 
 
-def test_prepare_refuses_a_face_that_is_not_active(settings, video, tmp_path):
-    lib = FaceLibrary(settings.root, sleep=lambda _s: None, polls=0)
+def test_prepare_refuses_a_face_that_is_not_active(prep_settings, video, tmp_path):
+    lib = FaceLibrary(prep_settings.root, sleep=lambda _s: None, polls=0)
     lib.add("frank", _photo(tmp_path / "me.jpg"), FakePiAPI(assets={"asset-1": "Processing"}))
     code, out = run(
-        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], settings
+        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], prep_settings
     )
     assert code == 2 and "charswap face check frank" in out.err.text
 
 
 def test_prepare_seedance_character_image_is_checked_and_warned(
-    settings, video, tmp_path, monkeypatch
+    prep_settings, video, tmp_path, monkeypatch
 ):
     ids = _prepare_ids(monkeypatch)
     code, out = run(
@@ -1239,16 +1249,19 @@ def test_prepare_seedance_character_image_is_checked_and_warned(
             str(_photo(tmp_path / "toon.png")),
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 0 and "not a real person" in out.text
-    assert Job.load(settings.runs_dir, ids[0]).state["character_primary"] == "character-primary.jpg"
+    assert (
+        Job.load(prep_settings.runs_dir, ids[0]).state["character_primary"]
+        == "character-primary.jpg"
+    )
 
 
-def test_prepare_two_people(settings, video, tmp_path, monkeypatch):
-    _saved_face(settings, tmp_path, "frank")
-    _saved_face(settings, tmp_path, "sam")
+def test_prepare_two_people(prep_settings, video, tmp_path, monkeypatch):
+    _saved_face(prep_settings, tmp_path, "frank")
+    _saved_face(prep_settings, tmp_path, "sam")
     ids = _prepare_ids(monkeypatch)
     code, _ = run(
         [
@@ -1264,10 +1277,10 @@ def test_prepare_two_people(settings, video, tmp_path, monkeypatch):
             "two men",
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    state = Job.load(settings.runs_dir, ids[0]).state
+    state = Job.load(prep_settings.runs_dir, ids[0]).state
     assert code == 0 and state["face_secondary"] == "sam" and state["subject"] == "two men"
 
 
@@ -1302,15 +1315,17 @@ def test_wan_face_only_needs_to_exist_not_be_active(settings, video, tmp_path, m
     assert job.path("character-primary.jpg").read_bytes() == library_image.read_bytes()
 
 
-def test_seedance_still_refuses_a_processing_face(settings, video, tmp_path):
-    _processing_face(settings, tmp_path)
+def test_seedance_still_refuses_a_processing_face(prep_settings, video, tmp_path):
+    _processing_face(prep_settings, tmp_path)
     code, out = run(
-        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], settings
+        ["prepare", str(video), "--provider", "piapi", "--face", "frank", "--yes"], prep_settings
     )
     assert code == 2 and "charswap face check frank" in out.err.text
 
 
-def test_real_person_note_prints_once_for_two_characters(settings, video, tmp_path, monkeypatch):
+def test_real_person_note_prints_once_for_two_characters(
+    prep_settings, video, tmp_path, monkeypatch
+):
     _prepare_ids(monkeypatch)
     code, out = run(
         [
@@ -1324,7 +1339,7 @@ def test_real_person_note_prints_once_for_two_characters(settings, video, tmp_pa
             str(_photo(tmp_path / "b.png")),
             "--yes",
         ],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
     assert code == 0 and out.text.count("not a real person") == 1
@@ -2212,42 +2227,43 @@ def test_a_started_wavespeed_1080p_final_keeps_its_resolution(ws_settings, video
 
 
 # ---- prepare: WaveSpeed is the default ----------------------------------------------------
-def test_prepare_defaults_to_wavespeed_and_depth_mesh(tmp_path, settings, video, monkeypatch):
+def test_prepare_defaults_to_wavespeed_and_depth_mesh(tmp_path, prep_settings, video, monkeypatch):
     ids = _prepare_ids(monkeypatch)
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg")), "--yes"],
-        settings,
+        prep_settings,
         services_factory=lambda s: object(),
     )
-    state = Job.load(settings.runs_dir, ids[0]).state
+    state = Job.load(prep_settings.runs_dir, ids[0]).state
     assert code == 0 and state["provider"] == "wavespeed" and state["mode"] == "depth_mesh"
     assert state["character_primary"] == "character-primary.jpg"
     assert PHOTO_CONSENT in out.text  # --yes answers the question, the sentence still shows
+    assert "If it's a made-up character, answer yes." in out.text
     assert "not a real person" not in out.text
 
 
-def test_wavespeed_asks_about_rights_before_the_cost(tmp_path, settings, video):
+def test_wavespeed_asks_about_rights_before_the_cost(tmp_path, prep_settings, video):
     asked = []
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg"))],
-        settings,
+        prep_settings,
         confirm=lambda q: asked.append(q) or len(asked) == 1,  # yes to rights, no to the cost
     )
     assert code == 1 and asked == [cli.RIGHTS_QUESTION, "Continue?"]
     assert out.text.index(PHOTO_CONSENT) < out.text.index("Preparation cost")
-    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+    assert not prep_settings.runs_dir.exists() or not any(prep_settings.runs_dir.iterdir())
 
 
-def test_declining_the_rights_question_stops_before_the_cost(tmp_path, settings, video):
+def test_declining_the_rights_question_stops_before_the_cost(tmp_path, prep_settings, video):
     asked = []
     code, out = run(
         ["prepare", str(video), "--character", str(_photo(tmp_path / "me.jpg"))],
-        settings,
+        prep_settings,
         confirm=lambda q: asked.append(q) or False,
     )
     assert code == 1 and asked == [cli.RIGHTS_QUESTION]
     assert "Preparation cost" not in out.text and "Cancelled. Nothing was charged." in out.err.text
-    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+    assert not prep_settings.runs_dir.exists() or not any(prep_settings.runs_dir.iterdir())
 
 
 @pytest.mark.parametrize("option", ["--face", "--face2", "--character2"])
@@ -2287,7 +2303,7 @@ def test_wavespeed_needs_a_character_photo(settings, video):
 
 
 def test_piapi_with_a_character_image_asks_no_rights_question(
-    tmp_path, settings, video, monkeypatch
+    tmp_path, prep_settings, video, monkeypatch
 ):
     ids = _prepare_ids(monkeypatch)
     asked = []
@@ -2300,12 +2316,12 @@ def test_piapi_with_a_character_image_asks_no_rights_question(
             "--character",
             str(_photo(tmp_path / "toon.png")),
         ],
-        settings,
+        prep_settings,
         confirm=lambda q: asked.append(q) or True,
         services_factory=lambda s: object(),
     )
     assert code == 0 and asked == ["Continue?"] and PHOTO_CONSENT not in out.text
-    assert Job.load(settings.runs_dir, ids[0]).state["provider"] == "piapi"
+    assert Job.load(prep_settings.runs_dir, ids[0]).state["provider"] == "piapi"
 
 
 def test_help_lists_wavespeed_first(capsys):
@@ -2314,3 +2330,20 @@ def test_help_lists_wavespeed_first(capsys):
     text = capsys.readouterr().out
     first = text.index("charswap prepare clip.mp4 --character me.jpg")
     assert first < text.index("charswap prepare clip.mp4 --provider piapi --face frank")
+
+
+@pytest.mark.parametrize(
+    ("provider", "key"), [("wavespeed", "WAVESPEED_API_KEY"), ("piapi", "PIAPI_API_KEY")]
+)
+def test_prepare_needs_the_generation_key_before_anything_else(
+    tmp_path, settings, video, provider, key
+):
+    asked = []
+    code, out = run(  # a missing photo shows the key is checked before the photo
+        ["prepare", str(video), "--provider", provider, "--character", str(tmp_path / "no.jpg")],
+        settings,
+        confirm=lambda q: asked.append(q) or True,
+    )
+    assert code == 2 and asked == [] and f"{key} is not set" in out.err.text
+    assert "Photo not found" not in out.err.text and PHOTO_CONSENT not in out.text
+    assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())

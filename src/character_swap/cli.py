@@ -212,8 +212,8 @@ def _parser() -> argparse.ArgumentParser:
     prep.add_argument(
         "--provider",
         choices=list(SEEDANCE_PROVIDERS),
-        help="Seedance only: wavespeed (default; pay per use, a real face as a plain photo) "
-        "or piapi (saved faces, two people)",
+        help="Seedance only: wavespeed (default: pay per video; any clear photo, including a "
+        "real person) or piapi (saved faces; two people)",
     )
     prep.add_argument(
         "--mode",
@@ -443,6 +443,8 @@ def _prepare(args, settings, env) -> int:
         raise JobError("--language only matters for Seedance modes (Wan has no transcript step).")
     if mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
+    if provider:
+        settings.require(KEYS[f"seedance:{provider}"])  # the paid step's key, before any question
     with tempfile.TemporaryDirectory() as scratch:
         # Free checks first, so a bad photo or face is refused before any question.
         character, character2, faces = _characters(args, settings, env, Path(scratch), provider)
