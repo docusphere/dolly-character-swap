@@ -103,6 +103,9 @@ class SeedanceWaveSpeedGenerator:
             )
         if request.secondary is not None:
             raise ProviderError("Two people need --provider piapi for now. Nothing was charged.")
+        photo = request.primary.image_path
+        if not Path(photo).is_file():
+            raise ProviderError(f"Your character photo {photo} is missing. Nothing was charged.")
         check_placeholders(request.prompt, provider="wavespeed", has_secondary=False)
 
     def _upload_video(self, request: GenerationRequest, folder: Path) -> str:

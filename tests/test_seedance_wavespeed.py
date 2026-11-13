@@ -186,3 +186,30 @@ def test_an_expired_download_names_the_record_and_the_rebuy_cost(tmp_path):
             request(tmp_path), "draft", record=record, dest=tmp_path / "raw.mp4"
         )
     assert record.exists()
+
+
+def test_a_missing_character_photo_stops_before_any_upload(tmp_path):
+    fake = FakeWaveSpeed()
+    req = request(tmp_path)
+    req.primary.image_path.unlink()
+    with pytest.raises(ProviderError, match="character photo .*missing. Nothing was charged"):
+        generate(SeedanceWaveSpeedGenerator(fake), req, "draft", tmp_path)
+    assert fake.uploads == [] and fake.bodies == []
+
+
+def test_the_compressed_copy_is_removed_even_when_its_upload_fails(tmp_path, monkeypatch):
+    class FailingUpload(FakeWaveSpeed):
+        def upload(self, path):
+            super().upload(path)
+            raise ProviderError("upload broke")
+
+    def fake_fit(src, dst, max_bytes):
+        dst.write_bytes(b"small")
+        return dst
+
+    monkeypatch.setattr(seedance_wavespeed, "fit_for_upload", fake_fit)
+    fake = FailingUpload()
+    with pytest.raises(ProviderError, match="upload broke"):
+        generate(SeedanceWaveSpeedGenerator(fake), request(tmp_path), "draft", tmp_path)
+    assert [p.name for p in fake.uploads] == ["upload-copy.mp4"]
+    assert not (tmp_path / "upload-copy.mp4").exists() and fake.bodies == []
