@@ -31,7 +31,7 @@ from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
 from character_swap.prompts import PromptError, build_prompt, check_placeholders, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
-from character_swap.providers.generators.seedance_piapi import PROMOTE, SeedanceGenerator
+from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
 from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveSpeedGenerator
 from character_swap.providers.generators.wan_replicate import WanGenerator
 from character_swap.review import ReviewError, fingerprint, require_approved
@@ -523,6 +523,18 @@ FINAL_RESOLUTIONS: dict[str, tuple[str, ...]] = {  # the first is the default
 }
 
 
+def is_promote(job: Job, stage: str, resolution: str) -> bool:
+    """True when this final upgrades the draft's own task (PiAPI's default 1080p final).
+
+    Only a generator with `promotes` does that, and only for its default final. Every other
+    final is a fresh run that resends the draft's saved prompt and the reviewed inputs.
+    """
+    if stage != "final":
+        return False
+    key = generator_key(job)
+    return GENERATOR_CLASSES[key].promotes and resolution == FINAL_RESOLUTIONS[key][0]
+
+
 def final_resolution(job: Job, requested: str = "") -> str:
     """The final's resolution: the one a started final used, else the request, else default."""
     choices = FINAL_RESOLUTIONS[generator_key(job)]
@@ -618,7 +630,7 @@ def build_request(
     """
     state = job.state
     seedance = job.generator == "seedance"
-    promote = seedance and stage == "final" and final_resolution == PROMOTE
+    promote = is_promote(job, stage, final_resolution)  # sends no face and no prompt
     paid = already_paid(job, stage) and not replacing_stale
     face_needed = not (paid or promote)
     primary = _character(job, "primary", faces, face_needed=face_needed)
@@ -687,7 +699,7 @@ def generate(
     # No clear_review: generating changes no input.
     extra: dict[str, str] = {}
     if stage == "draft" and request.prompt:
-        extra["prompt"] = request.prompt  # a 720p final sends exactly this text again
+        extra["prompt"] = request.prompt  # a fresh-run final sends exactly this text again
     if stage == "final":
         extra["resolution"] = resolution
     with _tracked(job, stage, fingerprint=inputs, **extra), _wrap(label):
@@ -810,8 +822,8 @@ def generation_prompt(
 ) -> str:
     """The text Seedance receives.
 
-    - final: the draft's saved prompt (a 720p run must match the watched draft; a 1080p
-      promote sends no prompt, so it may be "").
+    - final: the draft's saved prompt (every fresh-run final must match the watched draft;
+      a PiAPI 1080p promote sends no prompt, so it may be "").
     - draft already paid (record or download there): the prompt saved when it was created,
       so a resume never depends on today's prompt.txt.
     - new draft (or replacing_stale: a remake whose old draft is about to be archived):
@@ -820,11 +832,11 @@ def generation_prompt(
     saved = job.state["stages"].get("draft", {}).get("prompt")
     saved = saved if isinstance(saved, str) and saved else ""
     if stage == "final":
-        if saved or resolution != "720p" or already_paid(job, "final"):
+        if saved or is_promote(job, stage, resolution) or already_paid(job, "final"):
             return saved
         raise PromptError(
-            "The draft's prompt wasn't saved, so a 720p final can't match it. Make a new draft "
-            "first; nothing was charged."
+            f"The draft's prompt wasn't saved, so a {resolution} final can't match it. Make a "
+            "new draft first; nothing was charged."
         )
     if saved and already_paid(job, "draft") and not replacing_stale:
         return saved

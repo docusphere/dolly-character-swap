@@ -802,3 +802,43 @@ def test_piapi_jobs_and_missing_files_are_left_alone(seedance, wavespeed):
     assert piapi_job.path("prompt.txt").read_text() == "Put @image1 into @video1."
     wavespeed_job, _ = wavespeed
     assert pipeline.rename_old_prompt_names(wavespeed_job) is False  # no prompt.txt
+
+
+# ---- finals by generator (WaveSpeed plan) ----------------------------------------------
+def test_wavespeed_finals_default_to_720p_and_refuse_480p(wavespeed):
+    job, _ = wavespeed
+    assert final_resolution(job, "") == "720p" and final_resolution(job, "1080p") == "1080p"
+    with pytest.raises(StageError, match="720p or 1080p, not 480p"):
+        final_resolution(job, "480p")
+
+
+@pytest.mark.parametrize("resolution", ["720p", "1080p"])
+def test_a_wavespeed_final_is_a_fresh_run_with_the_drafts_prompt(wavespeed, runs_dir, resolution):
+    job, services = wavespeed
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    sent = job.state["stages"]["draft"]["prompt"]
+    write_prompt_file(job).write_text("@Video 1 @Image 1 changed after the draft")
+    generate(job, services, "final", runs_dir=runs_dir, final_resolution=resolution, **QUIET)
+    request = services.generators["seedance:wavespeed"].calls[1][1]
+    assert request.prompt == sent and request.final_resolution == resolution
+    assert not pipeline.is_promote(job, "final", resolution)
+    assert job.state["stages"]["final"]["resolution"] == resolution
+
+
+@pytest.mark.parametrize("resolution", ["720p", "1080p"])
+def test_a_wavespeed_final_needs_the_drafts_saved_prompt(wavespeed, runs_dir, resolution):
+    job, services = wavespeed
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    draft = job.state["stages"]["draft"]
+    job.mark_stage("draft", fingerprint=draft["fingerprint"])  # an older state: no prompt saved
+    with pytest.raises(PromptError, match=f"prompt wasn't saved, so a {resolution} final"):
+        generate(job, services, "final", runs_dir=runs_dir, final_resolution=resolution, **QUIET)
+    assert len(services.generators["seedance:wavespeed"].calls) == 1
+
+
+def test_only_piapis_default_final_upgrades_the_draft(seedance, wan_job):
+    job, _ = seedance
+    assert pipeline.is_promote(job, "final", "1080p")
+    assert not pipeline.is_promote(job, "final", "720p")
+    assert not pipeline.is_promote(job, "draft", "1080p")
+    assert not pipeline.is_promote(wan_job, "final", "720p")

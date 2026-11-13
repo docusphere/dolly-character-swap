@@ -28,7 +28,8 @@ from character_swap.faces import ACTIVE, CONSENT, FAILED, PROCESSING, FaceLibrar
 from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.modes import MODES
 from character_swap.pipeline import (
-    PROMOTE,
+    FINAL_RESOLUTIONS,
+    GENERATOR_CLASSES,
     Services,
     already_paid,
     archive_stale_draft,
@@ -40,6 +41,8 @@ from character_swap.pipeline import (
     generation_label,
     generation_prompt,
     generator_for,
+    generator_key,
+    is_promote,
     needs_new_charge,
     next_step,
     pin_provider,
@@ -243,12 +246,14 @@ def _parser() -> argparse.ArgumentParser:
     which.add_argument(
         "--final",
         action="store_true",
-        help="Wan: 720p, same seed. Seedance: 1080p upgrade of the draft, or --resolution 720p",
+        help="Wan: 720p, same seed. Seedance on WaveSpeed: a new 720p take (or --resolution "
+        "1080p). On PiAPI: the 1080p upgrade of the draft, or --resolution 720p",
     )
     gen.add_argument(
         "--resolution",
         choices=["1080p", "720p"],
-        help="Seedance final: 1080p (default, upgrades the draft) or 720p (cheaper fresh run)",
+        help="Seedance final. WaveSpeed: 720p (default) or 1080p, both new takes. PiAPI: 1080p "
+        "(default, upgrades the draft) or 720p (cheaper fresh run)",
     )
     gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     sub.add_parser("doctor", help="check this machine's setup")
@@ -556,7 +561,7 @@ def _generate(args, settings, env) -> int:
             final_resolution=resolution,
             replacing_stale=remake,
         )
-        if job.generator == "seedance" and stage == "final" and resolution == PROMOTE:
+        if is_promote(job, stage, resolution):
             SeedanceGenerator.promote_body(request.draft_task_id)  # refuses with no task id
         estimate = generator_for(job, services).estimate(request, stage)
         if stage == "draft" and request.prompt:
@@ -580,11 +585,12 @@ def _generate(args, settings, env) -> int:
             env.out(f"Your {what} will also be moved to final-old-* (kept, not deleted).")
         if stage == "final":
             env.out(f"Only continue if you watched {job.path('draft.mp4')} and liked it.")
-        if job.generator == "seedance" and stage == "final" and resolution == "720p":
-            env.out(
-                "720p is a fresh run with the same prompt and inputs, so it can differ a little "
-                "from the draft. 1080p (the default) upgrades the exact draft."
-            )
+        if (
+            stage == "final"
+            and job.generator == "seedance"
+            and not is_promote(job, stage, resolution)
+        ):
+            env.out(_fresh_final_note(key))
         if not args.yes and not env.proceed():
             return 1
         if remake:
@@ -612,10 +618,25 @@ def _has_final_files(job: Job) -> bool:
     )
 
 
+def _fresh_final_note(key: str) -> str:
+    """What a Seedance final that is a new run (not an upgrade of the draft) can look like."""
+    if GENERATOR_CLASSES[key].promotes:  # PiAPI: only its 720p final is a fresh run
+        return (
+            "720p is a fresh run with the same prompt and inputs, so it can differ a little "
+            "from the draft. 1080p (the default) upgrades the exact draft."
+        )
+    return (
+        "The final is a new take at higher resolution; it will look a little different from "
+        "the draft."
+    )
+
+
 def _after_draft_hint(job: Job, services: Services) -> str:
     plain = f"Happy with it? Run `charswap generate {job.id} --final`."
-    if job.generator != "seedance":
-        return plain
+    key = generator_key(job)
+    finals = FINAL_RESOLUTIONS[key]
+    if len(finals) < 2:
+        return plain  # Wan: one final, nothing to choose
     generator = generator_for(job, services)
     try:
         price = {
@@ -623,16 +644,22 @@ def _after_draft_hint(job: Job, services: Services) -> str:
                 build_request(job, faces=services.faces, stage="final", final_resolution=res),
                 "final",
             ).total
-            for res in ("1080p", "720p")
+            for res in finals
         }
     except CharSwapError:
         # The draft is done and paid for; a price we can't work out now (e.g. a face that
         # left the library) must not turn that into an error. --final shows it and asks.
         return plain
+    default, other = finals
+    run_final = f"Happy with it? `charswap generate {job.id} --final`"
+    if GENERATOR_CLASSES[key].promotes:
+        return (
+            f"{run_final} makes the {default} upgrade (~${price[default]:.2f}); add "
+            f"`--resolution {other}` for a cheaper fresh {other} run (~${price[other]:.2f})."
+        )
     return (
-        f"Happy with it? `charswap generate {job.id} --final` makes the 1080p upgrade "
-        f"(~${price['1080p']:.2f}); add `--resolution 720p` for a cheaper fresh 720p run "
-        f"(~${price['720p']:.2f})."
+        f"{run_final} makes a new {default} take (~${price[default]:.2f}); add "
+        f"`--resolution {other}` for a new {other} take (~${price[other]:.2f})."
     )
 
 

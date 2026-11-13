@@ -252,7 +252,6 @@ def test_finals_are_defined_once():
 
     assert pipeline.FINAL_RESOLUTIONS["seedance:piapi"] is SeedanceGenerator.finals
     assert SeedanceGenerator.finals is seedance_piapi.FINALS
-    assert pipeline.PROMOTE is seedance_piapi.PROMOTE
 
 
 def test_piapi_finals_and_the_draft_upgrade():

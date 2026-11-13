@@ -2056,3 +2056,86 @@ def test_a_rename_alone_never_makes_a_new_draft(ws_settings, video, tmp_path):
     )
     assert code == 0 and asked == [] and RENAMED in out.text and "already done" in out.text
     assert not list(job.root.glob("draft-old-*"))
+
+
+def test_a_wavespeed_draft_shows_the_prompt_and_price_then_sends_one_body(
+    ws_settings, video, tmp_path
+):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=lambda q: asked.append(q) or False,
+        services_factory=wavespeed_services,
+    )
+    assert code == 1 and asked and wavespeed_services.last.bodies == []
+    assert "@Video 1" in out.text and "hello there" in out.text and "~$0.8800" in out.text
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 0 and job.stage_done("draft")
+    (body,) = wavespeed_services.last.bodies
+    assert body["resolution"] == "480p" and body["generate_audio"] is False
+    assert body["prompt"] == job.state["stages"]["draft"]["prompt"]
+    assert body["reference_images"] == ["https://cdn.wavespeed.ai/uploads/character-primary.jpg"]
+    uploads = [p.name for p in wavespeed_services.last.uploads]
+    assert uploads == ["prepared.mp4", "character-primary.jpg"]
+    assert job.state["costs"][-1]["provider"] == "wavespeed"
+
+
+def test_after_a_wavespeed_draft_both_new_take_prices_are_shown(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 0
+    assert "makes a new 720p take (~$1.76)" in out.text
+    assert "`--resolution 1080p` for a new 1080p take (~$4.40)" in out.text
+    assert "upgrade" not in out.text
+
+
+def test_a_wavespeed_final_is_a_new_720p_take_by_default(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    code, out = run(
+        ["generate", job.id, "--final"],
+        ws_settings,
+        confirm=lambda _q: False,
+        services_factory=wavespeed_services,
+    )
+    assert code == 1 and "Seedance final (720p)" in out.text and "~$1.7600" in out.text
+    assert "The final is a new take at higher resolution" in out.text
+    assert "upgrades the exact draft" not in out.text and wavespeed_services.last.bodies == []
+
+
+def test_a_wavespeed_1080p_final_sends_a_fresh_body_with_the_drafts_prompt(
+    ws_settings, video, tmp_path
+):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    sent = job.state["stages"]["draft"]["prompt"]
+    job.path("prompt.txt").write_text("@Video 1 @Image 1 edited after the draft")
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "1080p", "--yes"],
+        ws_settings,
+        services_factory=wavespeed_services,
+    )
+    assert code == 0 and job.stage_done("final") and "~$4.4000" in out.text
+    (body,) = wavespeed_services.last.bodies
+    assert body["resolution"] == "1080p" and body["prompt"] == sent
+    assert "draft_task_id" not in body
+
+
+def test_a_piapi_1080p_final_never_says_new_take(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and "new take" not in out.text and "fresh run" not in out.text
