@@ -127,8 +127,8 @@ class WaveSpeedClient:
             if code == 401:
                 raise WaveSpeedError(KEY_MESSAGE) from error
             raise WaveSpeedError(
-                f"WaveSpeed returned {code} while {what}: {error.response.text[:200]}. "
-                "Nothing was charged."
+                f"WaveSpeed returned {code} while {what}: "
+                f"{_excerpt(error.response.text) or '(empty answer)'}. Nothing was charged."
             ) from error
         except httpx.RequestError as error:
             raise WaveSpeedError(
@@ -160,8 +160,7 @@ class WaveSpeedClient:
         if not (
             isinstance(link, str)
             and link.startswith("https://")
-            and isinstance(put_url, str)
-            and put_url.startswith("https://")
+            and _is_https(put_url)
             and str(target.get("method") or "PUT").upper() == "PUT"
             and isinstance(headers, dict)
         ):
@@ -169,13 +168,19 @@ class WaveSpeedClient:
                 f"WaveSpeed's upload answer for {path.name} had no usable link. "
                 "Nothing was charged."
             )
-        content = path.read_bytes()
         put_headers = {str(k): str(v) for k, v in headers.items()}  # signed URL: no API key
+        try:  # built once, before anything is sent: a bad header fails here
+            request = self._http.build_request(
+                "PUT", put_url, headers=put_headers, content=path.read_bytes()
+            )
+        except (ValueError, httpx.InvalidURL) as error:
+            raise WaveSpeedError(
+                f"WaveSpeed's upload answer for {path.name} could not be used ({error}). "
+                "Nothing was charged."
+            ) from error
 
         def put() -> None:
-            self._http.request(
-                "PUT", put_url, headers=put_headers, content=content
-            ).raise_for_status()
+            self._http.send(request).raise_for_status()
 
         self._free(put, f"uploading {path.name}")
         return link
@@ -248,13 +253,20 @@ class WaveSpeedClient:
                 f"Refusing to create a paid prediction with no input; {record} vanished during "
                 "resume. Run the command again."
             )
+        try:  # built BEFORE the marker: a body that cannot be sent leaves nothing behind
+            request = self._http.build_request("POST", SUBMIT_URL, headers=self._headers, json=body)
+        except (TypeError, ValueError) as error:
+            raise WaveSpeedError(
+                f"The WaveSpeed request could not be prepared ({error}); nothing was sent and "
+                "nothing was charged."
+            ) from error
         record.parent.mkdir(parents=True, exist_ok=True)
         try:
             marker = common.claim(record)
         except FileExistsError as error:
             raise WaveSpeedError(unconfirmed_message(record)) from error
         try:
-            response = self._http.post(SUBMIT_URL, headers=self._headers, json=body)  # once
+            response = self._http.send(request)  # the one paid POST, never retried
         except httpx.HTTPError as error:
             raise WaveSpeedError(unconfirmed_message(record)) from error
         code = response.status_code
@@ -412,4 +424,16 @@ def _ambiguous(response: httpx.Response, record: Path) -> str:
 def _rejection(code: int, body: str) -> str:
     if code == 401:
         return f"{KEY_MESSAGE} Nothing was charged."
-    return f"WaveSpeed rejected the request ({code}); nothing was charged: {body[:300]}"
+    said = _excerpt(body) or "(empty answer)"
+    return f"WaveSpeed rejected the request ({code}); nothing was charged: {said}"
+
+
+def _is_https(url: object) -> bool:
+    """An https link with a real host (WaveSpeed's signed upload URL)."""
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = httpx.URL(url)
+    except (ValueError, httpx.InvalidURL):
+        return False
+    return parsed.scheme == "https" and bool(parsed.host)

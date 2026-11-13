@@ -100,6 +100,8 @@ def test_upload_refuses_a_file_over_200_mb_before_sending(tmp_path):
         {"code": 200, "data": {}},
         _ticket(url="http://insecure.example/a"),
         _ticket(method="POST"),
+        _ticket(url="https:///no-host"),
+        _ticket(url="https://storage.example:abc/a"),
         {"code": 200, "data": {"upload": _ticket()["data"]["upload"]}},
     ],
 )
@@ -453,3 +455,90 @@ def test_download_has_no_key_and_expiry_is_typed(tmp_path):
     respx.get("https://cdn.wavespeed.ai/outputs/old.mp4").respond(404)
     with pytest.raises(OutputExpired, match="WaveSpeed"):
         client().download("https://cdn.wavespeed.ai/outputs/old.mp4", tmp_path / "old.mp4")
+
+
+# ---- review follow-ups ---------------------------------------------------------------------
+@respx.mock
+def test_an_upload_ticket_refused_in_its_envelope_is_an_error(tmp_path):
+    photo = tmp_path / "me.jpg"
+    photo.write_bytes(b"x")
+    respx.post(UPLOAD_URL).respond(200, json={"code": 400, "message": "bad file"})
+    with pytest.raises(WaveSpeedError, match="refused the upload of me.jpg: bad file.*charged"):
+        client().upload(photo)
+
+
+@respx.mock
+def test_a_free_call_error_shows_one_short_line(tmp_path):
+    photo = tmp_path / "me.jpg"
+    photo.write_bytes(b"x")
+    respx.post(UPLOAD_URL).respond(500, text="server\n   broke " + "z" * 500)
+    with pytest.raises(WaveSpeedError, match="returned 500 while asking") as caught:
+        client().upload(photo)
+    message = str(caught.value)
+    said = message.split("upload link: ", 1)[1].rsplit(". Nothing was charged.", 1)[0]
+    assert said.startswith("server broke z") and len(said) <= 200 and "\n" not in message
+
+
+@respx.mock
+def test_a_put_header_that_cannot_be_sent_is_an_error_before_any_put(tmp_path):
+    photo = tmp_path / "me.jpg"
+    photo.write_bytes(b"x")
+    respx.post(UPLOAD_URL).respond(200, json=_ticket(headers={"X-Note": "café"}))
+    put = respx.put(PUT_URL).respond(200)
+    with pytest.raises(WaveSpeedError, match="me.jpg.*Nothing was charged"):
+        client().upload(photo)
+    assert put.call_count == 0
+
+
+@respx.mock
+def test_a_clear_refusal_shows_one_short_line(tmp_path):
+    respx.post(SUBMIT_URL).respond(400, text="bad\n   request " + "y" * 500)
+    with pytest.raises(WaveSpeedRejected) as caught:
+        client().run(body=BODY, record=tmp_path / "r.json")
+    message = str(caught.value)
+    said = message.split("nothing was charged: ", 1)[1]
+    assert said.startswith("bad request y") and len(said) <= 200 and "\n" not in message
+
+
+@pytest.mark.parametrize("bad", ["path", "nan"])
+@respx.mock
+def test_a_body_that_cannot_be_sent_fails_before_the_marker(tmp_path, bad):
+    record = tmp_path / "jobs" / "r.json"
+    value = tmp_path / "clip.mp4" if bad == "path" else float("nan")
+    with pytest.raises(WaveSpeedError, match="(?i)nothing was sent.*nothing was charged") as caught:
+        client().run(body={**BODY, "video": value}, record=record)
+    assert not isinstance(caught.value, WaveSpeedRejected)
+    assert not record.exists() and respx.calls.call_count == 0
+
+
+@respx.mock
+def test_a_poll_that_keeps_failing_is_resumable_and_keeps_the_record(tmp_path):
+    record = tmp_path / "r.json"
+    respx.post(SUBMIT_URL).respond(200, json=answer("created"))
+    poll = respx.get(RESULT).respond(503)
+    with pytest.raises(WaveSpeedError, match="p1 is saved.*no new charge"):
+        client().run(body=BODY, record=record)
+    assert poll.call_count == 3  # the free retries ran out
+    saved = json.loads(record.read_text())
+    assert saved["id"] == "p1" and saved["status"] == "starting"
+
+
+@respx.mock
+def test_a_save_failure_while_polling_keeps_the_last_good_record(tmp_path, monkeypatch):
+    record = tmp_path / "r.json"
+    respx.post(SUBMIT_URL).respond(200, json=answer("created"))
+    respx.get(RESULT).respond(200, json=answer("processing"))
+    real_save, saves = common.save, []
+
+    def save(path, data):
+        saves.append(data["status"])
+        if len(saves) > 1:  # the create is saved; the first poll's save fails
+            raise OSError("disk full")
+        real_save(path, data)
+
+    monkeypatch.setattr(common, "save", save)
+    with pytest.raises(WaveSpeedError, match="p1 is saved.*no new charge"):
+        client().run(body=BODY, record=record)
+    assert saves == ["starting", "processing"]
+    saved = json.loads(record.read_text())
+    assert saved["status"] == "starting" and saved["task"]["status"] == "created"
