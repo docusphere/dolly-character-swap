@@ -2415,3 +2415,79 @@ def test_prepare_needs_the_generation_key_before_anything_else(
     assert code == 2 and asked == [] and f"{key} is not set" in out.err.text
     assert "Photo not found" not in out.err.text and PHOTO_CONSENT not in out.text
     assert not settings.runs_dir.exists() or not any(settings.runs_dir.iterdir())
+
+
+# ---- every paid step names its provider ---------------------------------------------------
+def test_a_wavespeed_draft_cost_names_wavespeed(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=lambda _q: False,
+        services_factory=wavespeed_services,
+    )
+    assert code == 1 and "Generating the 480p draft on WaveSpeed (paid):" in out.text
+
+
+def test_a_piapi_final_cost_names_piapi(piapi_settings, video, tmp_path):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    run(
+        ["generate", job.id, "--draft", "--yes"], piapi_settings, services_factory=seedance_services
+    )
+    code, out = run(
+        ["generate", job.id, "--final"],
+        piapi_settings,
+        confirm=lambda _q: False,
+        services_factory=seedance_services,
+    )
+    assert code == 1 and "Generating the 1080p final on PiAPI (paid):" in out.text
+
+
+@pytest.mark.parametrize(("provider", "name"), [("wavespeed", "WaveSpeed"), ("piapi", "PiAPI")])
+def test_prepare_names_the_seedance_provider_before_the_cost(
+    tmp_path, prep_settings, video, provider, name
+):
+    code, out = run(
+        [
+            "prepare",
+            str(video),
+            "--provider",
+            provider,
+            "--character",
+            str(_photo(tmp_path / "me.jpg")),
+        ],
+        prep_settings,
+        confirm=lambda _q: False,
+    )
+    line = f"Generator: Seedance on {name}."
+    assert code == 1 and out.text.count(line) == 1
+    assert out.text.index(line) < out.text.index(
+        PHOTO_CONSENT if provider == "wavespeed" else "Preparation cost"
+    )
+
+
+def test_prepare_names_replicate_for_wan(tmp_path, video, monkeypatch):
+    settings = Settings.load(root=tmp_path, environ={"REPLICATE_API_TOKEN": "t"})
+    monkeypatch.setattr(cli, "prepare_job", lambda job, services, status: None)
+    code, out = run(
+        _wan_args(video, _photo(tmp_path / "a.jpg")),
+        settings,
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and "Generator: Wan on Replicate." in out.text
+
+
+@pytest.mark.parametrize(
+    ("make", "provider"),
+    [
+        (lambda s, v, t: _approved_wavespeed_job(s, v, t, provider=""), "wavespeed"),
+        (lambda s, v, t: _approved_seedance_job(s, v, t), "piapi"),
+        (lambda s, v, t: _approved_wan_job(s, v, t), "replicate"),
+    ],
+)
+def test_status_shows_the_provider_without_writing(settings, video, tmp_path, make, provider):
+    job = make(settings, video, tmp_path)
+    before = job.path("state.json").read_text()
+    code, out = run(["status", job.id], settings)
+    assert code == 0 and json.loads(out.text)["provider"] == provider
+    assert job.path("state.json").read_text() == before  # status never writes

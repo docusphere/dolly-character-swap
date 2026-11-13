@@ -17,7 +17,7 @@ from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.video import stream_seconds
-from character_swap.modes import GENERATION_STAGES, MODES
+from character_swap.modes import GENERATION_STAGES, MODES, PROVIDER_NAMES
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
     PAID_STAGES,
@@ -44,8 +44,6 @@ STEP_NAMES = {
     "draft": "Draft (480p)",
     "final": "Final (720p)",
 }
-# What each pipeline.generator_key is called on the page (cost rows, the prompt line).
-PROVIDER_NAMES = {"wan": "Replicate", "seedance:wavespeed": "WaveSpeed", "seedance:piapi": "PiAPI"}
 _PREDICTION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 

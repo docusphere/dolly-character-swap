@@ -34,9 +34,10 @@ from character_swap.faces import (
     check_photo,
 )
 from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError
-from character_swap.modes import MODES
+from character_swap.modes import MODES, generator_name
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
+    GENERATOR_CLASSES,
     Services,
     already_paid,
     archive_stale_draft,
@@ -449,6 +450,11 @@ def _prepare(args, settings, env) -> int:
     with tempfile.TemporaryDirectory() as scratch:
         # Free checks first, so a bad photo or face is refused before any question.
         character, character2, faces = _characters(args, settings, env, Path(scratch), provider)
+        key = f"seedance:{provider}" if provider else "wan"
+        env.out(
+            f"Generator: {generator_name(key)}. The draft and final are paid there; each "
+            "shows its cost and asks first."
+        )
         if provider == "wavespeed":
             # A real face goes to WaveSpeed as a plain photo: rights first, then the cost.
             env.out(PHOTO_CONSENT)
@@ -509,6 +515,7 @@ def _status(args, settings, env) -> int:
     report = {
         "job": job.id,
         "mode": job.mode,
+        "provider": GENERATOR_CLASSES[generator_key(job)].provider,  # resolved; never written
         "stages": job.state["stages"],
         "review": review,
         "next": next_step(job, approved=bool(review.get("approved"))),

@@ -859,3 +859,19 @@ def test_only_piapi_promotes(seedance, wavespeed, wan_job):
     assert pipeline.generator_promotes(seedance[0]) is True
     assert pipeline.generator_promotes(wavespeed[0]) is False
     assert pipeline.generator_promotes(wan_job) is False
+
+
+def test_each_generation_label_names_the_provider(seedance, wavespeed, wan_job):
+    label = pipeline.generation_label
+    assert label(wavespeed[0], "draft") == "Generating the 480p draft on WaveSpeed"
+    assert label(wavespeed[0], "final", "1080p") == "Generating the 1080p final on WaveSpeed"
+    assert label(seedance[0], "final") == "Generating the 1080p final on PiAPI"
+    assert label(wan_job, "final") == "Generating the 720p final on Replicate"
+
+
+def test_the_viewer_and_pipeline_share_one_provider_name_table():
+    from character_swap import modes
+    from character_swap.web import view_model
+
+    assert view_model.PROVIDER_NAMES is modes.PROVIDER_NAMES
+    assert set(modes.PROVIDER_NAMES) == set(pipeline.GENERATOR_CLASSES)

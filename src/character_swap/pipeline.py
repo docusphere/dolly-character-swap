@@ -28,7 +28,13 @@ from character_swap.media.audio import (
 )
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
 from character_swap.media.video import normalize, stream_seconds
-from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
+from character_swap.modes import (
+    GENERATION_STAGES,
+    GENERATOR_LIMITS,
+    MODES,
+    PROVIDER_NAMES,
+    WHOLE_SECONDS,
+)
 from character_swap.prompts import PromptError, build_prompt, check_placeholders, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
 from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
@@ -507,9 +513,11 @@ def generator_for(job: Job, services: Services) -> Generator:
 
 
 def generation_label(job: Job, stage: str, resolution: str = "") -> str:
+    """e.g. "Generating the 480p draft on WaveSpeed": every paid step names who charges it."""
+    where = PROVIDER_NAMES[generator_key(job)]
     if stage == "draft":
-        return "Generating the 480p draft"
-    return f"Generating the {resolution or final_resolution(job, '')} final"
+        return f"Generating the 480p draft on {where}"
+    return f"Generating the {resolution or final_resolution(job, '')} final on {where}"
 
 
 # One entry per generator_key(job). Finals and promotes are the generator classes' own.

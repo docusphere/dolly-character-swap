@@ -11,6 +11,19 @@ GENERATION_STAGES: tuple[str, ...] = ("draft", "final")
 # (min_seconds, max_seconds) per generator; see docs/research/2026-10-22-provider-api-facts.md.
 GENERATOR_LIMITS: dict[str, tuple[int, int]] = {"seedance": (4, 30), "wan": (1, 30)}
 
+# What each pipeline.generator_key's provider is called in messages and on the viewer page.
+PROVIDER_NAMES: dict[str, str] = {
+    "wan": "Replicate",
+    "seedance:wavespeed": "WaveSpeed",
+    "seedance:piapi": "PiAPI",
+}
+
+
+def generator_name(key: str) -> str:
+    """e.g. "Seedance on WaveSpeed" for a pipeline.generator_key."""
+    return f"{key.partition(':')[0].capitalize()} on {PROVIDER_NAMES[key]}"
+
+
 # Generators whose clips are cut to whole seconds (PiAPI durations are whole seconds).
 WHOLE_SECONDS: frozenset[str] = frozenset({"seedance"})
 
