@@ -98,3 +98,35 @@ class FakePiAPI:
         else:
             shutil.copyfile(source, dest)
         return Path(dest)
+
+
+class FakeWaveSpeed:
+    """Stands in for WaveSpeedClient: canned links, one prediction per body."""
+
+    def __init__(self, output="https://cdn.wavespeed.ai/out.mp4", files=None):
+        self.output = output
+        self.files = files if files is not None else {output: b"mp4"}
+        self.uploads: list[Path] = []
+        self.bodies: list[dict] = []
+
+    def upload(self, path: Path) -> str:
+        self.uploads.append(Path(path))
+        return f"https://cdn.wavespeed.ai/uploads/{Path(path).name}"
+
+    def run(self, *, body, record: Path, on_created=None):
+        if record.exists() and json.loads(record.read_text()).get("status") == "succeeded":
+            return self.output  # resumed from the record: no new prediction, no new cost
+        self.bodies.append(body)
+        prediction = {"id": f"pred-{len(self.bodies)}", "status": "succeeded"}
+        record.write_text(json.dumps(prediction))
+        if on_created is not None:
+            on_created({"id": prediction["id"], "status": "starting"})
+        return self.output
+
+    def download(self, url: str, dest: Path) -> Path:
+        source = self.files[url]
+        if isinstance(source, bytes):
+            Path(dest).write_bytes(source)
+        else:
+            shutil.copyfile(source, dest)
+        return Path(dest)
