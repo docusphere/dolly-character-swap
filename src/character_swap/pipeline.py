@@ -17,7 +17,7 @@ import av
 
 from character_swap.costs import record_spend
 from character_swap.faces import FaceError
-from character_swap.jobs import Job
+from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.audio import (
     FIT_LIMIT,
     RATE,
@@ -30,8 +30,9 @@ from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import GENERATION_STAGES, GENERATOR_LIMITS, MODES, WHOLE_SECONDS
 from character_swap.prompts import PromptError, build_prompt, check_placeholders, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
-from character_swap.providers.generators.seedance_piapi import FINALS as SEEDANCE_FINALS
-from character_swap.providers.generators.seedance_piapi import PROMOTE
+from character_swap.providers.generators.seedance_piapi import PROMOTE, SeedanceGenerator
+from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveSpeedGenerator
+from character_swap.providers.generators.wan_replicate import WanGenerator
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
@@ -430,11 +431,75 @@ def needs_new_charge(job: Job, stage: str) -> bool:
     return not already_paid(job, stage)
 
 
+# A Seedance job made before WaveSpeed has no saved provider. It was PiAPI's when it has
+# anything only PiAPI allowed or made; otherwise it is WaveSpeed's (the default).
+_PIAPI_ONLY = ("face_primary", "face_secondary", "character_secondary")
+
+
+def generator_key(job: Job, state: dict[str, Any] | None = None) -> str:
+    """'wan', 'seedance:wavespeed' or 'seedance:piapi'. Reads the job folder, never writes.
+
+    `state` is the job's state.json when the caller already read it (the viewer).
+    """
+    state = job.state if state is None else state
+    generator = state.get("generator")
+    if generator != "seedance":
+        return str(generator)
+    provider = state.get("provider")
+    if provider is None:
+        provider = _old_job_provider(job, state)
+    if provider not in SEEDANCE_PROVIDERS:
+        raise JobError(
+            f"state.json names an unknown Seedance provider {provider!r}; use "
+            f"{' or '.join(SEEDANCE_PROVIDERS)}."
+        )
+    return f"seedance:{provider}"
+
+
+def _old_job_provider(job: Job, state: dict[str, Any]) -> str:
+    if any(state.get(name) for name in _PIAPI_ONLY):
+        return "piapi"
+    costs = state.get("costs")
+    if isinstance(costs, list) and any(
+        isinstance(entry, dict) and entry.get("provider") == "piapi" for entry in costs
+    ):
+        return "piapi"  # a logged PiAPI charge
+    stages = state.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    for stage in GENERATION_STAGES:
+        entry = stages.get(stage)
+        if isinstance(entry, dict) and entry.get("status") == "done":
+            return "piapi"
+        record, raw, _ = generation_files(stage)
+        if job.path(record).exists() or job.path(raw).exists():
+            return "piapi"
+    return SEEDANCE_PROVIDERS[0]
+
+
+def seedance_provider(job: Job) -> str:
+    """'wavespeed' or 'piapi' for a Seedance job: whose input names its prompt uses."""
+    return generator_key(job).partition(":")[2]
+
+
+def pin_provider(job: Job) -> str:
+    """Save the resolved Seedance provider in state.json (once) and return the job's key.
+
+    `charswap prompt` and `charswap generate` call this right after loading the job,
+    before any paid create. Otherwise a WaveSpeed draft interrupted after its record was
+    saved would read as PiAPI's under the old-job rule.
+    """
+    key = generator_key(job)
+    if key.startswith("seedance:") and "provider" not in job.state:
+        job.update(provider=key.partition(":")[2])
+    return key
+
+
 def generator_for(job: Job, services: Services) -> Generator:
+    key = generator_key(job)
     try:
-        return services.generators[job.generator]
+        return services.generators[key]
     except KeyError:
-        raise StageError(f"No {job.generator} generator is set up.") from None
+        raise StageError(f"No {key} generator is set up.") from None
 
 
 def generation_label(job: Job, stage: str, resolution: str = "") -> str:
@@ -443,13 +508,20 @@ def generation_label(job: Job, stage: str, resolution: str = "") -> str:
     return f"Generating the {resolution or final_resolution(job, '')} final"
 
 
-# Seedance's PROMOTE final upgrades the draft's own task (sends no face/prompt).
-FINAL_RESOLUTIONS = {"seedance": SEEDANCE_FINALS, "wan": ("720p",)}  # first = default
+# One entry per generator_key(job). Finals and promotes are the generator classes' own.
+GENERATOR_CLASSES: dict[str, type] = {
+    "wan": WanGenerator,
+    "seedance:wavespeed": SeedanceWaveSpeedGenerator,
+    "seedance:piapi": SeedanceGenerator,
+}
+FINAL_RESOLUTIONS: dict[str, tuple[str, ...]] = {  # the first is the default
+    key: generator.finals for key, generator in GENERATOR_CLASSES.items()
+}
 
 
 def final_resolution(job: Job, requested: str = "") -> str:
     """The final's resolution: the one a started final used, else the request, else default."""
-    choices = FINAL_RESOLUTIONS[job.generator]
+    choices = FINAL_RESOLUTIONS[generator_key(job)]
     saved = job.state["stages"].get("final", {}).get("resolution", "")
     # A saved choice counts only once that final really started (a record or a download):
     # an attempt that failed before PiAPI took it must not steer a plain --final to 720p.
@@ -575,6 +647,7 @@ def generate(
     final_resolution: str = "",
 ) -> Path:
     """Make the draft or final video. Paid: the caller showed the estimate and got a yes."""
+    pin_provider(job)  # before any paid create (see pin_provider)
     check_can_generate(job, stage)
     if _stale(job, stage):  # never relabel an old video with the newly approved inputs
         raise ReviewError(
@@ -661,7 +734,7 @@ PROMPT_FILE = "prompt.txt"  # Seedance: the editable prompt (charswap prompt <jo
 def default_prompt(job: Job) -> str:
     state = job.state
     return build_prompt(
-        provider="piapi",  # Task 7: the job's provider
+        provider=seedance_provider(job),
         mode=job.mode,
         scene=state.get("scene"),
         transcript=state.get("transcript"),
@@ -732,7 +805,7 @@ def generation_prompt(
         )
     check_placeholders(
         text,
-        provider="piapi",  # Task 7: the job's provider
+        provider=seedance_provider(job),
         has_secondary=bool(job.state.get("character_secondary")),
     )
     return validate_prompt(text)

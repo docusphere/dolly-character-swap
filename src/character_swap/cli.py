@@ -42,6 +42,7 @@ from character_swap.pipeline import (
     generator_for,
     needs_new_charge,
     next_step,
+    pin_provider,
     remaining_paid_stages,
     repair_with_rgb,
     resumes_without_charge,
@@ -53,8 +54,10 @@ from character_swap.pipeline import (
 from character_swap.pipeline import generate as generate_stage
 from character_swap.pipeline import prepare as prepare_job
 from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
+from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveSpeedGenerator
 from character_swap.providers.piapi import unconfirmed_message as piapi_unconfirmed
 from character_swap.providers.replicate import unconfirmed_message as replicate_unconfirmed
+from character_swap.providers.wavespeed import unconfirmed_message as wavespeed_unconfirmed
 from character_swap.review import decide
 from character_swap.review import status as review_status
 from character_swap.stages import StageError
@@ -63,8 +66,17 @@ Out = Callable[[str], None]
 
 VIEW_HOST = "127.0.0.1"  # the viewer is never reachable from the network
 BROWSER_DELAY = 1.0  # seconds; lets the server start listening before the browser asks
-KEYS = {"wan": "REPLICATE_API_TOKEN", "seedance": "PIAPI_API_KEY"}  # each generator's paid key
-UNCONFIRMED = {"wan": replicate_unconfirmed, "seedance": piapi_unconfirmed}
+# Keyed by pipeline.generator_key(job): each generator's paid key and unconfirmed-marker help.
+KEYS = {
+    "wan": "REPLICATE_API_TOKEN",
+    "seedance:wavespeed": "WAVESPEED_API_KEY",
+    "seedance:piapi": "PIAPI_API_KEY",
+}
+UNCONFIRMED = {
+    "wan": replicate_unconfirmed,
+    "seedance:wavespeed": wavespeed_unconfirmed,
+    "seedance:piapi": piapi_unconfirmed,
+}
 
 
 def build_services(settings: Settings) -> Services:
@@ -78,8 +90,10 @@ def build_services(settings: Settings) -> Services:
         on_wait=lambda *wait: _stderr(rate_limit_message(*wait)),
     )
     generators = {"wan": WanGenerator(replicate)}
+    if settings.get("WAVESPEED_API_KEY"):
+        generators["seedance:wavespeed"] = SeedanceWaveSpeedGenerator(build_wavespeed(settings))
     if settings.get("PIAPI_API_KEY"):
-        generators["seedance"] = SeedanceGenerator(build_piapi(settings))
+        generators["seedance:piapi"] = SeedanceGenerator(build_piapi(settings))
     return Services(
         replicate=replicate,
         face_detector=lambda: MediaPipeDetector(ensure_model(model_dir)),  # pragma: no cover
@@ -118,6 +132,12 @@ def build_piapi(settings: Settings):
     from character_swap.providers.piapi import PiAPIClient
 
     return PiAPIClient(settings.require("PIAPI_API_KEY"))
+
+
+def build_wavespeed(settings: Settings):
+    from character_swap.providers.wavespeed import WaveSpeedClient
+
+    return WaveSpeedClient(settings.require("WAVESPEED_API_KEY"))
 
 
 @dataclass
@@ -435,6 +455,7 @@ def _prompt(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     if job.generator != "seedance":
         raise JobError("Prompts are only for Seedance jobs; Wan takes no text prompt.")
+    pin_provider(job)  # before anything else reads which provider's names to use
     if not all(job.stage_done(name) for name in MODES[job.mode].prep_stages):
         raise JobError(
             "Finish preparing first (the prompt uses the transcript and the scene): "
@@ -483,6 +504,7 @@ def _generate(args, settings, env) -> int:
     if args.resolution and stage == "draft":
         raise JobError("--resolution is only for --final (drafts are always 480p).")
     job = Job.load(settings.runs_dir, args.job)
+    key = pin_provider(job)  # before any paid create: see pipeline.pin_provider
     inputs_changed = stage == "draft" and stale_draft(job)  # approved inputs changed
     # Seedance: a finished draft whose prompt.txt was edited since (the prompt is deliberately
     # not part of the review, so editing it never clears the approval).
@@ -509,14 +531,14 @@ def _generate(args, settings, env) -> int:
     check_can_generate(job, stage)  # mode, approved review, draft first: before any cost
     resolution = final_resolution(job, args.resolution or "") if stage == "final" else ""
     env.track(job, f"generate {{id}} --{stage}")  # after the refusals: their text says what to do
-    settings.require(KEYS[job.generator])
+    settings.require(KEYS[key])
     services = env.services_factory(settings)
     if saved_request_unconfirmed(job, stage):
         env.out(
             "A request for this step was sent but never confirmed. It may have been charged; "
             "follow the steps below before running again."
         )
-        env.err(UNCONFIRMED[job.generator](job.path(generation_files(stage)[0])))
+        env.err(UNCONFIRMED[key](job.path(generation_files(stage)[0])))
         return 2
     if remake or needs_new_charge(job, stage):
         # Built exactly as pipeline.generate will build it (a remake: once the old draft is

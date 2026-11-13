@@ -18,7 +18,12 @@ from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.modes import GENERATION_STAGES, MODES
-from character_swap.pipeline import FINAL_RESOLUTIONS, PAID_STAGES, PREP_STAGES_BY_MODE
+from character_swap.pipeline import (
+    FINAL_RESOLUTIONS,
+    PAID_STAGES,
+    PREP_STAGES_BY_MODE,
+    generator_key,
+)
 from character_swap.review import ReviewError, fingerprint
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
@@ -620,7 +625,7 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
             continue
         rows.append(
             CostRow(
-                _generation_name(state, stage),
+                _generation_name(state, stage, generator_key(job, state)),
                 "PiAPI" if seedance else "Replicate",
                 _generation_cost(job, state, stage),
                 None if seedance else prediction_url(job, PAID_RECORD[stage]),
@@ -629,14 +634,14 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     return tuple(rows)
 
 
-def _generation_name(state: dict[str, Any], stage: str) -> str:
+def _generation_name(state: dict[str, Any], stage: str, key: str) -> str:
     """'Final (1080p)': the resolution the final used, else the generator's default final."""
     if stage != "final":
         return STEP_NAMES[stage]
     entry = state.get("stages", {}).get("final")
     resolution = entry.get("resolution") if isinstance(entry, dict) else None
     if not isinstance(resolution, str) or not resolution:
-        resolution = FINAL_RESOLUTIONS.get(str(state.get("generator")), ("720p",))[0]
+        resolution = FINAL_RESOLUTIONS.get(key, ("720p",))[0]
     return f"Final ({resolution})"
 
 

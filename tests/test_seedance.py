@@ -250,7 +250,8 @@ def test_a_busy_promote_gets_no_7_day_hint(tmp_path, monkeypatch):
 def test_finals_are_defined_once():
     from character_swap import pipeline
 
-    assert pipeline.FINAL_RESOLUTIONS["seedance"] is seedance_piapi.FINALS
+    assert pipeline.FINAL_RESOLUTIONS["seedance:piapi"] is SeedanceGenerator.finals
+    assert SeedanceGenerator.finals is seedance_piapi.FINALS
     assert pipeline.PROMOTE is seedance_piapi.PROMOTE
 
 

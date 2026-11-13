@@ -17,7 +17,7 @@ from character_swap.pipeline import PREP_STAGES_BY_MODE, Services
 from character_swap.review import decide as approve_review
 from character_swap.review import fingerprint as review_fingerprint
 from character_swap.stages import StageError
-from fakes import FakePiAPI
+from fakes import FakePiAPI, FakeWaveSpeed
 from helpers import solid, write_video
 
 
@@ -595,7 +595,7 @@ def test_prompt_errors_are_friendly(settings, video):
     job = Job.create(settings.runs_dir, video, generator="seedance", mode="depth")
     for stage in _MODES["depth"].prep_stages:
         job.mark_stage(stage)
-    job.path("prompt.txt").write_text("Put @image1 into @video1. " + "x" * MAX_PROMPT)
+    job.path("prompt.txt").write_text("Put @Image 1 into @Video 1. " + "x" * MAX_PROMPT)
     code, out = run(["prompt", job.id], settings)
     assert code == 2 and "limit" in out.err.text
 
@@ -1333,7 +1333,7 @@ def seedance_services(settings):
     return Services(
         replicate=None,
         face_detector=lambda: None,
-        generators={"seedance": SeedanceGenerator(piapi)},
+        generators={"seedance:piapi": SeedanceGenerator(piapi)},
         faces=FaceLibrary(settings.root),
     )
 
@@ -1522,13 +1522,21 @@ def test_doctor_survives_an_unreadable_face_library(settings):
     assert "saved faces: unreadable" in out.text
 
 
-def test_real_services_include_seedance_when_the_key_is_set(piapi_settings, settings):
+def test_real_services_build_each_seedance_provider_whose_key_is_set(tmp_path, settings):
     from character_swap.providers.generators.seedance_piapi import SeedanceGenerator
+    from character_swap.providers.generators.seedance_wavespeed import (
+        SeedanceWaveSpeedGenerator,
+    )
 
-    services = cli.build_services(piapi_settings)
-    assert isinstance(services.generators["seedance"], SeedanceGenerator)
+    both = Settings.load(
+        root=tmp_path,
+        environ={"REPLICATE_API_TOKEN": "t", "PIAPI_API_KEY": "k", "WAVESPEED_API_KEY": "w"},
+    )
+    services = cli.build_services(both)
+    assert isinstance(services.generators["seedance:piapi"], SeedanceGenerator)
+    assert isinstance(services.generators["seedance:wavespeed"], SeedanceWaveSpeedGenerator)
     assert services.faces is not None
-    assert "seedance" not in cli.build_services(settings).generators
+    assert set(cli.build_services(settings).generators) == {"wan"}
 
 
 def test_a_failed_720p_try_does_not_stick_to_a_plain_final(piapi_settings, video, tmp_path):
@@ -1902,3 +1910,105 @@ def test_an_inputs_remake_mentions_the_final_too(settings, video, tmp_path, monk
         services_factory=wan_services,
     )
     assert code == 1 and "final-old-*" in out.text
+
+
+# ---- WaveSpeed (the default Seedance provider) ------------------------------------------
+@pytest.fixture
+def ws_settings(tmp_path):
+    return Settings.load(
+        root=tmp_path, environ={"REPLICATE_API_TOKEN": "t", "WAVESPEED_API_KEY": "k"}
+    )
+
+
+def _approved_wavespeed_job(settings, video, tmp_path, *, provider="wavespeed"):
+    """An approved depth_mesh job with a plain photo. provider="" = an old job (none saved)."""
+    job = Job.create(
+        settings.runs_dir,
+        video,
+        generator="seedance",
+        mode="depth_mesh",
+        character=_photo(tmp_path / "me.jpg"),
+        provider=provider,
+    )
+    for name in _MODES["depth_mesh"].review_files:
+        if name.endswith(".json"):  # face-landmarks.json
+            job.path(name).write_text('{"fps": 24, "frames": []}')
+        else:
+            write_video(job.path(name), [solid((5, 5, 5))] * 96)
+    for stage in _MODES["depth_mesh"].prep_stages:
+        job.mark_stage(stage)
+    job.update(video={"seconds": 4.0}, transcript="hello there", scene="A studio.")
+    approve_review(job, approved=True, note="ok", fingerprint=review_fingerprint(job))
+    return job
+
+
+def wavespeed_services(settings):
+    """The real WaveSpeed generator on a fake WaveSpeed that returns a real 4 s video."""
+    from character_swap.providers.generators.seedance_wavespeed import (
+        SeedanceWaveSpeedGenerator,
+    )
+
+    output = write_video(settings.root / "wavespeed-out.mp4", [solid((20, 200, 20))] * 96)
+    fake = FakeWaveSpeed(files={"https://cdn.wavespeed.ai/out.mp4": output})
+    wavespeed_services.last = fake
+    return Services(
+        replicate=None,
+        face_detector=lambda: None,
+        generators={"seedance:wavespeed": SeedanceWaveSpeedGenerator(fake)},
+        faces=FaceLibrary(settings.root),
+    )
+
+
+def test_prompt_saves_the_provider_and_uses_wavespeeds_names(settings, video, tmp_path):
+    job = _approved_wavespeed_job(settings, video, tmp_path, provider="")
+    code, out = run(["prompt", job.id], settings)
+    assert code == 0 and job.state["provider"] == "wavespeed"
+    assert "@Video 1" in out.text and "@Video 1" in job.path("prompt.txt").read_text()
+
+
+def test_wavespeed_generate_needs_the_wavespeed_key(settings, video, tmp_path):
+    job = _approved_wavespeed_job(settings, video, tmp_path)
+    code, out = run(["generate", job.id, "--draft"], settings, services_factory=wavespeed_services)
+    assert code == 2 and "WAVESPEED_API_KEY" in out.err.text
+
+
+def test_a_wavespeed_unconfirmed_marker_points_at_wavespeed(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    record = job.path("draft-prediction.json")
+    record.write_text(json.dumps({"status": "creating"}))
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 2 and asked == [] and wavespeed_services.last.bodies == []
+    assert "WaveSpeed dashboard" in out.err.text and "PiAPI" not in out.err.text
+    assert str(record) in out.err.text
+
+
+def test_an_interrupted_wavespeed_draft_resumes_on_wavespeed(
+    ws_settings, video, tmp_path, monkeypatch
+):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path, provider="")  # an old job
+
+    def stopped(self, url, dest):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FakeWaveSpeed, "download", stopped)
+    code, _ = run(
+        ["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 130 and job.path("draft-prediction.json").exists()
+    assert job.state["provider"] == "wavespeed"  # saved before the paid create
+    monkeypatch.undo()
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
+    assert wavespeed_services.last.bodies == [] and job.stage_done("draft")

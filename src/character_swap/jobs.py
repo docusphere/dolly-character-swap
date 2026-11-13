@@ -34,6 +34,7 @@ WHISPER_LANGUAGES: tuple[str, ...] = (
     "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
 )
 # fmt: on
+SEEDANCE_PROVIDERS: tuple[str, ...] = ("wavespeed", "piapi")  # the first is the default
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -70,6 +71,7 @@ class Job:
         character2: Path | None = None,
         faces: dict[str, str] | None = None,  # slot ("primary"/"secondary") -> saved face name
         language: str = "auto",
+        provider: str = "",  # Seedance: "wavespeed" | "piapi"; "" = decided later (old jobs)
     ) -> Job:
         if generator not in MODES_BY_GENERATOR:
             choices = ", ".join(MODES_BY_GENERATOR)
@@ -92,6 +94,12 @@ class Job:
             raise JobError(
                 f"{language!r} is not a Whisper language code (for example en, es, or auto)."
             )
+        if provider and generator != "seedance":
+            raise JobError("--provider is only for Seedance; Wan always runs on Replicate.")
+        if provider and provider not in SEEDANCE_PROVIDERS:
+            raise JobError(
+                f"Unknown provider {provider!r}. Use one of: {', '.join(SEEDANCE_PROVIDERS)}."
+            )
 
         job_id = uuid.uuid4().hex
         root = Path(runs_dir) / job_id
@@ -109,6 +117,8 @@ class Job:
                 "created_at": _now(),
                 "stages": {},
             }
+            if provider:
+                state["provider"] = provider
             for slot, image in (("primary", character), ("secondary", character2)):
                 if image is None:
                     continue

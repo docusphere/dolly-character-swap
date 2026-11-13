@@ -7,7 +7,7 @@ from PIL import Image
 from character_swap import pipeline
 from character_swap.costs import Estimate, Line
 from character_swap.faces import FaceError, FaceLibrary
-from character_swap.jobs import Job
+from character_swap.jobs import Job, JobError
 from character_swap.media.video import stream_seconds
 from character_swap.modes import MODES
 from character_swap.pipeline import (
@@ -461,7 +461,7 @@ def seedance(runs_dir, tmp_path):
     services = Services(
         replicate=None,
         face_detector=lambda: None,
-        generators={"seedance": FakeGenerator(output)},
+        generators={"seedance:piapi": FakeGenerator(output)},
         faces=library,
     )
     return job, services
@@ -470,7 +470,7 @@ def seedance(runs_dir, tmp_path):
 def test_seedance_draft_sends_the_prepared_video_face_and_default_prompt(seedance, runs_dir):
     job, services = seedance
     result = generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
-    ((stage, request),) = services.generators["seedance"].calls
+    ((stage, request),) = services.generators["seedance:piapi"].calls
     assert stage == "draft" and request.video == job.path("prepared.mp4")
     assert request.primary.face_asset_id == "asset-1" and request.primary.name == "frank"
     assert "lets get it" in request.prompt and "@image1" in request.prompt
@@ -483,7 +483,7 @@ def test_an_edited_prompt_file_is_what_is_sent(seedance, runs_dir):
     path = write_prompt_file(job)
     path.write_text("Make the person in @video1 look like @image1. Keep everything else.")
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
-    request = services.generators["seedance"].calls[0][1]
+    request = services.generators["seedance:piapi"].calls[0][1]
     assert request.prompt == "Make the person in @video1 look like @image1. Keep everything else."
 
 
@@ -506,7 +506,7 @@ def test_1080p_final_carries_the_draft_task_and_records_the_resolution(seedance,
     job, services = seedance
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
     generate(job, services, "final", runs_dir=runs_dir, **QUIET)
-    request = services.generators["seedance"].calls[1][1]
+    request = services.generators["seedance:piapi"].calls[1][1]
     assert request.draft_task_id == "p-draft" and request.final_resolution == "1080p"
     assert job.state["stages"]["final"]["resolution"] == "1080p"
 
@@ -517,7 +517,7 @@ def test_720p_final_reuses_the_drafts_prompt(seedance, runs_dir):
     sent = job.state["stages"]["draft"]["prompt"]
     write_prompt_file(job).write_text("@video1 @image1 changed after the draft")
     generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
-    request = services.generators["seedance"].calls[1][1]
+    request = services.generators["seedance:piapi"].calls[1][1]
     assert request.prompt == sent and request.final_resolution == "720p"
 
 
@@ -546,7 +546,7 @@ def test_a_deleted_saved_face_is_a_plain_error(seedance, runs_dir):
     (services.faces.folder / "faces.json").write_text("[]")
     with pytest.raises(FaceError, match="charswap face add frank"):
         generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
-    assert services.generators["seedance"].calls == []
+    assert services.generators["seedance:piapi"].calls == []
 
 
 def test_a_resumed_draft_keeps_the_prompt_it_was_created_with(seedance, runs_dir):
@@ -559,7 +559,7 @@ def test_a_resumed_draft_keeps_the_prompt_it_was_created_with(seedance, runs_dir
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert job.state["stages"]["draft"]["prompt"] == sent
     generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
-    assert services.generators["seedance"].calls[-1][1].prompt == sent
+    assert services.generators["seedance:piapi"].calls[-1][1].prompt == sent
 
 
 def _interrupted_draft(job, sent):
@@ -579,7 +579,7 @@ def test_a_paid_draft_resumes_even_with_a_broken_prompt_file(seedance, runs_dir)
     write_prompt_file(job).write_text("")  # would be refused for a new draft
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert job.stage_done("draft") and job.state["stages"]["draft"]["prompt"] == sent
-    assert services.generators["seedance"].calls[0][1].prompt == sent
+    assert services.generators["seedance:piapi"].calls[0][1].prompt == sent
 
 
 def test_a_paid_draft_resumes_even_after_its_face_was_removed(seedance, runs_dir):
@@ -587,7 +587,7 @@ def test_a_paid_draft_resumes_even_after_its_face_was_removed(seedance, runs_dir
     _interrupted_draft(job, "Put @image1 on the person in @video1.")
     _forget_faces(services)
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
-    request = services.generators["seedance"].calls[0][1]
+    request = services.generators["seedance:piapi"].calls[0][1]
     assert job.stage_done("draft")
     assert request.primary.face_asset_id is None and request.primary.name == "frank"
 
@@ -597,7 +597,7 @@ def test_a_removed_face_does_not_block_the_1080p_promote(seedance, runs_dir):
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
     _forget_faces(services)
     generate(job, services, "final", runs_dir=runs_dir, **QUIET)
-    request = services.generators["seedance"].calls[1][1]
+    request = services.generators["seedance:piapi"].calls[1][1]
     assert request.final_resolution == "1080p" and request.draft_task_id == "p-draft"
     assert request.primary.face_asset_id is None and job.stage_done("final")
 
@@ -608,7 +608,7 @@ def test_a_removed_face_still_blocks_a_new_720p_final(seedance, runs_dir):
     _forget_faces(services)
     with pytest.raises(FaceError, match="charswap face add frank"):
         generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
-    assert len(services.generators["seedance"].calls) == 1  # only the draft
+    assert len(services.generators["seedance:piapi"].calls) == 1  # only the draft
 
 
 def test_a_720p_final_needs_the_drafts_saved_prompt(seedance, runs_dir):
@@ -618,7 +618,7 @@ def test_a_720p_final_needs_the_drafts_saved_prompt(seedance, runs_dir):
     job.mark_stage("draft", fingerprint=draft["fingerprint"])  # an older state: no prompt saved
     with pytest.raises(PromptError, match="prompt wasn't saved"):
         generate(job, services, "final", runs_dir=runs_dir, final_resolution="720p", **QUIET)
-    assert len(services.generators["seedance"].calls) == 1
+    assert len(services.generators["seedance:piapi"].calls) == 1
 
 
 def test_a_new_draft_after_archiving_sends_the_edited_prompt(seedance, runs_dir):
@@ -628,5 +628,145 @@ def test_a_new_draft_after_archiving_sends_the_edited_prompt(seedance, runs_dir)
     edited = "Turn the person in @video1 into @image1, nothing else."
     write_prompt_file(job).write_text(edited)
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
-    assert services.generators["seedance"].calls[1][1].prompt == edited
+    assert services.generators["seedance:piapi"].calls[1][1].prompt == edited
     assert job.state["stages"]["draft"]["prompt"] == edited
+
+
+# ---- the job's provider (WaveSpeed plan) ---------------------------------------------
+def _old_seedance_job(runs_dir, tmp_path):
+    """A Seedance job made before WaveSpeed: no provider saved."""
+    upload = tmp_path / "old-clip.mp4"
+    upload.write_bytes(b"v")
+    return Job.create(runs_dir, upload, generator="seedance", mode="depth")
+
+
+PIAPI_SIGNS = {
+    "saved face": lambda job: job.update(face_primary="frank"),
+    "second saved face": lambda job: job.update(face_secondary="sam"),
+    "second character": lambda job: job.update(character_secondary="character-secondary.jpg"),
+    "draft record": lambda job: job.path("draft-prediction.json").write_text("{}"),
+    "final record": lambda job: job.path("final-prediction.json").write_text("{}"),
+    "draft video": lambda job: job.path("draft-raw.mp4").write_bytes(b"v"),
+    "final video": lambda job: job.path("final-raw.mp4").write_bytes(b"v"),
+    "finished draft": lambda job: job.mark_stage("draft"),
+    "finished final": lambda job: job.mark_stage("final"),
+    "PiAPI charge": lambda job: job.append_cost(
+        {"step": "draft", "usd": 0.99, "provider": "piapi"}
+    ),
+}
+
+
+@pytest.mark.parametrize("sign", list(PIAPI_SIGNS))
+def test_an_old_seedance_job_with_piapi_work_is_piapi(runs_dir, tmp_path, sign):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    PIAPI_SIGNS[sign](job)
+    assert pipeline.generator_key(job) == "seedance:piapi"
+
+
+def test_an_old_seedance_job_without_piapi_work_is_wavespeed(runs_dir, tmp_path):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    job.mark_stage("draft", "failed", error="x")  # failed before any record: not PiAPI work
+    job.append_cost({"step": "prepare", "usd": 0.06})  # prep charges name no provider
+    job.append_cost({"step": "draft", "usd": 0.88, "provider": "wavespeed"})
+    assert pipeline.generator_key(job) == "seedance:wavespeed"
+
+
+def test_a_saved_provider_wins_and_wan_is_wan(runs_dir, tmp_path, wan_job):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    job.update(provider="wavespeed")
+    job.path("draft-prediction.json").write_text("{}")
+    assert pipeline.generator_key(job) == "seedance:wavespeed"
+    assert pipeline.generator_key(wan_job) == "wan"
+
+
+def test_generator_key_never_writes(runs_dir, tmp_path):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    before = job.path("state.json").read_bytes()
+    assert pipeline.generator_key(job) == "seedance:wavespeed"
+    assert job.path("state.json").read_bytes() == before
+
+
+def test_pin_provider_saves_the_resolved_provider_once(runs_dir, tmp_path, wan_job):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    assert pipeline.pin_provider(job) == "seedance:wavespeed"
+    assert job.state["provider"] == "wavespeed"
+    job.path("draft-prediction.json").write_text('{"id": "p1", "status": "processing"}')
+    assert pipeline.pin_provider(job) == "seedance:wavespeed"  # its own record never flips it
+    assert pipeline.pin_provider(wan_job) == "wan" and "provider" not in wan_job.state
+
+
+def test_an_unknown_saved_provider_is_an_error(runs_dir, tmp_path):
+    job = _old_seedance_job(runs_dir, tmp_path)
+    job.update(provider="sora")
+    with pytest.raises(JobError, match="unknown Seedance provider 'sora'"):
+        pipeline.generator_key(job)
+
+
+def test_finals_come_from_each_generator():
+    assert pipeline.FINAL_RESOLUTIONS == {
+        "wan": ("720p",),
+        "seedance:wavespeed": ("720p", "1080p"),
+        "seedance:piapi": ("1080p", "720p"),
+    }
+
+
+@pytest.fixture
+def wavespeed(runs_dir, tmp_path):
+    """An approved depth_mesh job with a plain character photo and no saved provider."""
+    upload = write_video(tmp_path / "talk.mp4", [solid((90, 60, 30))] * 108, audio_seconds=4.5)
+    photo = tmp_path / "me.jpg"
+    Image.new("RGB", (828, 1086), (200, 150, 120)).save(photo, "JPEG")
+    job = Job.create(runs_dir, upload, generator="seedance", mode="depth_mesh", character=photo)
+    for name in MODES["depth_mesh"].review_files:
+        if name.endswith(".json"):  # face-landmarks.json
+            job.path(name).write_text('{"fps": 24, "frames": []}')
+        else:
+            write_video(job.path(name), [solid((5, 5, 5))] * 96)
+    for stage in MODES["depth_mesh"].prep_stages:
+        job.mark_stage(stage)
+    job.update(video={"seconds": 4.0}, transcript="lets get it", scene="A hotel lobby.")
+    decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
+    output = write_video(tmp_path / "wavespeed-out.mp4", [solid((20, 200, 20))] * 96)
+    services = Services(
+        replicate=None,
+        face_detector=lambda: None,
+        generators={"seedance:wavespeed": FakeGenerator(output)},
+    )
+    return job, services
+
+
+def test_generate_saves_the_provider_before_the_paid_create(wavespeed, runs_dir):
+    job, services = wavespeed
+    fake = services.generators["seedance:wavespeed"]
+    seen = []
+    original = fake.generate
+
+    def spy(request, stage, *, record, dest, on_created=None):
+        seen.append(json.loads((record.parent / "state.json").read_text()).get("provider"))
+        return original(request, stage, record=record, dest=dest, on_created=on_created)
+
+    fake.generate = spy
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert seen == ["wavespeed"]
+    assert pipeline.generator_key(job) == "seedance:wavespeed"  # its record exists now
+
+
+def test_a_missing_provider_generator_names_its_key(wavespeed, runs_dir):
+    job, services = wavespeed
+    services.generators.clear()
+    with pytest.raises(StageError, match="No seedance:wavespeed generator"):
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+
+
+def test_a_wavespeed_job_prompt_uses_wavespeeds_names(wavespeed):
+    job, _ = wavespeed
+    text = write_prompt_file(job).read_text()
+    assert "@Video 1" in text and "@Image 1" in text and "@video1" not in text
+    assert "lets get it" in text and generation_prompt(job, "draft") == text
+
+
+def test_a_wavespeed_prompt_with_piapi_names_is_refused(wavespeed):
+    job, _ = wavespeed
+    write_prompt_file(job).write_text("Swap @video1 for @image1.")
+    with pytest.raises(PromptError, match="must mention @Video 1"):
+        generation_prompt(job, "draft")

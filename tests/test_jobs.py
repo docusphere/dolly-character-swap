@@ -160,3 +160,22 @@ def test_missing_second_character_image_is_refused(runs_dir, video, tmp_path):
         Job.create(
             runs_dir, video, generator="seedance", mode="depth", character2=tmp_path / "nope.jpg"
         )
+
+
+def test_seedance_jobs_save_their_provider(runs_dir, video):
+    job = Job.create(runs_dir, video, generator="seedance", mode="depth", provider="wavespeed")
+    assert job.state["provider"] == "wavespeed"
+    old_style = Job.create(runs_dir, video, generator="seedance", mode="depth")
+    assert "provider" not in old_style.state  # decided later by the old-job rule
+
+
+def test_provider_is_refused_for_wan_and_unknown_names(runs_dir, video, tmp_path):
+    face = tmp_path / "me.jpg"
+    face.write_bytes(b"jpg")
+    with pytest.raises(JobError, match="only for Seedance"):
+        Job.create(
+            runs_dir, video, generator="wan", mode="direct", character=face, provider="piapi"
+        )
+    with pytest.raises(JobError, match="Unknown provider 'sora'"):
+        Job.create(runs_dir, video, generator="seedance", mode="depth", provider="sora")
+    assert not any(runs_dir.iterdir())
