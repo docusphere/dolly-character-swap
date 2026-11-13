@@ -2526,3 +2526,91 @@ def test_a_piapi_prompt_with_wavespeeds_names_is_refused_before_asking(
     assert "uses @Image 1, WaveSpeed's name for your character" in out.err.text
     assert "write @image1 instead" in out.err.text
     assert seedance_services.last.uploads == [] and seedance_services.last.bodies == []
+
+
+# ---- Ctrl-C while the REAL WaveSpeed client polls (no network: a mock transport) ----------
+def test_ctrl_c_during_a_real_wavespeed_poll_resumes_without_a_second_post(
+    ws_settings, video, tmp_path
+):
+    import httpx
+
+    from character_swap.providers.generators.seedance_wavespeed import (
+        SeedanceWaveSpeedGenerator,
+    )
+    from character_swap.providers.wavespeed import WaveSpeedClient
+
+    result = write_video(tmp_path / "result.mp4", [solid((20, 200, 20))] * 96)
+    posts, polls = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/media/uploads"):
+            upload = {"url": "https://put.example/f", "method": "PUT", "headers": {}}
+            data = {"download_url": "https://cdn.example/f", "upload": upload}
+            return httpx.Response(200, json={"code": 200, "data": data})
+        if url.startswith("https://put.example"):
+            return httpx.Response(200)
+        if url.endswith("/video-edit"):
+            posts.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"code": 200, "data": {"id": "abc", "status": "created"}}
+            )
+        if "/predictions/abc/result" in url:
+            polls.append(url)
+            if len(polls) == 1:
+                raise KeyboardInterrupt  # Ctrl-C while waiting for the first answer
+            data = {"id": "abc", "status": "completed", "outputs": ["https://cdn.example/out.mp4"]}
+            return httpx.Response(200, json={"code": 200, "data": data})
+        if url == "https://cdn.example/out.mp4":
+            return httpx.Response(200, content=result.read_bytes())
+        return httpx.Response(500)
+
+    def services(settings):
+        client = WaveSpeedClient(
+            "k", http=httpx.Client(transport=httpx.MockTransport(handler)), sleep=lambda _s: None
+        )
+        return Services(
+            replicate=None,
+            face_detector=lambda: None,
+            generators={"seedance:wavespeed": SeedanceWaveSpeedGenerator(client)},
+            faces=FaceLibrary(ws_settings.root),
+        )
+
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=services
+    )
+    saved = json.loads(job.path("draft-prediction.json").read_text())
+    assert code == 130 and "Interrupted" in out.err.text and len(posts) == 1
+    assert saved["id"] == "abc" and saved["status"] == "starting"
+    assert not job.stage_done("draft")
+
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
+    assert len(posts) == 1 and job.stage_done("draft")  # resumed: no second paid POST
+    (charge,) = [c for c in job.state["costs"] if c["step"] == "draft"]  # logged exactly once
+    assert charge["task_id"] == "abc" and charge["provider"] == "wavespeed"
+
+
+@pytest.mark.parametrize("status", ["starting", "processing"])
+def test_a_live_saved_wavespeed_draft_resumes_with_no_new_body(
+    ws_settings, video, tmp_path, status
+):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    job.path("draft-prediction.json").write_text(json.dumps({"id": "p", "status": status}))
+    job.mark_stage("draft", "failed", fingerprint=review_fingerprint(job))  # e.g. Ctrl-C
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
+    assert wavespeed_services.last.bodies == [] and job.stage_done("draft")

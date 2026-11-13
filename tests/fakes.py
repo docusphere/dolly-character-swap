@@ -114,8 +114,12 @@ class FakeWaveSpeed:
         return f"https://cdn.wavespeed.ai/uploads/{Path(path).name}"
 
     def run(self, *, body, record: Path, on_created=None):
-        if record.exists() and json.loads(record.read_text()).get("status") == "succeeded":
-            return self.output  # resumed from the record: no new prediction, no new cost
+        if record.exists():
+            status = json.loads(record.read_text()).get("status")
+            if status not in ("creating", "failed"):
+                # Like the real client: any live or finished saved prediction is re-checked
+                # (and here, finishes); never a new prediction, never a new cost.
+                return self.output
         self.bodies.append(body)
         prediction = {"id": f"pred-{len(self.bodies)}", "status": "succeeded"}
         record.write_text(json.dumps(prediction))
