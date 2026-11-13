@@ -29,7 +29,6 @@ from character_swap.jobs import WHISPER_LANGUAGES, Job, JobError
 from character_swap.modes import MODES
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
-    GENERATOR_CLASSES,
     Services,
     already_paid,
     archive_stale_draft,
@@ -42,6 +41,7 @@ from character_swap.pipeline import (
     generation_prompt,
     generator_for,
     generator_key,
+    generator_promotes,
     is_promote,
     needs_new_charge,
     next_step,
@@ -590,7 +590,7 @@ def _generate(args, settings, env) -> int:
             and job.generator == "seedance"
             and not is_promote(job, stage, resolution)
         ):
-            env.out(_fresh_final_note(key))
+            env.out(_fresh_final_note(job))
         if not args.yes and not env.proceed():
             return 1
         if remake:
@@ -618,9 +618,9 @@ def _has_final_files(job: Job) -> bool:
     )
 
 
-def _fresh_final_note(key: str) -> str:
+def _fresh_final_note(job: Job) -> str:
     """What a Seedance final that is a new run (not an upgrade of the draft) can look like."""
-    if GENERATOR_CLASSES[key].promotes:  # PiAPI: only its 720p final is a fresh run
+    if generator_promotes(job):  # PiAPI: only its 720p final is a fresh run
         return (
             "720p is a fresh run with the same prompt and inputs, so it can differ a little "
             "from the draft. 1080p (the default) upgrades the exact draft."
@@ -633,8 +633,7 @@ def _fresh_final_note(key: str) -> str:
 
 def _after_draft_hint(job: Job, services: Services) -> str:
     plain = f"Happy with it? Run `charswap generate {job.id} --final`."
-    key = generator_key(job)
-    finals = FINAL_RESOLUTIONS[key]
+    finals = FINAL_RESOLUTIONS[generator_key(job)]
     if len(finals) < 2:
         return plain  # Wan: one final, nothing to choose
     generator = generator_for(job, services)
@@ -652,7 +651,7 @@ def _after_draft_hint(job: Job, services: Services) -> str:
         return plain
     default, other = finals
     run_final = f"Happy with it? `charswap generate {job.id} --final`"
-    if GENERATOR_CLASSES[key].promotes:
+    if generator_promotes(job):
         return (
             f"{run_final} makes the {default} upgrade (~${price[default]:.2f}); add "
             f"`--resolution {other}` for a cheaper fresh {other} run (~${price[other]:.2f})."

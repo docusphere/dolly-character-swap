@@ -842,3 +842,9 @@ def test_only_piapis_default_final_upgrades_the_draft(seedance, wan_job):
     assert not pipeline.is_promote(job, "final", "720p")
     assert not pipeline.is_promote(job, "draft", "1080p")
     assert not pipeline.is_promote(wan_job, "final", "720p")
+
+
+def test_only_piapi_promotes(seedance, wavespeed, wan_job):
+    assert pipeline.generator_promotes(seedance[0]) is True
+    assert pipeline.generator_promotes(wavespeed[0]) is False
+    assert pipeline.generator_promotes(wan_job) is False

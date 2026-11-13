@@ -523,6 +523,11 @@ FINAL_RESOLUTIONS: dict[str, tuple[str, ...]] = {  # the first is the default
 }
 
 
+def generator_promotes(job: Job) -> bool:
+    """True when this job's generator can upgrade the draft's own task (PiAPI)."""
+    return GENERATOR_CLASSES[generator_key(job)].promotes
+
+
 def is_promote(job: Job, stage: str, resolution: str) -> bool:
     """True when this final upgrades the draft's own task (PiAPI's default 1080p final).
 
@@ -531,8 +536,7 @@ def is_promote(job: Job, stage: str, resolution: str) -> bool:
     """
     if stage != "final":
         return False
-    key = generator_key(job)
-    return GENERATOR_CLASSES[key].promotes and resolution == FINAL_RESOLUTIONS[key][0]
+    return generator_promotes(job) and resolution == FINAL_RESOLUTIONS[generator_key(job)][0]
 
 
 def final_resolution(job: Job, requested: str = "") -> str:

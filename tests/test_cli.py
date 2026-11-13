@@ -2139,3 +2139,43 @@ def test_a_piapi_1080p_final_never_says_new_take(piapi_settings, video, tmp_path
         services_factory=seedance_services,
     )
     assert code == 1 and "new take" not in out.text and "fresh run" not in out.text
+
+
+def test_a_plain_wavespeed_final_sends_a_720p_body(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    code, out = run(
+        ["generate", job.id, "--final", "--yes"], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 0 and job.stage_done("final"), out.err.text
+    (body,) = wavespeed_services.last.bodies
+    assert body["resolution"] == "720p" and "draft_task_id" not in body
+    assert body["prompt"] == job.state["stages"]["draft"]["prompt"]
+    assert job.state["stages"]["final"]["resolution"] == "720p"
+
+
+def test_a_started_wavespeed_1080p_final_keeps_its_resolution(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    run(["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services)
+    job.path("final-prediction.json").write_text(json.dumps({"id": "p", "status": "succeeded"}))
+    job.mark_stage("final", "failed", fingerprint=review_fingerprint(job), resolution="1080p")
+    draft_fake = wavespeed_services.last
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--final", "--resolution", "720p"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 2 and asked == [] and "--resolution 1080p" in out.err.text
+    assert wavespeed_services.last is draft_fake  # refused before any service was even built
+    assert [b["resolution"] for b in draft_fake.bodies] == ["480p"]
+    code, out = run(
+        ["generate", job.id, "--final"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
+    assert "1080p final" in out.text and wavespeed_services.last.bodies == []
+    assert job.stage_done("final") and job.state["stages"]["final"]["resolution"] == "1080p"
