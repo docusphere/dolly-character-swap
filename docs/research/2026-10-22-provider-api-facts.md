@@ -109,6 +109,11 @@ runs on 2026-11-12 (480p, 4 s clip, about 3 minutes and about $0.88 each).
 - Prices per second, billed on input seconds (clamped to 4–30) plus output seconds:
   480p $0.11, 720p $0.22, 1080p $0.55. A 4 s draft costs (4 + 4) × 0.11 = $0.88.
 - How long result links stay valid is not documented: download right away.
+- First run through `charswap generate --draft` (2026-11-13, job ea899aff…, 4 s, depth_mesh):
+  succeeded; WaveSpeed reported 227 s of inference. Output 854×480, 24 fps, 4.0 s, with an
+  audio track (the tool replaces it with the original soundtrack; sound lines up). Recorded
+  cost $0.88 (estimate); the real dashboard charge is still to be checked. No low-balance
+  answer seen yet.
 
 ## Replicate
 

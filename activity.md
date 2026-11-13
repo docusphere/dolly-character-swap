@@ -131,3 +131,15 @@
   - Check free things (missing photo, prompt names) before the first upload, and a missing key before anything else.
   - Money-path reviews on every task again caught real problems; keep them.
 - **Not done:** live WaveSpeed draft through charswap (Task 14, about $0.88, needs Frank's OK); merge or push of feat/wavespeed (needs Frank's OK). Leftovers are in docs/scratchpad.md "Deferred from the WaveSpeed plan".
+
+## 2026-11-13 — Session 7: Live WaveSpeed draft, merge to main
+- **Goal:** prove the WaveSpeed flow with one real paid draft, then ship the branches.
+- **Completed:**
+  - Live draft through `charswap generate --draft` on the Harry 4 s depth_mesh job (ea899aff…): 227 s on WaveSpeed, about $0.88, 854×480, 24 fps, 4.0 s, original sound back on. No depth colours or mesh lines left in the frames.
+  - The tool stopped first with "Review required" (the gate works) and renamed the old `prompt.txt` names to WaveSpeed's on its own.
+  - Added `tests/test_live_wavespeed.py` (marked live, not in the default run).
+  - Merged feat/plan-2b-seedance and feat/wavespeed into main and pushed.
+- **Decisions:**
+  - Frank: paid tests up to about $5 run without asking; ask above that or for runs at the same time. Why: small test charges are not worth an interruption.
+- **Lessons:**
+  - A job prepared before the review gate was used still needs `charswap review --approve` before any paid step.

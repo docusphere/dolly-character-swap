@@ -12,7 +12,8 @@
 - [x] S5 — Plan 2b — PiAPI Seedance 2.5 + face library, PiAPI upload (replaces R2/tmpfiles), two-person clips (`--subject`, @image1/@image2 slots), prompt review (751 tests, 96.5 % coverage; branch feat/plan-2b-seedance)
 - [ ] Live Seedance test (Task 14, needs Frank's OK + PiAPI Creator plan)
 - [x] WaveSpeed Seedance generator (default provider; 968 tests, 96.92 % coverage; branch feat/wavespeed)
-- [ ] Live WaveSpeed draft through charswap (Task 14 of the WaveSpeed plan, ~$0.88, needs Frank's OK)
+- [x] S7 — Live WaveSpeed draft through charswap (Task 14): job ea899aff…, 227 s, ~$0.88, clean 4 s result
+- [ ] Check the real WaveSpeed charge on the dashboard against the $0.88 estimate
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
