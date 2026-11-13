@@ -783,3 +783,22 @@ def test_a_wavespeed_prompt_with_piapi_names_is_refused(wavespeed):
     write_prompt_file(job).write_text("Swap @video1 for @image1.")
     with pytest.raises(PromptError, match="must mention @Video 1"):
         generation_prompt(job, "draft")
+
+
+def test_old_piapi_names_are_renamed_on_a_wavespeed_job(wavespeed):
+    job, _ = wavespeed
+    write_prompt_file(job).write_text("Put @image1 into @video1, then @image10 stays.\n")
+    assert pipeline.rename_old_prompt_names(job) is True
+    assert job.path("prompt.txt").read_text() == (
+        "Put @Image 1 into @Video 1, then @image10 stays.\n"
+    )
+    assert pipeline.rename_old_prompt_names(job) is False  # nothing left to rename
+
+
+def test_piapi_jobs_and_missing_files_are_left_alone(seedance, wavespeed):
+    piapi_job, _ = seedance
+    write_prompt_file(piapi_job).write_text("Put @image1 into @video1.")
+    assert pipeline.rename_old_prompt_names(piapi_job) is False
+    assert piapi_job.path("prompt.txt").read_text() == "Put @image1 into @video1."
+    wavespeed_job, _ = wavespeed
+    assert pipeline.rename_old_prompt_names(wavespeed_job) is False  # no prompt.txt

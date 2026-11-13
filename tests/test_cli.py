@@ -2013,3 +2013,46 @@ def test_an_interrupted_wavespeed_draft_resumes_on_wavespeed(
     )
     assert code == 0 and asked == [] and "no new charge" in out.text, out.err.text
     assert wavespeed_services.last.bodies == [] and job.stage_done("draft")
+
+
+RENAMED = "Updated prompt.txt to WaveSpeed's input names."
+
+
+def test_prompt_renames_old_piapi_names_for_wavespeed(settings, video, tmp_path):
+    job = _approved_wavespeed_job(settings, video, tmp_path, provider="")
+    job.path("prompt.txt").write_text("Put @image1 into @video1.")
+    code, out = run(["prompt", job.id], settings)
+    assert code == 0 and RENAMED in out.text and "Put @Image 1 into @Video 1." in out.text
+    assert job.path("prompt.txt").read_text() == "Put @Image 1 into @Video 1."
+
+
+def test_generate_renames_before_the_cost_question(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("Put @image1 into @video1.")
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=lambda _q: False,
+        services_factory=wavespeed_services,
+    )
+    assert code == 1 and out.text.index(RENAMED) < out.text.index("~$0.8800")
+    assert "Put @Image 1 into @Video 1." in out.text
+
+
+def test_a_rename_alone_never_makes_a_new_draft(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("FIRST @Image 1 into @Video 1.")
+    code, _ = run(
+        ["generate", job.id, "--draft", "--yes"], ws_settings, services_factory=wavespeed_services
+    )
+    assert code == 0 and job.stage_done("draft")
+    job.path("prompt.txt").write_text("FIRST @image1 into @video1.")  # same text, old names
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=asked.append,
+        services_factory=wavespeed_services,
+    )
+    assert code == 0 and asked == [] and RENAMED in out.text and "already done" in out.text
+    assert not list(job.root.glob("draft-old-*"))

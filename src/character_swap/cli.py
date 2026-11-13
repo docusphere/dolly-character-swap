@@ -44,6 +44,7 @@ from character_swap.pipeline import (
     next_step,
     pin_provider,
     remaining_paid_stages,
+    rename_old_prompt_names,
     repair_with_rgb,
     resumes_without_charge,
     saved_request_unconfirmed,
@@ -77,6 +78,7 @@ UNCONFIRMED = {
     "seedance:wavespeed": wavespeed_unconfirmed,
     "seedance:piapi": piapi_unconfirmed,
 }
+RENAMED = "Updated prompt.txt to WaveSpeed's input names."
 
 
 def build_services(settings: Settings) -> Services:
@@ -461,6 +463,8 @@ def _prompt(args, settings, env) -> int:
             f"charswap resume {job.id}"
         )
     pin_provider(job)  # before anything reads which provider's names to use
+    if rename_old_prompt_names(job):
+        env.out(RENAMED)
     path = write_prompt_file(job)
     # The next draft replaces the old one (inputs or prompt.txt changed): it sends prompt.txt.
     remake = stale_draft(job) or draft_prompt_changed(job)
@@ -505,6 +509,8 @@ def _generate(args, settings, env) -> int:
         raise JobError("--resolution is only for --final (drafts are always 480p).")
     job = Job.load(settings.runs_dir, args.job)
     key = pin_provider(job)  # before any paid create: see pipeline.pin_provider
+    if rename_old_prompt_names(job):  # free, before draft_prompt_changed and any question
+        env.out(RENAMED)
     inputs_changed = stage == "draft" and stale_draft(job)  # approved inputs changed
     # Seedance: a finished draft whose prompt.txt was edited since (the prompt is deliberately
     # not part of the review, so editing it never clears the approval).

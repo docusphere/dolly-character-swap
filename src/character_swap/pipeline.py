@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import warnings
 from collections.abc import Callable, Iterator
@@ -774,6 +775,34 @@ def write_prompt_file(job: Job) -> Path:
         text = sent or default_prompt(job)
         _write_atomically(path, lambda part: part.write_text(text, encoding="utf-8"))
     return path
+
+
+# PiAPI's input names that an old prompt.txt may still use on a WaveSpeed job.
+_OLD_NAMES = (
+    (re.compile(r"@video1(?!\d)"), "@Video 1"),
+    (re.compile(r"@image1(?!\d)"), "@Image 1"),
+)
+
+
+def rename_old_prompt_names(job: Job) -> bool:
+    """A WaveSpeed job whose prompt.txt still uses PiAPI's names: rewrite them. Free.
+
+    True when prompt.txt changed. Callers run this before reading draft_prompt_changed,
+    so a rename alone never counts as an edited prompt.
+    """
+    if job.generator != "seedance" or seedance_provider(job) != "wavespeed":
+        return False
+    path = job.path(PROMPT_FILE)
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    renamed = text
+    for pattern, name in _OLD_NAMES:
+        renamed = pattern.sub(name, renamed)
+    if renamed == text:
+        return False
+    _write_atomically(path, lambda part: part.write_text(renamed, encoding="utf-8"))
+    return True
 
 
 def generation_prompt(
