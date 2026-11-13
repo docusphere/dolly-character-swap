@@ -11,9 +11,8 @@ from character_swap.modes import GENERATOR_LIMITS
 from character_swap.prompts import check_placeholders
 from character_swap.providers.errors import OutputExpired, ProviderError
 from character_swap.providers.generators.base import GenerationRequest, OnCreated, Stage
-from character_swap.providers.wavespeed import MAX_UPLOAD_BYTES
+from character_swap.providers.wavespeed import MAX_UPLOAD_BYTES, MODEL
 
-MODEL = "bytedance/seedance-2.5/video-edit"
 DRAFT = "480p"
 # First = default. Every final is a fresh run: WaveSpeed has no draft upgrade and no seed.
 FINALS = ("720p", "1080p")

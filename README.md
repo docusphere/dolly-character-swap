@@ -69,7 +69,7 @@ You need a PiAPI account on the **Creator plan or higher** (saved faces and uplo
 
 ```bash
 uv run charswap face add me me.jpg                         # once, free: PiAPI checks the photo
-uv run charswap prepare clip.mp4 --provider piapi --mode depth --face me  # ~$0.06
+uv run charswap prepare clip.mp4 --provider piapi --face me # ~$0.06, default mode depth_mesh
 # watch it in `uv run charswap view`, then approve with the command shown there
 uv run charswap prompt <id>                                # optional: edit prompt.txt
 uv run charswap generate <id> --draft                      # 480p, shows the price, asks first

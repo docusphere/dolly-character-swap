@@ -12,9 +12,13 @@ from character_swap.errors import CharSwapError
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WHERE_TO_GET = {
     "REPLICATE_API_TOKEN": "https://replicate.com/account/api-tokens",
-    "WAVESPEED_API_KEY": "https://wavespeed.ai (Dashboard > API Keys)",
-    "PIAPI_API_KEY": "https://piapi.ai (Workspace > API Keys; saved faces need the Creator plan)",
+    "WAVESPEED_API_KEY": "https://wavespeed.ai → Dashboard → API Keys",
+    "PIAPI_API_KEY": "https://piapi.ai → Workspace → API Keys",
     "HF_TOKEN": "https://huggingface.co/settings/tokens",
+}
+KEY_NOTES = {  # one more sentence after where to get the key
+    "WAVESPEED_API_KEY": "Already use PiAPI? Prepare with --provider piapi instead.",
+    "PIAPI_API_KEY": "Saved faces need the Creator plan.",
 }
 
 
@@ -56,5 +60,8 @@ class Settings:
         value = self.get(name)
         if not value:
             where = WHERE_TO_GET.get(name, "your provider dashboard")
-            raise MissingSettingError(f"{name} is not set. Add it to .env (get it at {where}).")
+            note = f" {KEY_NOTES[name]}" if name in KEY_NOTES else ""
+            raise MissingSettingError(
+                f"{name} is not set. Add it to .env; get it at {where}.{note}"
+            )
         return value

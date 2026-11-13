@@ -34,6 +34,7 @@ from character_swap.modes import (
     MODES,
     PROVIDER_NAMES,
     WHOLE_SECONDS,
+    generator_name,
 )
 from character_swap.prompts import PromptError, build_prompt, check_placeholders, validate_prompt
 from character_swap.providers.generators.base import CharacterRef, GenerationRequest, Generator
@@ -556,7 +557,10 @@ def final_resolution(job: Job, requested: str = "") -> str:
     started = already_paid(job, "final")
     chosen = requested or (saved if started else "") or choices[0]
     if chosen not in choices:
-        raise StageError(f"{job.generator} finals can be {' or '.join(choices)}, not {chosen}.")
+        raise StageError(
+            f"{generator_name(generator_key(job))} finals can be {' or '.join(choices)}, "
+            f"not {chosen}."
+        )
     if saved and chosen != saved and started:
         record_path = job.path(generation_files("final")[0])
         if _record_status(job, "final") == "failed":

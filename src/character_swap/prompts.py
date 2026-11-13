@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from character_swap.errors import CharSwapError
+from character_swap.modes import PROVIDER_NAMES
 
 MAX_PROMPT = 4000
 MAX_SCENE = 300
@@ -36,6 +37,7 @@ MODE_NOTES = {
         "mesh line."
     ),
 }
+ROLES = {"video": "the clip", "image1": "your character", "image2": "the second character"}
 SECONDARY = "{image2} is a second character; use them for the second person in the scene."
 
 
@@ -80,6 +82,19 @@ def check_placeholders(text: str, *, provider: str, has_secondary: bool) -> None
     def mentions(name: str) -> bool:
         return re.search(re.escape(name) + r"(?!\d)", text) is not None
 
+    here = PROVIDER_NAMES[f"seedance:{provider}"]
+    for other, foreign_names in NAMES.items():
+        for role, foreign in foreign_names.items():
+            if other == provider or not mentions(foreign):
+                continue
+            if role == "image2" and not has_secondary:
+                fix = f"This job runs on {here} and has no second character: remove it."
+            else:
+                fix = f"This job runs on {here}: write {names[role]} instead."
+            raise PromptError(
+                f"The prompt uses {foreign}, {PROVIDER_NAMES[f'seedance:{other}']}'s name for "
+                f"{ROLES[role]}. {fix}"
+            )
     for needed in (names["video"], names["image1"]):
         if not mentions(needed):
             raise PromptError(f"The prompt must mention {needed} (the clip and your character).")

@@ -532,7 +532,7 @@ def test_a_started_final_keeps_its_resolution(seedance):
 
 def test_wan_finals_are_720p_only(wan_job):
     assert final_resolution(wan_job, "") == "720p"
-    with pytest.raises(StageError, match="720p"):
+    with pytest.raises(StageError, match="Wan on Replicate finals can be 720p, not 1080p"):
         final_resolution(wan_job, "1080p")
 
 
@@ -781,7 +781,7 @@ def test_a_wavespeed_job_prompt_uses_wavespeeds_names(wavespeed):
 def test_a_wavespeed_prompt_with_piapi_names_is_refused(wavespeed):
     job, _ = wavespeed
     write_prompt_file(job).write_text("Swap @video1 for @image1.")
-    with pytest.raises(PromptError, match="must mention @Video 1"):
+    with pytest.raises(PromptError, match="uses @video1, PiAPI's name for the clip"):
         generation_prompt(job, "draft")
 
 
@@ -808,7 +808,7 @@ def test_piapi_jobs_and_missing_files_are_left_alone(seedance, wavespeed):
 def test_wavespeed_finals_default_to_720p_and_refuse_480p(wavespeed):
     job, _ = wavespeed
     assert final_resolution(job, "") == "720p" and final_resolution(job, "1080p") == "1080p"
-    with pytest.raises(StageError, match="720p or 1080p, not 480p"):
+    with pytest.raises(StageError, match="Seedance on WaveSpeed finals can be 720p or 1080p, not"):
         final_resolution(job, "480p")
 
 

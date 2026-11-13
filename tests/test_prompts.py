@@ -112,7 +112,7 @@ def test_check_placeholders_accepts_the_providers_names(provider, text, secondar
 @pytest.mark.parametrize(
     ("provider", "text", "secondary", "words"),
     [
-        ("wavespeed", "Swap @video1 for @image1.", False, "must mention @Video 1"),
+        ("wavespeed", "Swap @video1 for @image1.", False, "uses @video1"),
         ("wavespeed", "Swap @Video 1, nothing else.", False, "must mention @Image 1"),
         ("wavespeed", "@Video 1 @Image 1 @Image 2", False, "mentions @Image 2"),
         ("piapi", "Swap @video1 please.", False, "must mention @image1"),
@@ -123,6 +123,55 @@ def test_check_placeholders_accepts_the_providers_names(provider, text, secondar
 def test_check_placeholders_refuses_names_that_do_not_match(provider, text, secondary, words):
     with pytest.raises(PromptError, match=words):
         check_placeholders(text, provider=provider, has_secondary=secondary)
+
+
+@pytest.mark.parametrize(
+    ("provider", "text", "secondary", "words"),
+    [
+        (
+            "wavespeed",
+            "Put @Image 1 into @Video 1 and @video1.",
+            False,
+            "The prompt uses @video1, PiAPI's name for the clip. This job runs on WaveSpeed: "
+            "write @Video 1 instead.",
+        ),
+        (
+            "wavespeed",
+            "Put @Image 1 and @image1 into @Video 1.",
+            False,
+            "uses @image1, PiAPI's name for your character. This job runs on WaveSpeed: "
+            "write @Image 1 instead.",
+        ),
+        (
+            "wavespeed",
+            "Put @Image 1 into @Video 1 with @image2.",
+            False,
+            "uses @image2, PiAPI's name for the second character. This job runs on WaveSpeed "
+            "and has no second character: remove it.",
+        ),
+        (
+            "piapi",
+            "Put @image1 into @video1 and @Video 1.",
+            False,
+            "uses @Video 1, WaveSpeed's name for the clip. This job runs on PiAPI: write "
+            "@video1 instead.",
+        ),
+        ("piapi", "Put @image1 and @Image 1 into @video1.", False, "write @image1 instead"),
+        ("piapi", "@video1 @image1 and @Image 2", True, "write @image2 instead"),
+        ("piapi", "@video1 @image1 and @Image 2", False, "has no second character: remove it"),
+    ],
+)
+def test_check_placeholders_refuses_the_other_providers_names(provider, text, secondary, words):
+    with pytest.raises(PromptError) as caught:
+        check_placeholders(text, provider=provider, has_secondary=secondary)
+    assert words in str(caught.value)
+
+
+def test_longer_numbers_are_not_the_other_providers_names():
+    check_placeholders(
+        "@Video 1 @Image 1 and @video10 @image12", provider="wavespeed", has_secondary=False
+    )
+    check_placeholders("@video1 @image1 and @Video 10", provider="piapi", has_secondary=False)
 
 
 @pytest.mark.parametrize(

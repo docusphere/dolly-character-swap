@@ -118,7 +118,7 @@ def test_a_final_is_a_fresh_run_never_an_upgrade(tmp_path, chosen, sent):
     ("prompt", "words"),
     [
         ("  ", "charswap prompt"),
-        ("Swap @video1 for @image1.", "must mention @Video 1"),
+        ("Swap @video1 for @image1.", "write @Video 1 instead"),
         ("Swap @Video 1, nothing else.", "must mention @Image 1"),
     ],
 )
@@ -213,3 +213,10 @@ def test_the_compressed_copy_is_removed_even_when_its_upload_fails(tmp_path, mon
         generate(SeedanceWaveSpeedGenerator(fake), request(tmp_path), "draft", tmp_path)
     assert [p.name for p in fake.uploads] == ["upload-copy.mp4"]
     assert not (tmp_path / "upload-copy.mp4").exists() and fake.bodies == []
+
+
+def test_the_model_is_defined_once_by_the_client():
+    from character_swap.providers import wavespeed
+
+    assert seedance_wavespeed.MODEL is wavespeed.MODEL
+    assert SeedanceWaveSpeedGenerator.model == wavespeed.MODEL

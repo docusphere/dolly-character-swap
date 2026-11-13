@@ -2491,3 +2491,38 @@ def test_status_shows_the_provider_without_writing(settings, video, tmp_path, ma
     code, out = run(["status", job.id], settings)
     assert code == 0 and json.loads(out.text)["provider"] == provider
     assert job.path("state.json").read_text() == before  # status never writes
+
+
+# ---- the other provider's input names are refused before any question --------------------
+def test_old_names_are_renamed_but_piapis_second_image_is_refused(ws_settings, video, tmp_path):
+    job = _approved_wavespeed_job(ws_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("Put @image1 into @video1 and @image2.")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        ws_settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=wavespeed_services,
+    )
+    assert code == 2 and asked == [] and RENAMED in out.text
+    assert "uses @image2, PiAPI's name for the second character" in out.err.text
+    assert wavespeed_services.last.uploads == [] and wavespeed_services.last.bodies == []
+    assert job.path("prompt.txt").read_text() == "Put @Image 1 into @Video 1 and @image2."
+
+
+def test_a_piapi_prompt_with_wavespeeds_names_is_refused_before_asking(
+    piapi_settings, video, tmp_path
+):
+    job = _approved_seedance_job(piapi_settings, video, tmp_path)
+    job.path("prompt.txt").write_text("Put @image1 into @video1, like @Image 1.")
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        piapi_settings,
+        confirm=lambda q: asked.append(q) or True,
+        services_factory=seedance_services,
+    )
+    assert code == 2 and asked == [] and RENAMED not in out.text
+    assert "uses @Image 1, WaveSpeed's name for your character" in out.err.text
+    assert "write @image1 instead" in out.err.text
+    assert seedance_services.last.uploads == [] and seedance_services.last.bodies == []

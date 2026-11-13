@@ -37,7 +37,27 @@ def test_repr_does_not_leak_secrets(tmp_path):
 
 def test_require_wavespeed_names_where_to_get_it(tmp_path):
     settings = Settings.load(root=tmp_path, environ={})
-    with pytest.raises(
-        MissingSettingError, match=r"WAVESPEED_API_KEY.*wavespeed\.ai \(Dashboard > API Keys\)"
-    ):
+    with pytest.raises(MissingSettingError) as caught:
         settings.require("WAVESPEED_API_KEY")
+    assert str(caught.value) == (
+        "WAVESPEED_API_KEY is not set. Add it to .env; get it at https://wavespeed.ai → "
+        "Dashboard → API Keys. Already use PiAPI? Prepare with --provider piapi instead."
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["REPLICATE_API_TOKEN", "WAVESPEED_API_KEY", "PIAPI_API_KEY", "HF_TOKEN", "OTHER"]
+)
+def test_missing_key_messages_have_no_parentheses(tmp_path, name):
+    with pytest.raises(MissingSettingError) as caught:
+        Settings.load(root=tmp_path, environ={}).require(name)
+    text = str(caught.value)
+    assert "(" not in text and text.startswith(f"{name} is not set. Add it to .env; get it at ")
+
+
+def test_require_piapi_mentions_the_creator_plan(tmp_path):
+    with pytest.raises(MissingSettingError) as caught:
+        Settings.load(root=tmp_path, environ={}).require("PIAPI_API_KEY")
+    assert "https://piapi.ai → Workspace → API Keys. Saved faces need the Creator plan." in str(
+        caught.value
+    )
