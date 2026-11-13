@@ -96,3 +96,38 @@
   - Resuming a paid generation must never depend on today's `prompt.txt` or face library; it uses what was saved at create time.
   - Estimates round seconds up so they only ever over-quote.
 - **Not done:** live Seedance test (Task 14, needs Frank's OK and a PiAPI Creator plan). Leftovers are in docs/scratchpad.md "Deferred from Plan 2b".
+
+## 2026-11-13 — Session 6: WaveSpeed Seedance generator (default provider)
+- **Goal:** Make a viewer-friendly path: sign up at WaveSpeed ($1 free credit, pay per use), `prepare --character me.jpg`, a 480p draft, then a new 720p or 1080p take. PiAPI stays as an option.
+- **Completed:** On branch feat/wavespeed (not merged yet).
+  - WaveSpeed client (`providers/wavespeed.py`): free upload (ticket, then PUT), one paid create that is never retried and is guarded by the exclusive "creating" marker, prediction id saved before waiting, polling that backs off from 5 s to 15 s, WaveSpeed errors turned into plain messages ("WaveSpeed answered <code>: <excerpt>"). Shared `download_now` for both providers.
+  - `SeedanceWaveSpeedGenerator`: free checks first (prompt names, missing photo) before any upload, 480p draft, 720p or 1080p final as a new take.
+  - Provider per job: `provider` in `state.json` is set at prepare and pinned before any paid create; old jobs are resolved by `pipeline.generator_key`. Finals and "upgrade the draft" come from generator attributes (`finals`, `promotes`), not from `generator == "seedance"`.
+  - Prompts use the provider's input names (`@Video 1` / `@Image 1` for WaveSpeed, `@video1` / `@image1` / `@image2` for PiAPI), with a digit-boundary check; an old PiAPI-style `prompt.txt` is renamed for WaveSpeed jobs.
+  - `prepare --provider wavespeed|piapi` (default WaveSpeed), default mode `depth_mesh`, rights question for real faces (`--yes` answers it and the cost question), and prepare asks for the chosen provider's key first. WaveSpeed refuses `--face` and two people.
+  - `doctor` reports all three keys and both uploads; `.env.example` has `WAVESPEED_API_KEY`; the viewer names the provider on each job and still never writes.
+  - 968 tests, 96.92 % coverage, ruff clean (the branch started at 780 tests).
+- **Decisions:**
+  - W1 WaveSpeed is the default Seedance provider. Why: easiest sign-up for viewers, and no finished PiAPI work is thrown away.
+  - W2 The provider is chosen at `prepare` and saved on the job. Why: a PiAPI draft upgrade needs a PiAPI draft, and faces differ at prepare time.
+  - W3 The generator stays `seedance`; `provider` is a separate field. Why: prep, prompts and whole-second rules stay shared; only PiAPI behaviour sits behind a flag.
+  - W4 Default mode is `depth_mesh`. Why: much better lip sync than `depth` in the live test.
+  - W5 WaveSpeed finals are fresh runs (720p, or 1080p on request). Why: WaveSpeed has no draft upgrade and no seed.
+  - W6 Two-person clips stay PiAPI-only. Why: the PiAPI two-person path is still untested live.
+  - P1 `generator_key`, `pin_provider` and `seedance_provider` live in `pipeline.py`. Why: the old-job rule reads the job's record files.
+  - P2 `GENERATOR_CLASSES` maps each key to its class. Why: prices, finals and the viewer work without API keys.
+  - P3 "Promote" means a generator with `promotes = True` making its default final. Why: that is exactly PiAPI's 1080p upgrade; WaveSpeed never promotes.
+  - P4 The placeholder check moved to `prompts.check_placeholders`. Why: the generator runs the same free check before uploading.
+  - P5 Only 400/401/403/404/422 and 429 release the paid-create marker; any other answer keeps it. Why: an unclear result must never allow a second paid create. A refusal that names a prediction id saves it.
+  - P6 Polling backs off 5 s to 15 s, at most 720 polls (about 3 hours). Why: a draft takes about 3 minutes; then "still running, no new charge".
+  - P7 The rights question is provider-neutral and runs before the cost question. Why: `--yes` answers both, and PiAPI keeps its own wording.
+  - P8 An unknown `provider` value is an error, never guessed. Why: fail fast on damaged state.
+  - P9 The viewer labels the prompt line and cost rows with the provider's name. Why: no PiAPI or "upgrades the exact draft" wording on a WaveSpeed job.
+  - P10 `--character` photos still go through the free `faces.check_photo`, with provider-neutral wording. Why: refuse a bad photo before any question.
+- **Lessons:**
+  - Gate PiAPI-only behaviour on generator attributes, not on `generator == "seedance"`; the plan's grep found only generator-level checks left.
+  - An unclear answer to a paid create keeps the marker; only clear refusals release it.
+  - A placeholder check by substring needs a digit boundary (`@image1` inside `@image12`).
+  - Check free things (missing photo, prompt names) before the first upload, and a missing key before anything else.
+  - Money-path reviews on every task again caught real problems; keep them.
+- **Not done:** live WaveSpeed draft through charswap (Task 14, about $0.88, needs Frank's OK); merge or push of feat/wavespeed (needs Frank's OK). Leftovers are in docs/scratchpad.md "Deferred from the WaveSpeed plan".

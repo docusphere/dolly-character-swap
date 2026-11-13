@@ -1,10 +1,36 @@
 # Character Swap
 
-Swap a person in a short video for your own character while keeping the original motion, timing and soundtrack. Runs locally; uses Seedance 2.5 (via PiAPI) or the open-source Wan 2.2 Animate (via Replicate).
+Swap a person in a short video for your own character while keeping the original motion, timing and soundtrack. Runs locally; uses Seedance 2.5 (via WaveSpeed, or PiAPI) or the open-source Wan 2.2 Animate (via Replicate).
 
-**Status:** work in progress. Both paths are built: Wan (one live draft so far) and Seedance on PiAPI (not yet tested live). The design is in [docs/superpowers/specs/](docs/superpowers/specs/2026-10-22-character-swap-v1-design.md).
+**Status:** work in progress. Seedance on WaveSpeed is the default (three live drafts so far); Wan (one live draft) and Seedance on PiAPI (not yet tested live) also work. The design is in [docs/superpowers/specs/](docs/superpowers/specs/2026-11-12-wavespeed-seedance-design.md).
 
 Only use faces and footage you have the rights to use.
+
+## Try it with Seedance on WaveSpeed (best quality, real faces)
+
+Sign up at [WaveSpeed](https://wavespeed.ai): pay per use, $1 of free credit, no
+subscription. Put your key in `.env` as `WAVESPEED_API_KEY=...` (Dashboard > API Keys), plus
+`REPLICATE_API_TOKEN` for preparation and Rubber Band (`brew install rubberband`).
+
+```bash
+uv run charswap prepare inputs/clip.mp4 --character inputs/me.jpg  # asks about rights, then ~$0.06
+# watch it in `uv run charswap view`, then approve with the command shown there
+uv run charswap prompt <id>                                  # optional: edit prompt.txt
+uv run charswap generate <id> --draft                        # 480p, shows the price, asks first
+uv run charswap generate <id> --final                        # a new 720p take
+uv run charswap generate <id> --final --resolution 1080p     # or a new 1080p take
+```
+
+The default mode is `depth_mesh`: a depth disguise with a face mesh on top, which gave the
+best lip sync in tests. Prices for a 4 s clip, estimated: draft about $0.88, 720p final about
+$1.76, 1080p final about $4.40 (WaveSpeed bills the input video as well as the result, and at
+least 4 s). A 4 s draft takes about 3 minutes. Test with 4–5 s clips first.
+
+WaveSpeed cannot upgrade the draft itself, so the final is a new take: it will look a little
+different from the draft. A real person's face works as a plain photo; only use faces you
+have the right to use (prepare asks). One person per clip for now; two people need
+`--provider piapi`. Clips are trimmed to whole seconds; the original sound is cut to match
+and put back unchanged.
 
 ## Try it with Wan (open source, on Replicate)
 
@@ -25,14 +51,16 @@ The result is `runs/<id>/final.mp4`, with your clip's original soundtrack put ba
 
 Prices are estimates (Wan's price is not confirmed yet); check replicate.com billing for exact charges.
 
-## Try it with Seedance (best quality, real faces, on PiAPI)
+## Other providers
+
+### Seedance on PiAPI (saved faces, two people, the 1080p draft upgrade)
 
 You need a PiAPI account on the **Creator plan or higher** (saved faces and uploads), with
 `PIAPI_API_KEY` in `.env`, plus `REPLICATE_API_TOKEN` for preparation.
 
 ```bash
 uv run charswap face add me me.jpg                         # once, free: PiAPI checks the photo
-uv run charswap prepare clip.mp4 --mode depth --face me    # ~$0.06: the depth disguise
+uv run charswap prepare clip.mp4 --provider piapi --mode depth --face me  # ~$0.06
 # watch it in `uv run charswap view`, then approve with the command shown there
 uv run charswap prompt <id>                                # optional: edit prompt.txt
 uv run charswap generate <id> --draft                      # 480p, shows the price, asks first
@@ -48,9 +76,9 @@ and `--face2` / `--character2` gives the second person their own character. Say 
 prompt who becomes @image1 and who becomes @image2.
 
 Clips are trimmed to whole seconds (PiAPI works in whole seconds); the original sound is
-cut to match. `--character IMAGE` is only for characters that are not real people (PiAPI
-rejects real faces sent that way); use a saved face for a real person. Only add faces you
-have the right to use.
+cut to match. With `--provider piapi`, `--character IMAGE` is only for characters that are
+not real people (PiAPI rejects real faces sent that way); use a saved face for a real
+person. Only add faces you have the right to use.
 
 ## License
 

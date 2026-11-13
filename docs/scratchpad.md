@@ -11,6 +11,8 @@
 - [ ] Optional: retake character photo (head and shoulders, clothed, plain wall) → new draft, then `--final` 720p (~$0.60)
 - [x] S5 — Plan 2b — PiAPI Seedance 2.5 + face library, PiAPI upload (replaces R2/tmpfiles), two-person clips (`--subject`, @image1/@image2 slots), prompt review (751 tests, 96.5 % coverage; branch feat/plan-2b-seedance)
 - [ ] Live Seedance test (Task 14, needs Frank's OK + PiAPI Creator plan)
+- [x] WaveSpeed Seedance generator (default provider; 968 tests, 96.92 % coverage; branch feat/wavespeed)
+- [ ] Live WaveSpeed draft through charswap (Task 14 of the WaveSpeed plan, ~$0.88, needs Frank's OK)
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
@@ -72,6 +74,15 @@ From the plan's Deferred table:
 - [ ] (Plan 3) Delete PiAPI temporary uploads / assets from the CLI (`charswap face remove`)
 - [ ] (Plan 3 UI) Viewer: face library panel, prompt editing in the browser
 - [ ] (Backlog, with `charswap cancel`) PiAPI task cancel
+
+## Deferred from the WaveSpeed plan
+- [ ] Two-person clips on WaveSpeed (W6): after a live PiAPI two-person test
+- [ ] WaveSpeed webhooks or sync mode (backlog)
+- [ ] Refuse a too-large upload before the cost question (today it happens inside `generate`, after the yes, before any upload or POST): Plan 3 (`services.py` pre-flight)
+- [ ] Viewer: show the provider in the job header (Plan 3 UI)
+- [ ] Project SKILL file (Plan 3)
+- [ ] BytePlus generator: own plan, if ever
+- [ ] Record WaveSpeed's real low-balance answer code at the first live run, so it can move to the clean-refusal list (P5)
 
 ## Backlog (decided S2)
 - Grey depth option (`--depth-color grey`): clearer on orange/warm backgrounds; colour kept as default because it is the proven input. Try only if results look wrong. A/B by eye in the viewer; pose-match score later.
