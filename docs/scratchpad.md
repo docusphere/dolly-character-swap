@@ -83,6 +83,8 @@ From the plan's Deferred table:
 - [ ] Project SKILL file (Plan 3)
 - [ ] BytePlus generator: own plan, if ever
 - [ ] Record WaveSpeed's real low-balance answer code at the first live run, so it can move to the clean-refusal list (P5)
+- [ ] Some free refusals inside the generator (upload too large, missing photo, refused upload ticket) happen after a remake has already moved the old draft/final to *-old-*; nothing is charged, but the job shows no draft until the next run.
+- [ ] Second final take at another resolution (offer to move the current final to final-old-* and make a new one). Today `--final --resolution X` after a done final at another resolution is refused (final review).
 
 ## Backlog (decided S2)
 - Grey depth option (`--depth-color grey`): clearer on orange/warm backgrounds; colour kept as default because it is the proven input. Try only if results look wrong. A/B by eye in the viewer; pose-match score later.
