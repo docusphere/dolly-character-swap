@@ -4,7 +4,7 @@
     <figcaption>Your clip</figcaption>
   </figure>
   <figure class="media">
-    {% if page.photo %}<img src="{{ page.photo }}" alt="Your photo">{% else %}<div class="placeholder">No photo.</div>{% endif %}
+    {% if page.photo %}<img src="{{ page.photo }}" alt="Your photo">{% else %}<div class="placeholder">{{ steps.NO_PHOTO }}</div>{% endif %}
     <figcaption>Your photo</figcaption>
   </figure>
 </div>

@@ -161,6 +161,8 @@ def test_check_step_compares_with_what_the_ai_gets(client, runs_dir, media):
     job = _app_job(runs_dir, media)
     text = client.get(f"/jobs/{job.id}/step/3").text
     assert f'src="/jobs/{job.id}/files/prepared.mp4"' in text and "What the AI gets" in text
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    assert '<p class="ok">Approved.</p>' in client.get(f"/jobs/{job.id}/step/3").text
 
 
 def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
@@ -175,9 +177,10 @@ def test_the_elapsed_timer_is_not_read_out_every_second(client, runs_dir, media,
     job = _approved(runs_dir, media)
     if stage == "final":
         finish_stage(job, media, "draft")
-    job.mark_stage(stage, "running", started_at="2026-11-13T10:00:00+00:00")
+    job.mark_stage(stage, "running", started_at="2026-11-13T10:00:00+00:00", resolution="720p")
     text = client.get(f"/jobs/{job.id}/step/{4 if stage == 'draft' else 5}").text
     assert 'role="status"' in text
+    assert ("Making the draft" if stage == "draft" else "Making the 720p final") in text
     assert '<span class="elapsed" aria-hidden="true" data-started="2026-11-13T10:00:00' in text
 
 
@@ -201,6 +204,12 @@ def test_a_read_only_job_says_where_to_continue(client, runs_dir, media):
     job = make_job(runs_dir, media, "face_mesh")
     text = client.get(f"/jobs/{job.id}/step/2").text
     assert f"Continue there: charswap status {job.id}" in text
+
+
+def test_a_job_without_a_photo_or_an_error_message_says_so(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=5, failed="")  # no photo, no message saved
+    assert steps.NO_PHOTO in client.get(f"/jobs/{job.id}/step/1").text
+    assert steps.STEP_FAILED in client.get(f"/jobs/{job.id}/step/2").text
 
 
 def test_failed_step_shows_the_error_escaped(client, runs_dir, media):

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from character_swap.modes import MODES
@@ -92,3 +94,13 @@ def test_the_price_question_names_the_amount_and_who_charges_it():
     assert steps.CHARGE.format(usd="$0.88", provider="WaveSpeed") == (
         "Charge about $0.88 on WaveSpeed?"
     )
+
+
+def test_the_templates_read_their_messages_from_here():
+    folder = Path(steps.__file__).parent / "templates"
+    text = "".join(path.read_text(encoding="utf-8") for path in folder.glob("*.html"))
+    moved = (steps.STEP_FAILED, steps.APPROVED, steps.NO_PHOTO, steps.MADE_WITH_CLI)
+    for value in (*moved, steps.UNREADABLE, steps.SPENT_SWAP, steps.SPENT_ALL, "Making the"):
+        assert value not in text, value
+    assert steps.READ_ONLY.startswith(steps.MADE_WITH_CLI + ". ")
+    assert steps.MAKING_FINAL.format(resolution="720p") == "Making the 720p final"

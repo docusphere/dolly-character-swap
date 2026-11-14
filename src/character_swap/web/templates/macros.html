@@ -30,7 +30,7 @@
 <div class="placeholder placeholder-{{ state }}">
   {% if state == "running" %}<span class="spinner" aria-hidden="true"></span> {{ steps.RUNNING }}
   {% elif state == "missing" %}{{ steps.FILE_MISSING }}
-  {% elif state == "failed" %}This step failed.
+  {% elif state == "failed" %}{{ steps.STEP_FAILED }}
   {% else %}{{ steps.WAITING }}{% endif %}
 </div>
 {% endmacro %}

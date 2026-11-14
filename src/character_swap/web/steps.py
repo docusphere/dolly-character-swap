@@ -165,7 +165,8 @@ RESET = "Reset"
 DRAFT_TIME = "Usually about 4 minutes. You can leave this page; it keeps going."
 PREPARE_TIME = "About 2 minutes. You can leave this page; it keeps going."
 KEPT_AS_OLD = "The current draft (and final, if any) are kept as draft-old-* / final-old-*."
-READ_ONLY = "Made with the command line. Continue there: charswap status {id}"
+MADE_WITH_CLI = "Made with the command line"
+READ_ONLY = MADE_WITH_CLI + ". Continue there: charswap status {id}"
 DIRECT_PREPARE = "Wan copies the motion straight from your clip, so nothing is hidden."
 WAITING = "Not made yet."
 RUNNING = "Working on it…"
@@ -183,6 +184,16 @@ CHARGE_NO = "Cancel"
 # The before/after player's controls (the divider is labelled so it never looks like the seek bar).
 COMPARE = "Compare"
 SOUND = "Sound"  # a toggle: aria-pressed and its pressed style say whether it is on
+
+# Short messages on the step screens and the home page.
+STEP_FAILED = "This step failed."
+APPROVED = "Approved."
+MAKING_DRAFT = "Making the draft"
+MAKING_FINAL = "Making the {resolution} final"
+NO_PHOTO = "No photo."
+UNREADABLE = "Unreadable:"
+SPENT_SWAP = "Spent on this swap"
+SPENT_ALL = "Spent on all swaps"
 
 
 def step(number: int) -> Step:

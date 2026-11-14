@@ -6,7 +6,7 @@
 {% endif %}
 <div class="actions">
   {% if page.approved %}
-  <p class="ok">Approved.</p>
+  <p class="ok">{{ steps.APPROVED }}</p>
   <a class="button primary" href="/jobs/{{ page.id }}/step/4">{{ steps.NEXT_DRAFT }}</a>
   {% elif not page.prep_done %}
   <a class="button" href="/jobs/{{ page.id }}/step/2">{{ steps.NEXT_PREPARE }}</a>

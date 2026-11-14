@@ -29,10 +29,10 @@
         <span class="swap-name">Swap <code>{{ job.short_id }}</code></span>
       </a>
       {% if job.error %}
-      <p class="bad">Unreadable: {{ job.error }}</p>
+      <p class="bad">{{ steps.UNREADABLE }} {{ job.error }}</p>
       {% else %}
       <p class="meta">Step {{ job.step }} · {{ steps.step(job.step).title }} · {{ money(job.cost_usd) }}</p>
-      {% if job.read_only %}<p class="meta label-cli">Made with the command line</p>{% endif %}
+      {% if job.read_only %}<p class="meta label-cli">{{ steps.MADE_WITH_CLI }}</p>{% endif %}
       {% endif %}
       <p class="meta"><time datetime="{{ job.created_at }}">{{ job.created_at[:16]|replace("T", " ") }}</time></p>
     </li>
@@ -44,6 +44,6 @@
     <p>Press {{ steps.NEW_SWAP }} to start with a short clip and a photo.</p>
   </div>
   {% endif %}
-  <p class="meta total">Spent on all swaps: <strong>{{ money(page.all_jobs_usd) }}</strong> · estimates</p>
+  <p class="meta total">{{ steps.SPENT_ALL }}: <strong>{{ money(page.all_jobs_usd) }}</strong> · estimates</p>
 </main>
 {% endblock %}

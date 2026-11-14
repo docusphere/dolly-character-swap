@@ -157,7 +157,7 @@ def _error(state: dict[str, Any], names: tuple[str, ...]) -> str | None:
     for name in names:
         entry = state["stages"].get(name)
         if isinstance(entry, dict) and entry.get("status") == "failed":
-            error = str(entry.get("error") or "This step failed.")
+            error = str(entry.get("error") or steps.STEP_FAILED)
             return STOPPED if error == INTERRUPTED else tilde(error)
     return None
 
