@@ -105,7 +105,7 @@ h2 { font-size: var(--text-xl); line-height: 1.25; margin: 0 0 var(--space-2); }
 .total { margin-top: var(--space-6); }
 .card {
   background: var(--surface); border-radius: var(--radius);
-  box-shadow: var(--shadow); padding: var(--space-8);
+  box-shadow: var(--shadow); padding: var(--space-8); overflow-wrap: anywhere;
 }
 .bad { color: var(--bad); }
 .ok { color: var(--ok); font-weight: 600; margin: 0; }
@@ -243,7 +243,7 @@ textarea:focus { border-bottom-color: var(--accent); outline: none; }
 .error, .notice {
   background: var(--bad-bg); color: var(--text);
   border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4);
-  margin: 0 0 var(--space-6);
+  margin: 0 0 var(--space-6); overflow-wrap: anywhere;
 }
 .error p, .notice p { margin: 0 0 var(--space-2); }
 .error p:last-child, .notice p:last-child { margin: 0; }
@@ -258,7 +258,7 @@ textarea:focus { border-bottom-color: var(--accent); outline: none; }
 .wipe-stage {
   --split: 50%;
   position: relative; overflow: hidden; aspect-ratio: 16 / 9;
-  background: var(--video-bg); border-radius: var(--radius-sm); touch-action: none; cursor: ew-resize;
+  background: var(--video-bg); border-radius: var(--radius-sm); touch-action: pan-y; cursor: ew-resize;
 }
 .wipe-stage video {
   position: absolute; inset: 0; width: 100%; height: 100%; max-height: none;

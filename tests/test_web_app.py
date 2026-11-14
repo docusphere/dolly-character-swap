@@ -437,6 +437,12 @@ def test_the_divider_looks_and_reads_unlike_the_seek_bar(client, runs_dir, media
     assert ".wipe-line, .wipe-divider, .wipe-compare { display: none; }" in css  # reduced motion
 
 
+def test_long_words_wrap_and_phones_can_scroll_past_the_player(client):
+    css = client.get("/static/viewer.css").text
+    assert css.count("overflow-wrap: anywhere") >= 3  # .card, .error/.notice, .facts dd
+    assert "touch-action: pan-y" in css and "touch-action: none" not in css
+
+
 def test_upload_step_shows_the_clip_and_the_photo_at_one_size(client):
     css = client.get("/static/viewer.css").text
     assert ".pair video, .pair img { height: var(--pair-height); max-height: none; }" in css
