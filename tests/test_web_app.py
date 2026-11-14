@@ -39,7 +39,8 @@ def _approved(runs_dir, media):
 def test_home_empty_state_explains_new_swap(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "No swaps yet" in response.text and 'href="/new"' in response.text
+    assert "No swaps yet" in response.text and "charswap prepare" in response.text
+    assert 'href="/new"' not in response.text  # the walkthrough has no new-swap button
     assert "Spent on all swaps: <strong>$0.00</strong>" in response.text
     assert "Hide the person" in response.text and "Original sound back" in response.text
 
@@ -74,7 +75,6 @@ def test_a_missing_key_is_named_and_new_swap_is_disabled(tmp_path, runs_dir):
     text = client.get("/").text
     assert "<code>WAVESPEED_API_KEY</code> is missing" in text and "<code>.env</code>" in text
     assert "wavespeed.ai" in text and 'href="/new"' not in text
-    assert 'aria-disabled="true">New swap' in text
     assert "REPLICATE_API_TOKEN</code> is missing" not in text
     new = client.get("/new").text
     assert "WAVESPEED_API_KEY</code> is missing" in new and " disabled>Prepare" in new

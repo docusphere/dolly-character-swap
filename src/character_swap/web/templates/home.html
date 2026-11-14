@@ -14,11 +14,6 @@
   {% endif %}
   <div class="page-head">
     <h1>Your swaps</h1>
-    {% if page.missing %}
-    <span class="button primary" aria-disabled="true">{{ steps.NEW_SWAP }}</span>
-    {% else %}
-    <a class="button primary" href="/new">{{ steps.NEW_SWAP }}</a>
-    {% endif %}
   </div>
   {% if page.jobs %}
   <ul class="swaps">
@@ -41,7 +36,7 @@
   {% else %}
   <div class="card empty">
     <h2>No swaps yet</h2>
-    <p>Press {{ steps.NEW_SWAP }} to start with a short clip and a photo.</p>
+    <p>{{ steps.NO_SWAPS_HOW }}</p>
   </div>
   {% endif %}
   <p class="meta total">{{ steps.SPENT_ALL }}: <strong>{{ money(page.all_jobs_usd) }}</strong> · estimates</p>

@@ -146,6 +146,7 @@ DESCRIBE_HINT = "Face shape, hair, age. It is added to the prompt."
 
 # Buttons and short messages.
 NEW_SWAP = "New swap"
+NO_SWAPS_HOW = "Make one with charswap prepare (see the README), then reload this page."
 PREPARE = "Prepare"
 NEXT_PREPARE = "Next: prepare"
 NEXT_CHECK = "Next: check it"
