@@ -18,6 +18,7 @@ from character_swap.web import steps
 from character_swap.web.view_model import (
     STAGES_BY_MODE,
     JobSummary,
+    ViewError,
     combine,
     completed_cost,
     composite_name,
@@ -214,7 +215,10 @@ def _prompt(job: Job, state: dict[str, Any]) -> str:
         return ""
     path = job.path(PROMPT_FILE)
     if path.is_file():
-        return path.read_text(encoding="utf-8")
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ViewError(f"{PROMPT_FILE} could not be read: {exc}") from exc
     return default_prompt(job)
 
 
@@ -283,6 +287,8 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
             current = fingerprint(job)  # hashed on this page only (never by /api)
         except ReviewError:
             current = ""
+        except OSError as exc:
+            raise ViewError(f"The files to check could not be read: {exc}") from exc
         approved = bool(decision.get("approved")) and decision.get("fingerprint") == current
         prepared = file_if_present(job, "prepared.mp4") if common["prep_done"] else None
         wipe = Wipe(original, prepared, "What the AI gets") if original and prepared else None

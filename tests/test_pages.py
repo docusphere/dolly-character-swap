@@ -193,6 +193,20 @@ def test_a_final_file_that_is_gone_says_missing(runs_dir, media):
     assert page.state == "missing" and page.download is None
 
 
+def test_unreadable_check_files_or_prompt_are_a_damaged_job(runs_dir, media, monkeypatch):
+    job = _approved(runs_dir, media)
+    job.path("prompt.txt").write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(pages.ViewError, match="prompt.txt could not be read"):
+        pages.job_page(job, runs_dir, 4)
+
+    def unreadable(_job):
+        raise PermissionError("Permission denied: prepared.mp4")
+
+    monkeypatch.setattr(pages, "fingerprint", unreadable)
+    with pytest.raises(pages.ViewError, match="could not be read: Permission denied"):
+        pages.job_page(job, runs_dir, 3)
+
+
 def test_pages_never_write(runs_dir, media):
     job = make_job(runs_dir, media, "depth_mesh")  # no provider saved: read as WaveSpeed's
     before = sorted((p.name, p.stat().st_mtime_ns) for p in job.root.rglob("*"))

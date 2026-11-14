@@ -219,6 +219,14 @@ def test_job_page_with_damaged_state_shows_the_error(client, runs_dir, media):
         assert "state.json is not a JSON object." in response.text and 'href="/"' in response.text
 
 
+def test_an_unreadable_prompt_shows_the_damaged_job_page(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    job.path("prompt.txt").write_bytes(b"\xff not utf-8")
+    response = client.get(f"/jobs/{job.id}/step/4")
+    assert response.status_code == 500 and f"Swap {job.id[:8]} cannot be shown" in response.text
+    assert "prompt.txt could not be read" in response.text and 'href="/"' in response.text
+
+
 @pytest.mark.parametrize("job_id", ["0" * 32, "not-a-job", "A" * 32])
 def test_unknown_job_is_a_404_page(client, job_id):
     response = client.get(f"/jobs/{job_id}")
