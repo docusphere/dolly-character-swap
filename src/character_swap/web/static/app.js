@@ -114,7 +114,10 @@
   if (refresh) refresh.addEventListener("click", () => location.reload());
 
   function playing() {
-    return [...document.querySelectorAll("video, audio")].some((m) => !m.paused && !m.ended);
+    // Paused part-way counts too: a reload would lose the viewer's place.
+    return [...document.querySelectorAll("video, audio")].some(
+      (m) => !m.ended && (!m.paused || m.currentTime > 0)
+    );
   }
   function changed(data) {
     // Only the keys the page was rendered with are compared (the server picks them).

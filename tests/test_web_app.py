@@ -404,3 +404,4 @@ def test_app_script_polls_and_never_interrupts_playback(client):
     assert "fast: 2000" in script and "slow: 10000" in script
     assert "Object.keys(shown)" in script  # compares only what the page was rendered with
     assert "if (!playing())" in script and 'getElementById("new-results").hidden = false' in script
+    assert "m.currentTime > 0" in script  # a clip paused part-way still counts as in use
