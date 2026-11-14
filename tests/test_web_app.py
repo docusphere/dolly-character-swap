@@ -399,6 +399,18 @@ def test_app_script_drives_the_wipe_player(client):
     assert '"wipe:ended"' in script  # step 3's approve gate listens for it
 
 
+def test_the_divider_looks_and_reads_unlike_the_seek_bar(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    text = client.get(f"/jobs/{job.id}/step/3").text
+    assert (
+        f'<label class="wipe-compare">{steps.COMPARE} <input type="range" class="wipe-divider"'
+        in text
+    )
+    css = client.get("/static/viewer.css").text
+    assert ".wipe-divider::-webkit-slider-thumb" in css and ".wipe-divider::-moz-range-thumb" in css
+    assert ".wipe-line, .wipe-divider, .wipe-compare { display: none; }" in css  # reduced motion
+
+
 def test_app_script_polls_and_never_interrupts_playback(client):
     script = client.get("/static/app.js").text
     assert "fast: 2000" in script and "slow: 10000" in script

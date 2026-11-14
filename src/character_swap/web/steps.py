@@ -180,6 +180,9 @@ CHARGE = "Charge about {usd} on {provider}?"  # the price dialog's question
 CHARGE_YES = "Yes, charge it"
 CHARGE_NO = "Cancel"
 
+# The before/after player's controls (the divider is labelled so it never looks like the seek bar).
+COMPARE = "Compare"
+
 
 def step(number: int) -> Step:
     """The step with this number (1 to 5)."""

@@ -274,8 +274,27 @@ textarea:focus { border-bottom-color: var(--accent); outline: none; }
 .wipe-label-before { left: var(--space-2); }
 .wipe-label-after { right: var(--space-2); }
 .wipe-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
-.wipe-seek { flex: 1 1 12rem; min-height: var(--target); }
-.wipe-divider { flex: 0 1 8rem; min-height: var(--target); }
+.wipe-seek { flex: 1 1 12rem; min-height: var(--target); accent-color: var(--accent); }
+/* the divider: a labelled, square-handled slider, so on camera it never looks like the seek bar */
+.wipe-compare {
+  flex: 0 1 12rem; display: inline-flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-sm); font-weight: 600; color: var(--text-muted);
+}
+.wipe-divider {
+  flex: 1 1 6rem; min-width: 0; min-height: var(--target); margin: 0;
+  appearance: none; -webkit-appearance: none; background: transparent; cursor: ew-resize;
+}
+.wipe-divider::-webkit-slider-runnable-track { height: 0.375rem; border-radius: var(--radius-pill); background: var(--surface-2); }
+.wipe-divider::-moz-range-track { height: 0.375rem; border-radius: var(--radius-pill); background: var(--surface-2); }
+.wipe-divider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -0.6875rem;
+  width: 0.875rem; height: 1.75rem; border-radius: 4px;
+  background: var(--text); border: 2px solid var(--surface);
+}
+.wipe-divider::-moz-range-thumb {
+  width: 0.875rem; height: 1.75rem; border-radius: 4px;
+  background: var(--text); border: 2px solid var(--surface);
+}
 
 @media (max-width: 768px) {
   .page { padding: var(--space-4) var(--space-4) var(--space-8); }
@@ -289,5 +308,5 @@ textarea:focus { border-bottom-color: var(--accent); outline: none; }
   /* side by side instead of a moving divider */
   .wipe-stage { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-1); aspect-ratio: 32 / 9; cursor: default; }
   .wipe-stage video { position: static; clip-path: none; }
-  .wipe-line, .wipe-divider { display: none; }
+  .wipe-line, .wipe-divider, .wipe-compare { display: none; }
 }
