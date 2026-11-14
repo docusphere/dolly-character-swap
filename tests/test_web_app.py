@@ -161,8 +161,6 @@ def test_check_step_compares_with_what_the_ai_gets(client, runs_dir, media):
     job = _app_job(runs_dir, media)
     text = client.get(f"/jobs/{job.id}/step/3").text
     assert f'src="/jobs/{job.id}/files/prepared.mp4"' in text and "What the AI gets" in text
-    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
-    assert '<p class="ok">Approved.</p>' in client.get(f"/jobs/{job.id}/step/3").text
 
 
 def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
@@ -170,6 +168,26 @@ def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
     text = client.get(f"/jobs/{job.id}/step/4").text
     assert "@Video 1" in text and "readonly" in text and "Seedance 2.5" in text
     assert not job.path("prompt.txt").exists()
+
+
+def test_final_step_offers_the_download(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    text = client.get(f"/jobs/{job.id}/step/5").text
+    assert f'href="/jobs/{job.id}/files/final.mp4" download=' in text
+    assert "Spent on this swap" in text
+
+
+def test_a_read_only_job_says_where_to_continue(client, runs_dir, media):
+    job = make_job(runs_dir, media, "face_mesh")
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert f"Continue there: charswap status {job.id}" in text
+
+
+def test_an_approved_check_says_so(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    assert '<p class="ok">Approved.</p>' in client.get(f"/jobs/{job.id}/step/3").text
 
 
 @pytest.mark.parametrize("stage", ["draft", "final"])
@@ -189,21 +207,6 @@ def test_a_wan_draft_has_no_seedance_tag(client, runs_dir, media):
     decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
     text = client.get(f"/jobs/{job.id}/step/4").text
     assert "Step 4 of 5" in text and "Seedance 2.5" not in text
-
-
-def test_final_step_offers_the_download(client, runs_dir, media):
-    job = _approved(runs_dir, media)
-    finish_stage(job, media, "draft")
-    finish_stage(job, media, "final")
-    text = client.get(f"/jobs/{job.id}/step/5").text
-    assert f'href="/jobs/{job.id}/files/final.mp4" download=' in text
-    assert "Spent on this swap" in text
-
-
-def test_a_read_only_job_says_where_to_continue(client, runs_dir, media):
-    job = make_job(runs_dir, media, "face_mesh")
-    text = client.get(f"/jobs/{job.id}/step/2").text
-    assert f"Continue there: charswap status {job.id}" in text
 
 
 def test_a_job_without_a_photo_or_an_error_message_says_so(client, runs_dir, media):
@@ -476,7 +479,7 @@ def test_upload_step_shows_the_clip_and_the_photo_at_one_size(client):
 
 def test_app_script_polls_and_never_interrupts_playback(client):
     script = client.get("/static/app.js").text
+    assert "m.currentTime > 0" in script  # a clip paused part-way still counts as in use
     assert "fast: 2000" in script and "slow: 10000" in script
     assert "Object.keys(shown)" in script  # compares only what the page was rendered with
     assert "if (!playing())" in script and 'getElementById("new-results").hidden = false' in script
-    assert "m.currentTime > 0" in script  # a clip paused part-way still counts as in use
