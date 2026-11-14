@@ -411,6 +411,11 @@ def test_the_divider_looks_and_reads_unlike_the_seek_bar(client, runs_dir, media
     assert ".wipe-line, .wipe-divider, .wipe-compare { display: none; }" in css  # reduced motion
 
 
+def test_upload_step_shows_the_clip_and_the_photo_at_one_size(client):
+    css = client.get("/static/viewer.css").text
+    assert ".pair video, .pair img { height: var(--pair-height); max-height: none; }" in css
+
+
 def test_app_script_polls_and_never_interrupts_playback(client):
     script = client.get("/static/app.js").text
     assert "fast: 2000" in script and "slow: 10000" in script

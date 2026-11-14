@@ -46,6 +46,7 @@
   --target: 44px;
   --page-width: 64rem;
   --thumb-height: 9rem;
+  --pair-height: min(55vh, 26rem);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -196,6 +197,8 @@ video, img {
   display: block; width: 100%; max-height: 70vh;
   object-fit: contain; background: var(--video-bg); border-radius: var(--radius-sm);
 }
+/* step 1: the clip and the photo sit in boxes of one size, each shown whole */
+.pair video, .pair img { height: var(--pair-height); max-height: none; }
 .audio-list { display: grid; gap: var(--space-4); }
 audio { width: 100%; }
 .placeholder {
