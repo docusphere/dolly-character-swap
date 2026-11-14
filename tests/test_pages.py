@@ -155,6 +155,16 @@ def test_a_running_draft_shows_when_it_started(runs_dir, media):
     assert page.state == "running" and page.started_at == "2026-11-13T10:00:00+00:00"
 
 
+def test_only_a_seedance_draft_and_final_name_seedance(runs_dir, media):
+    seedance = _approved(runs_dir, media)
+    assert [tag.name for tag in pages.job_page(seedance, runs_dir, 4).tags] == ["Seedance 2.5"]
+    wan = make_job(runs_dir, media, "direct")
+    decide(wan, approved=True, note="ok", fingerprint=fingerprint(wan))
+    assert (
+        pages.job_page(wan, runs_dir, 4).tags == () and pages.job_page(wan, runs_dir, 5).tags == ()
+    )
+
+
 def test_a_finished_draft_plays_with_sound(runs_dir, media):
     job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")

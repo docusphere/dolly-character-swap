@@ -107,6 +107,7 @@ class JobPage:
     resolution: str = ""
     spent_usd: float = 0.0
     download: str | None = None
+    tags: tuple[steps.Tag, ...] = ()  # the step's technique tags (none on a Wan draft/final)
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,13 @@ def _pick_tab(tabs: tuple[TabView, ...], wanted: str, mode: str) -> TabView | No
     return tabs[0] if tabs else None
 
 
+def _step_tags(number: int, state: dict[str, Any]) -> tuple[steps.Tag, ...]:
+    """The draft and final tags name Seedance, so a job made by another generator shows none."""
+    if number >= 4 and state.get("generator") != "seedance":
+        return ()
+    return steps.step(number).tags
+
+
 def _look(mode: str) -> str:
     for value, label, _hint in steps.LOOKS:
         if value == mode:
@@ -261,6 +269,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
         "original": original,
         "prep_done": prep_done(state),
         "spent_usd": completed_cost(cost_rows(job, state)),
+        "tags": _step_tags(number, state),
     }
     decision = saved_review(job)
     if number == 1:

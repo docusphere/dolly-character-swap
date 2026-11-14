@@ -181,6 +181,13 @@ def test_the_elapsed_timer_is_not_read_out_every_second(client, runs_dir, media,
     assert '<span class="elapsed" aria-hidden="true" data-started="2026-11-13T10:00:00' in text
 
 
+def test_a_wan_draft_has_no_seedance_tag(client, runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert "Step 4 of 5" in text and "Seedance 2.5" not in text
+
+
 def test_final_step_offers_the_download(client, runs_dir, media):
     job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")
