@@ -381,3 +381,26 @@ def test_security_headers_on_pages_media_and_api(client, runs_dir, media):
     assert page.headers["cache-control"] == "no-store"
     assert video.headers["cache-control"] == "no-store"
     assert client.get("/").headers["cache-control"] == "no-store"
+
+
+# ---- the wipe player and live progress (static/app.js) ---------------------------------
+def test_every_page_loads_the_one_app_script(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    for path in ["/", "/new", f"/jobs/{job.id}/step/2"]:
+        assert '<script src="/static/app.js" defer></script>' in client.get(path).text
+
+
+def test_app_script_drives_the_wipe_player(client):
+    script = client.get("/static/app.js").text
+    assert 'setProperty("--split"' in script  # CSSOM, allowed by the CSP (no inline styles)
+    assert "DRIFT = 0.1" in script and "before.currentTime = after.currentTime" in script
+    assert "pointerdown" in script and 'divider.addEventListener("input"' in script
+    assert "after.muted = !after.muted" in script  # the sound plays the "after" side
+    assert '"wipe:ended"' in script  # step 3's approve gate listens for it
+
+
+def test_app_script_polls_and_never_interrupts_playback(client):
+    script = client.get("/static/app.js").text
+    assert "fast: 2000" in script and "slow: 10000" in script
+    assert "Object.keys(shown)" in script  # compares only what the page was rendered with
+    assert "if (!playing())" in script and 'getElementById("new-results").hidden = false' in script
