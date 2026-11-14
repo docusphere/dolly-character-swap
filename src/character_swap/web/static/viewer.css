@@ -277,6 +277,7 @@ textarea:focus { border-bottom-color: var(--accent); outline: none; }
 .wipe-label-before { left: var(--space-2); }
 .wipe-label-after { right: var(--space-2); }
 .wipe-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+.wipe-sound[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .wipe-seek { flex: 1 1 12rem; min-height: var(--target); accent-color: var(--accent); }
 /* the divider: a labelled, square-handled slider, so on camera it never looks like the seek bar */
 .wipe-compare {

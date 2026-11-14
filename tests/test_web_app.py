@@ -437,6 +437,16 @@ def test_the_divider_looks_and_reads_unlike_the_seek_bar(client, runs_dir, media
     assert ".wipe-line, .wipe-divider, .wipe-compare { display: none; }" in css  # reduced motion
 
 
+def test_the_sound_button_keeps_its_label_and_shows_when_it_is_on(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert f'class="button wipe-sound" aria-pressed="false">{steps.SOUND}</button>' in text
+    script = client.get("/static/app.js").text
+    assert 'sound.setAttribute("aria-pressed"' in script and "Sound off" not in script
+    assert '.wipe-sound[aria-pressed="true"]' in client.get("/static/viewer.css").text
+
+
 def test_long_words_wrap_and_phones_can_scroll_past_the_player(client):
     css = client.get("/static/viewer.css").text
     assert css.count("overflow-wrap: anywhere") >= 3  # .card, .error/.notice, .facts dd

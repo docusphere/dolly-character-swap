@@ -81,8 +81,7 @@
     if (sound) {
       sound.addEventListener("click", () => {
         after.muted = !after.muted; // the draft and final carry the original sound
-        sound.setAttribute("aria-pressed", String(!after.muted));
-        sound.textContent = after.muted ? "Sound off" : "Sound on";
+        sound.setAttribute("aria-pressed", String(!after.muted)); // the label stays "Sound"
       });
     }
     split(50);

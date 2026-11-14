@@ -182,6 +182,7 @@ CHARGE_NO = "Cancel"
 
 # The before/after player's controls (the divider is labelled so it never looks like the seek bar).
 COMPARE = "Compare"
+SOUND = "Sound"  # a toggle: aria-pressed and its pressed style say whether it is on
 
 
 def step(number: int) -> Step:
