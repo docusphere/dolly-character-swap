@@ -3,7 +3,7 @@
 Local app + CLI that swaps a person in a short video for a chosen character, keeping motion, timing and the original soundtrack. Generators: Seedance 2.5 on WaveSpeed (default; real faces as a plain photo) or on PiAPI (saved faces, two people, 1080p upgrade), and Wan 2.2 Animate on Replicate (open source).
 
 ## Stack
-Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (read-only job viewer: `charswap view`) · pytest (+cov ≥ 85 %) · ruff.
+Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (read-only walkthrough app: `charswap app`, alias `view`) · pytest (+cov ≥ 85 %) · ruff.
 
 ## Commands
 - Install: `uv sync`
@@ -13,12 +13,12 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Faces (free): `uv run charswap face add|list|check|renew`
 - Prompt (Seedance): `uv run charswap prompt <job>`
 - Generate (paid, asks first): `uv run charswap generate <job> --draft|--final [--resolution 720p|1080p]`
-- Viewer: `uv run charswap view`
+- Walkthrough app: `uv run charswap app` (read-only)
 
 ## Layout
 - `src/character_swap/providers/` is the ONLY code that calls the network.
 - `stages/` = one pipeline step per file; `media/` = local video/audio work.
-- `web/` = read-only job viewer (FastAPI + Jinja2, localhost only; GET routes only, never changes job state).
+- `web/` = read-only walkthrough app (FastAPI + Jinja2, localhost only; GET routes only, never changes job state). Texts live in `web/steps.py`, screens in `web/pages.py`.
 - A job's Seedance provider (`provider` in `state.json`) is fixed at prepare; old jobs are resolved by `pipeline.generator_key`.
 - Jobs live in `runs/<id>/` with `state.json` (resumable). Saved faces live in `faces/` (`faces.json` + photos).
 - `inputs/`, `faces/` and `runs/` are git-ignored and never committed.

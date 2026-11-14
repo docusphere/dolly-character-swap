@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>{% block title %}Jobs{% endblock %} · Character Swap viewer</title>
+  <title>{% block title %}Swaps{% endblock %} · Character Swap</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/viewer.css">
 </head>
@@ -12,9 +12,8 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
     <a class="brand" href="/">Character Swap</a>
-    <span class="topbar-note">Read-only viewer · actions stay in the terminal</span>
   </header>
   {% block body %}{% endblock %}
-  <script src="/static/viewer.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

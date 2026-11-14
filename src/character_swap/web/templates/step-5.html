@@ -1,0 +1,15 @@
+{% from "macros.html" import wipe, placeholder %}
+{% if page.state == "running" %}
+<div class="running" role="status">
+  <span class="spinner" aria-hidden="true"></span> {{ steps.MAKING_FINAL.format(resolution=page.resolution) }} <span class="elapsed" aria-hidden="true" data-started="{{ page.started_at }}"></span>
+  <p class="meta">{{ steps.DRAFT_TIME }}</p>
+</div>
+{% elif page.wipe %}
+{{ wipe(page.wipe) }}
+<div class="actions">
+  <a class="button primary" href="{{ page.download }}" download="final-{{ page.short_id }}.mp4">{{ steps.DOWNLOAD }}</a>
+</div>
+{% else %}
+{{ placeholder(page.state) }}
+{% endif %}
+<p class="meta total">{{ steps.SPENT_SWAP }}: <strong>{{ money(page.spent_usd) }}</strong> · estimate</p>

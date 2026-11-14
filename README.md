@@ -6,6 +6,16 @@ Swap a person in a short video for your own character while keeping the original
 
 Only use faces and footage you have the rights to use.
 
+## See how it works: the walkthrough app
+
+`uv run charswap app` opens a local page (only on your computer) that walks through every
+swap in `runs/`, step by step: your clip and photo, the depth map, the cut-out, the face
+lines, what the AI actually gets, the raised voice and the words, then the draft next to the
+original. Drag the line on each video to compare before and after. It only shows files;
+it never runs or charges anything. Press Ctrl-C in the terminal to stop it.
+
+To make a swap to look at, use the commands below.
+
 ## Try it with Seedance on WaveSpeed (best quality, real faces)
 
 Sign up at [WaveSpeed](https://wavespeed.ai): pay per use, $1 of free credit, no
@@ -19,7 +29,7 @@ faces are never committed), then:
 ```bash
 uv sync                                                      # once: installs the tool
 uv run charswap prepare inputs/clip.mp4 --character inputs/me.jpg  # asks about rights, then ~$0.06
-# watch it in `uv run charswap view`, then approve with the command shown there
+# watch it in `uv run charswap app`, then approve with the command shown there
 uv run charswap prompt <id>                                  # optional: edit prompt.txt
 uv run charswap generate <id> --draft                        # 480p, shows the price, asks first
 uv run charswap generate <id> --final                        # a new 720p take
@@ -50,9 +60,9 @@ Put your clip and your character photo in the `inputs/` folder (git-ignored, so 
 1. `uv sync`
 2. `uv run charswap prepare inputs/clip.mp4 --generator wan --mode direct --character inputs/me.jpg`
    Use a clip of up to 30 s with **one** person, and a clear, well-lit photo of **one** person. Preparing is free for Wan (nothing is sent to a paid service), so it asks nothing. (`--language` is for Seedance modes only; Wan has no transcript step.)
-3. `uv run charswap view` opens the viewer so you can watch the normalized clip and your photo. It keeps running until you press Ctrl-C in that terminal. Then copy the fingerprint from `uv run charswap status <id>` and approve: `uv run charswap review <id> --approve --note "watched all" --fingerprint <fp>`. `status` also tells you the next step.
+3. `uv run charswap app` opens the walkthrough app so you can watch the normalized clip and your photo. It keeps running until you press Ctrl-C in that terminal. Then copy the fingerprint from `uv run charswap status <id>` and approve: `uv run charswap review <id> --approve --note "watched all" --fingerprint <fp>`. `status` also tells you the next step.
 4. `uv run charswap generate <id> --draft` makes a 480p test (about $0.02 per second of video). It shows the estimate and asks you to confirm before any money is spent (`--yes` skips the question).
-5. Watch the draft in the viewer. Happy with it? `uv run charswap generate <id> --final` makes the 720p version with the same seed (about $0.05 per second), again with a cost question.
+5. Watch the draft in the app. Happy with it? `uv run charswap generate <id> --final` makes the 720p version with the same seed (about $0.05 per second), again with a cost question.
 
 The final is only allowed for the exact inputs you watched in the draft. The draft becomes out of date only when the clip or photo files change (approving the same files again does not). There is no command to change the photo: to use a different one, start a new job with `uv run charswap prepare … --character <new photo>` (recommended) rather than editing files under `runs/`. An out-of-date draft can be remade (the cost is asked again and the old files are kept as `draft-old-*` / `final-old-*`).
 
@@ -70,7 +80,7 @@ You need a PiAPI account on the **Creator plan or higher** (saved faces and uplo
 ```bash
 uv run charswap face add me me.jpg                         # once, free: PiAPI checks the photo
 uv run charswap prepare clip.mp4 --provider piapi --face me # ~$0.06, default mode depth_mesh
-# watch it in `uv run charswap view`, then approve with the command shown there
+# watch it in `uv run charswap app`, then approve with the command shown there
 uv run charswap prompt <id>                                # optional: edit prompt.txt
 uv run charswap generate <id> --draft                      # 480p, shows the price, asks first
 uv run charswap generate <id> --final                      # 1080p upgrade of that draft

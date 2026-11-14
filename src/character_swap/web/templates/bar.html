@@ -1,0 +1,13 @@
+<nav class="bar" aria-label="Steps">
+  <ol>
+    {% for item in bar %}
+    <li class="bar-item bar-{{ item.state }}">
+      {% if item.url %}
+      <a href="{{ item.url }}"{% if item.state == "current" %} aria-current="step"{% endif %}><span class="bar-num">{{ item.number }}</span> {{ item.title }}</a>
+      {% else %}
+      <span{% if item.state == "current" %} aria-current="step"{% endif %}><span class="bar-num">{{ item.number }}</span> {{ item.title }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</nav>

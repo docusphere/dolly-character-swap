@@ -7,16 +7,17 @@ from fastapi.testclient import TestClient
 
 from character_swap.config import Settings
 from character_swap.costs import Estimate, Line, record_spend
-from character_swap.pipeline import generator_key
-from character_swap.review import fingerprint
+from character_swap.review import decide, fingerprint
+from character_swap.web import steps
 from character_swap.web.app import create_app
-from character_swap.web.view_model import SECTIONS, section_text, sections_for
 from viewer_jobs import finish_stage, make_job
+
+KEYS = {"REPLICATE_API_TOKEN": "r-secret", "WAVESPEED_API_KEY": "w-secret"}
 
 
 @pytest.fixture
 def settings(tmp_path, runs_dir):
-    return Settings.load(root=tmp_path, environ={"CHARSWAP_RUNS_DIR": str(runs_dir)})
+    return Settings.load(root=tmp_path, environ={"CHARSWAP_RUNS_DIR": str(runs_dir), **KEYS})
 
 
 @pytest.fixture
@@ -24,15 +25,27 @@ def client(settings):
     return TestClient(create_app(settings), base_url="http://127.0.0.1")
 
 
+def _app_job(runs_dir, media, **kwargs):
+    return make_job(runs_dir, media, "depth_mesh", provider="wavespeed", **kwargs)
+
+
+def _approved(runs_dir, media):
+    job = _app_job(runs_dir, media)
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    return job
+
+
 # ---- home ----------------------------------------------------------------------
-def test_home_empty_state_explains_prepare(client):
+def test_home_empty_state_explains_new_swap(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "No jobs yet" in response.text and "charswap prepare &lt;video&gt;" in response.text
-    assert "All jobs (spend log): <strong>$0.0000</strong>" in response.text
+    assert "No swaps yet" in response.text and "charswap prepare" in response.text
+    assert 'href="/new"' not in response.text  # the walkthrough has no new-swap button
+    assert "Spent on all swaps: <strong>$0.00</strong>" in response.text
+    assert "Hide the person" in response.text and "Original sound back" in response.text
 
 
-def test_home_lists_jobs_newest_first(client, runs_dir, media):
+def test_home_lists_swaps_newest_first(client, runs_dir, media):
     old = make_job(runs_dir, media, "depth", done=4)
     new = make_job(runs_dir, media, "direct")
     old.update(created_at="2026-10-30T10:00:00+00:00")
@@ -40,9 +53,10 @@ def test_home_lists_jobs_newest_first(client, runs_dir, media):
     record_spend(new, "prepare", Estimate((Line("x", 0.25),)), runs_dir)
     text = client.get("/").text
     assert text.index(new.id[:8]) < text.index(old.id[:8])
-    assert "4/9 steps" in text and "1/1 steps" in text
-    assert "2026-11-01 09:30" in text and "$0.2500" in text
+    assert "Step 2 · Prepare" in text and "Step 3 · Check" in text
+    assert "2026-11-01 09:30" in text and "Spent on all swaps: <strong>$0.25</strong>" in text
     assert f'href="/jobs/{old.id}"' in text
+    assert text.count("Made with the command line") == 1  # the Wan job
 
 
 def test_home_marks_unreadable_jobs(client, runs_dir, media):
@@ -53,67 +67,164 @@ def test_home_marks_unreadable_jobs(client, runs_dir, media):
     assert "Unreadable: state.json could not be read" in response.text
 
 
-# ---- job page ------------------------------------------------------------------
-@pytest.mark.parametrize("mode", ["depth", "depth_mesh", "face_mesh", "direct"])
-def test_job_page_has_every_section_and_anchor(client, runs_dir, media, mode):
-    job = make_job(runs_dir, media, mode)
-    response = client.get(f"/jobs/{job.id}")
-    assert response.status_code == 200
-    for section in [*sections_for(mode), None]:
-        section_id = section.id if section else "costs"
-        assert f'<section id="{section_id}"' in response.text
-        assert f'href="#{section_id}"' in response.text
-    text = response.text.replace("&#39;", "'")
-    key = generator_key(job)  # a fresh Seedance job with no draft reads as WaveSpeed's
-    for section in sections_for(mode):
-        title, why = section_text(section, key)
-        assert why in text and title.replace("&", "&amp;") in response.text, section.id
-    assert 'data-active="false"' in response.text
-    assert "Ready for review" in response.text
-
-
-def test_job_page_links_media_and_replicate(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth")
-    text = client.get(f"/jobs/{job.id}").text
-    assert (
-        f'<video controls preload="metadata" playsinline src="/jobs/{job.id}/files/depth.mp4">'
-        in text
+def test_a_missing_key_is_named_and_new_swap_is_disabled(tmp_path, runs_dir):
+    settings = Settings.load(
+        root=tmp_path, environ={"CHARSWAP_RUNS_DIR": str(runs_dir), "REPLICATE_API_TOKEN": "r"}
     )
+    client = TestClient(create_app(settings), base_url="http://127.0.0.1")
+    text = client.get("/").text
+    assert "<code>WAVESPEED_API_KEY</code> is missing" in text and "<code>.env</code>" in text
+    assert "wavespeed.ai" in text and 'href="/new"' not in text
+    assert "REPLICATE_API_TOKEN</code> is missing" not in text
+    new = client.get("/new").text
+    assert "WAVESPEED_API_KEY</code> is missing" in new and " disabled>Prepare" in new
+
+
+def test_the_app_re_reads_the_keys_on_each_request(tmp_path, runs_dir):
+    current = {"values": {"CHARSWAP_RUNS_DIR": str(runs_dir)}}
+
+    def reload():
+        return Settings.load(root=tmp_path, environ=current["values"])
+
+    client = TestClient(create_app(reload(), reload_settings=reload), base_url="http://127.0.0.1")
+    assert "is missing" in client.get("/").text
+    current["values"] = {**current["values"], **KEYS}
+    assert "is missing" not in client.get("/").text
+
+
+# ---- step 1: new swap ------------------------------------------------------------
+def test_new_swap_form_shows_prices_and_choices(client):
+    text = client.get("/new").text
+    assert "Step 1 of 5" in text and 'name="clip"' in text and 'name="photo"' in text
+    assert 'name="describe" maxlength="300"' in text
+    assert 'value="depth_mesh" checked' in text and "Better likeness" in text
+    assert 'name="rights" value="yes" required' in text
+    assert "Prepare · about $0.06" in text
+    assert 'data-draft-per-second="0.2200"' in text  # WaveSpeed bills input + output seconds
+
+
+# ---- the step screens -------------------------------------------------------------
+def test_job_link_opens_the_current_step(client, runs_dir, media):
+    job = _app_job(runs_dir, media, done=3, running=True)
+    response = client.get(f"/jobs/{job.id}", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"].endswith("/step/2")
+    done = _approved(runs_dir, media)
+    location = client.get(f"/jobs/{done.id}", follow_redirects=False).headers["location"]
+    assert location == f"/jobs/{done.id}/step/4"
+
+
+def test_a_later_step_than_the_job_has_reached_redirects(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    response = client.get(f"/jobs/{job.id}/step/5", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"].endswith("/step/3")
+    assert client.get(f"/jobs/{job.id}/step/1").status_code == 200  # earlier steps stay open
+
+
+@pytest.mark.parametrize("number", ["0", "6", "x"])
+def test_unknown_step_numbers(client, runs_dir, media, number):
+    job = _app_job(runs_dir, media)
+    assert client.get(f"/jobs/{job.id}/step/{number}").status_code in (404, 422)
+
+
+@pytest.mark.parametrize("number", [1, 2, 3, 4, 5])
+def test_every_step_has_the_bar_its_line_and_no_inline_code(client, runs_dir, media, number):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    text = client.get(f"/jobs/{job.id}/step/{number}").text
+    assert f"Step {number} of 5" in text and 'aria-label="Steps"' in text
+    assert 'aria-current="step"' in text
+    assert steps.step(number).line.replace("'", "&#39;") in text
+    assert " style=" not in text and "<style" not in text and "<script>" not in text
+
+
+def test_prepare_step_shows_tabs_and_the_wipe_player(client, runs_dir, media):
+    job = _app_job(runs_dir, media, done=6, running=True)  # masks running
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert f'href="/jobs/{job.id}/step/2?tab=depth"' in text
+    assert 'class="tab tab-running" aria-disabled="true"' in text
+    text = client.get(f"/jobs/{job.id}/step/2?tab=depth").text
+    assert 'class="wipe" data-wipe' in text and "Depth Anything" in text
+    assert f'src="/jobs/{job.id}/files/original.mp4"' in text
+    assert f'src="/jobs/{job.id}/files/depth.mp4"' in text
+    assert "Next: check it" not in text and "About 2 minutes" in text
+
+
+def test_finished_prepare_offers_the_next_step(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    text = client.get(f"/jobs/{job.id}/step/2?tab=voice").text
+    assert f'href="/jobs/{job.id}/step/3"' in text and "Next: check it" in text
     assert f'<audio controls preload="metadata" src="/jobs/{job.id}/files/vocals.wav">' in text
-    assert (
-        'href="https://replicate.com/p/pred-depth" target="_blank" rel="noopener noreferrer"'
-        in text
-    )
-    assert (
-        "This job, steps completed so far" in text
-        and "Exact charges: replicate.com billing" in text
-    )
-    assert f"charswap review {job.id} --approve" in text
+    assert "hello there" in text and "Demucs" in text
 
 
-def test_live_job_page_polls_and_shows_running_step(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth", done=5, running=True)  # depth running
-    text = client.get(f"/jobs/{job.id}").text
-    assert 'data-active="true"' in text
-    shown = json.loads(text.split('data-stages="')[1].split('"')[0].replace("&#34;", '"'))
-    assert shown["stages"]["depth"] == "running" and shown["stages"]["normalize"] == "done"
-    assert shown["generation"] == {"draft": "pending", "final": "pending"}
-    assert 'data-poll="fast"' in text
-    assert "Waiting for this step…" in text and "⟳" in text
+def test_check_step_compares_with_what_the_ai_gets(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    text = client.get(f"/jobs/{job.id}/step/3").text
+    assert f'src="/jobs/{job.id}/files/prepared.mp4"' in text and "What the AI gets" in text
 
 
-def test_failed_step_shows_error_and_resume_hint(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth", done=3, failed="Transcribing speech failed: <boom>")
-    text = client.get(f"/jobs/{job.id}").text
-    assert "Transcribing speech failed: &lt;boom&gt;" in text  # escaped, never raw HTML
-    assert f"Fix the issue, then run <code>charswap resume {job.id}</code>" in text
-    assert 'data-active="false"' in text
+def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert "@Video 1" in text and "readonly" in text and "Seedance 2.5" in text
+    assert not job.path("prompt.txt").exists()
+
+
+def test_final_step_offers_the_download(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
+    text = client.get(f"/jobs/{job.id}/step/5").text
+    assert f'href="/jobs/{job.id}/files/final.mp4" download=' in text
+    assert "Spent on this swap" in text
+
+
+def test_a_read_only_job_says_where_to_continue(client, runs_dir, media):
+    job = make_job(runs_dir, media, "face_mesh")
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert f"Continue there: charswap status {job.id}" in text
+
+
+def test_an_approved_check_says_so(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    assert '<p class="ok">Approved.</p>' in client.get(f"/jobs/{job.id}/step/3").text
+
+
+@pytest.mark.parametrize("stage", ["draft", "final"])
+def test_the_elapsed_timer_is_not_read_out_every_second(client, runs_dir, media, stage):
+    job = _approved(runs_dir, media)
+    if stage == "final":
+        finish_stage(job, media, "draft")
+    job.mark_stage(stage, "running", started_at="2026-11-13T10:00:00+00:00", resolution="720p")
+    text = client.get(f"/jobs/{job.id}/step/{4 if stage == 'draft' else 5}").text
+    assert 'role="status"' in text
+    assert ("Making the draft" if stage == "draft" else "Making the 720p final") in text
+    assert '<span class="elapsed" aria-hidden="true" data-started="2026-11-13T10:00:00' in text
+
+
+def test_a_wan_draft_has_no_seedance_tag(client, runs_dir, media):
+    job = make_job(runs_dir, media, "direct")
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert "Step 4 of 5" in text and "Seedance 2.5" not in text
+
+
+def test_a_job_without_a_photo_or_an_error_message_says_so(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=5, failed="")  # no photo, no message saved
+    assert steps.NO_PHOTO in client.get(f"/jobs/{job.id}/step/1").text
+    assert steps.STEP_FAILED in client.get(f"/jobs/{job.id}/step/2").text
+
+
+def test_failed_step_shows_the_error_escaped(client, runs_dir, media):
+    job = _app_job(runs_dir, media, done=3, failed="Transcribing speech failed: <boom>")
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert "Transcribing speech failed: &lt;boom&gt;" in text
 
 
 def test_untrusted_text_is_escaped(client, runs_dir, media):
-    job = make_job(runs_dir, media, "face_mesh")
+    job = _app_job(runs_dir, media)
     job.update(transcript="<script>alert(1)</script>")
-    text = client.get(f"/jobs/{job.id}").text
+    text = client.get(f"/jobs/{job.id}/step/2?tab=voice").text
     assert "<script>alert(1)</script>" not in text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text
 
@@ -121,17 +232,43 @@ def test_untrusted_text_is_escaped(client, runs_dir, media):
 def test_job_page_with_damaged_state_shows_the_error(client, runs_dir, media):
     job = make_job(runs_dir, media, "depth", done=0)
     job.path("state.json").write_text("[]")
-    response = client.get(f"/jobs/{job.id}")
-    assert response.status_code == 500
-    assert "state.json is not a JSON object." in response.text
-    assert 'href="/"' in response.text
+    for path in (f"/jobs/{job.id}", f"/jobs/{job.id}/step/1"):
+        response = client.get(path)
+        assert response.status_code == 500
+        assert "state.json is not a JSON object." in response.text and 'href="/"' in response.text
+
+
+def test_an_unreadable_prompt_shows_the_damaged_job_page(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    job.path("prompt.txt").write_bytes(b"\xff not utf-8")
+    response = client.get(f"/jobs/{job.id}/step/4")
+    assert response.status_code == 500 and f"Swap {job.id[:8]} cannot be shown" in response.text
+    assert "prompt.txt could not be read" in response.text and 'href="/"' in response.text
 
 
 @pytest.mark.parametrize("job_id", ["0" * 32, "not-a-job", "A" * 32])
 def test_unknown_job_is_a_404_page(client, job_id):
     response = client.get(f"/jobs/{job_id}")
     assert response.status_code == 404
-    assert "There is no job with that id." in response.text and 'href="/"' in response.text
+    assert "There is no swap with that id." in response.text and 'href="/"' in response.text
+
+
+def test_home_directory_is_hidden_in_errors(client, runs_dir, media):
+    home = str(Path.home())
+    job = _app_job(runs_dir, media, done=3, failed=f"cannot read {home}/clips/a.mp4")
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert home not in text and "cannot read ~/clips/a.mp4" in text
+    job.path("state.json").write_text(f"[] {home}")
+    assert home not in client.get(f"/jobs/{job.id}/step/2").text
+
+
+def test_step_pages_carry_the_progress_to_poll(client, runs_dir, media):
+    job = _app_job(runs_dir, media, done=5, running=True)
+    text = client.get(f"/jobs/{job.id}/step/2").text
+    assert 'data-poll="fast"' in text and f'data-job-id="{job.id}"' in text
+    shown = json.loads(text.split('data-progress="')[1].split('"')[0].replace("&#34;", '"'))
+    assert shown["stages"]["depth"] == "running" and shown["generation"]["draft"] == "pending"
+    assert 'id="new-results"' in text and 'id="refresh-button"' in text
 
 
 # ---- files ---------------------------------------------------------------------
@@ -187,6 +324,13 @@ def test_file_route_refuses_absolute_paths_and_symlinks(client, runs_dir, media,
     assert client.get(f"/jobs/{job.id}/files/link.mp4").status_code == 404
 
 
+def test_file_route_gives_404_for_a_symlink_loop_and_an_over_long_name(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=0)
+    job.path("loop.mp4").symlink_to("loop.mp4")
+    assert client.get(f"/jobs/{job.id}/files/loop.mp4").status_code == 404
+    assert client.get(f"/jobs/{job.id}/files/{'a' * 300}.mp4").status_code == 404
+
+
 def test_file_route_for_unknown_job_is_404(client):
     assert client.get(f"/jobs/{'0' * 32}/files/prepared.mp4").status_code == 404
 
@@ -197,7 +341,7 @@ def test_api_progress_shape(client, runs_dir, media):
     response = client.get(f"/api/jobs/{job.id}")
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     data = response.json()
-    assert set(data) == {"stages", "generation", "done_count", "total_count", "active", "poll"}
+    assert {"stages", "generation", "done_count", "total_count", "active", "poll"} <= set(data)
     assert list(data["stages"]) == [
         "normalize",
         "separate",
@@ -212,41 +356,38 @@ def test_api_progress_shape(client, runs_dir, media):
 
 
 def test_api_never_hashes_files(client, runs_dir, media, monkeypatch):
-    job = make_job(runs_dir, media, "depth")
+    job = _approved(runs_dir, media)
     monkeypatch.setattr(
         "character_swap.review._compute_fingerprint", lambda _job: pytest.fail("hashed")
     )
     assert client.get(f"/api/jobs/{job.id}").json()["active"] is False
+    assert client.get(f"/jobs/{job.id}", follow_redirects=False).status_code == 303
 
 
 def test_api_errors_are_json(client, runs_dir, media):
-    assert client.get(f"/api/jobs/{'0' * 32}").json() == {"error": "There is no job with that id."}
+    assert client.get(f"/api/jobs/{'0' * 32}").json() == {"error": "There is no swap with that id."}
     job = make_job(runs_dir, media, "depth", done=0)
     job.path("state.json").write_text("{")
     response = client.get(f"/api/jobs/{job.id}")
     assert response.status_code == 500 and "could not be read" in response.json()["error"]
 
 
-# ---- read-only, local-only -------------------------------------------------------
-@pytest.mark.parametrize("method", ["post", "put", "delete", "patch"])
-def test_no_route_changes_anything(client, runs_dir, media, method):
-    job = make_job(runs_dir, media, "depth")
-    for path in [
-        "/",
-        f"/jobs/{job.id}",
-        f"/jobs/{job.id}/files/prepared.mp4",
-        f"/api/jobs/{job.id}",
-        "/static/viewer.css",
-    ]:
-        response = getattr(client, method)(path)
-        assert response.status_code == 405, (method, path)
+# ---- local-only, read-only GETs ----------------------------------------------------
+def test_get_routes_never_write(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    before = sorted((p.name, p.stat().st_mtime_ns) for p in job.root.rglob("*"))
+    for path in ["/", "/new", f"/jobs/{job.id}", f"/api/jobs/{job.id}"]:
+        assert client.get(path).status_code == 200
+    for number in range(1, 6):
+        assert client.get(f"/jobs/{job.id}/step/{number}").status_code == 200
+    assert sorted((p.name, p.stat().st_mtime_ns) for p in job.root.rglob("*")) == before
 
 
 def test_static_assets_are_served(client):
     css = client.get("/static/viewer.css")
     assert css.status_code == 200 and "prefers-color-scheme: dark" in css.text
-    js = client.get("/static/viewer.js")
-    assert js.status_code == 200 and "IntersectionObserver" in js.text
+    assert "prefers-reduced-motion" in css.text and ".wipe-after" in css.text
     assert client.get("/static/nope.css").status_code == 404
 
 
@@ -262,10 +403,6 @@ def test_requests_for_other_hosts_are_refused(settings):
     assert local.get("/").status_code == 200
 
 
-def test_every_section_title_is_unique():
-    assert len({section.id for section in SECTIONS}) == len(SECTIONS)
-
-
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
@@ -277,12 +414,12 @@ SECURITY_HEADERS = {
 
 
 def test_security_headers_on_pages_media_and_api(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth")
-    page = client.get(f"/jobs/{job.id}")
+    job = _app_job(runs_dir, media)
+    page = client.get(f"/jobs/{job.id}/step/2")
     video = client.get(f"/jobs/{job.id}/files/prepared.mp4", headers={"Range": "bytes=0-9"})
     api = client.get(f"/api/jobs/{job.id}")
     missing = client.get("/jobs/nope")
-    for response in (page, video, api, missing, client.get("/")):
+    for response in (page, video, api, missing, client.get("/"), client.get("/new")):
         for name, value in SECURITY_HEADERS.items():
             assert response.headers[name] == value, (name, response.url)
     assert video.status_code == 206 and video.headers["accept-ranges"] == "bytes"
@@ -291,109 +428,58 @@ def test_security_headers_on_pages_media_and_api(client, runs_dir, media):
     assert client.get("/").headers["cache-control"] == "no-store"
 
 
-def test_pages_use_no_inline_scripts_or_styles(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth")
-    for text in (client.get("/").text, client.get(f"/jobs/{job.id}").text):
-        assert " style=" not in text and "<style" not in text
-        assert "<script>" not in text
+# ---- the wipe player and live progress (static/app.js) ---------------------------------
+def test_every_page_loads_the_one_app_script(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    for path in ["/", "/new", f"/jobs/{job.id}/step/2"]:
+        assert '<script src="/static/app.js" defer></script>' in client.get(path).text
 
 
-def test_job_page_has_refresh_banner_and_empty_stall_notice(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth", done=5, running=True)
-    text = client.get(f"/jobs/{job.id}").text
-    assert 'id="new-results"' in text and 'id="refresh-button"' in text
-    assert "New results are ready" in text
-    assert 'id="stalled"' in text and 'role="status"' in text
+def test_app_script_drives_the_wipe_player(client):
+    script = client.get("/static/app.js").text
+    assert 'setProperty("--split"' in script  # CSSOM, allowed by the CSP (no inline styles)
+    assert "DRIFT = 0.1" in script and "before.currentTime = after.currentTime" in script
+    assert "pointerdown" in script and 'divider.addEventListener("input"' in script
+    assert "after.muted = !after.muted" in script  # the sound plays the "after" side
+    assert '"wipe:ended"' in script  # step 3's approve gate listens for it
 
 
-def test_failed_repair_job_offers_no_approve_command(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth")
-    job.mark_stage("composite", "failed", error="repair failed")
-    text = client.get(f"/jobs/{job.id}").text
-    assert "--approve" not in text and "Failed" in text
+def test_the_divider_looks_and_reads_unlike_the_seek_bar(client, runs_dir, media):
+    job = _app_job(runs_dir, media)
+    text = client.get(f"/jobs/{job.id}/step/3").text
+    assert (
+        f'<label class="wipe-compare">{steps.COMPARE} <input type="range" class="wipe-divider"'
+        in text
+    )
+    css = client.get("/static/viewer.css").text
+    assert ".wipe-divider::-webkit-slider-thumb" in css and ".wipe-divider::-moz-range-thumb" in css
+    assert ".wipe-line, .wipe-divider, .wipe-compare { display: none; }" in css  # reduced motion
 
 
-def test_home_directory_is_hidden_in_errors(client, runs_dir, media):
-    home = str(Path.home())
-    job = make_job(runs_dir, media, "depth", done=3, failed=f"cannot read {home}/clips/a.mp4")
-    text = client.get(f"/jobs/{job.id}").text
-    assert home not in text and "cannot read ~/clips/a.mp4" in text
-    job.path("state.json").write_text(f"[] {home}")
-    broken = client.get(f"/jobs/{job.id}")
-    assert home not in broken.text
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "word"),
-    [
-        ({"done": 3, "failed": "boom"}, "status-failed"),
-        ({"done": 3, "running": True}, "status-running"),
-        ({}, "status-done"),
-    ],
-)
-def test_header_badge_has_status_class(client, runs_dir, media, kwargs, word):
-    job = make_job(runs_dir, media, "depth", **kwargs)
-    assert f'class="badge {word}" id="job-status"' in client.get(f"/jobs/{job.id}").text
-
-
-def test_interrupted_stage_says_stopped(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth", done=3, failed="interrupted")
-    text = client.get(f"/jobs/{job.id}").text
-    assert f"Stopped (Ctrl-C). Run <code>charswap resume {job.id}</code> to continue." in text
-    assert "interrupted" not in text and "Fix the issue" not in text
-
-
-def test_failed_job_page_slow_polls_for_a_resume(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth", done=3, failed="boom")
-    text = client.get(f"/jobs/{job.id}").text
-    assert 'data-active="false"' in text and 'data-poll="slow"' in text
-
-
-def test_viewer_script_polls_by_mode(client):
-    script = client.get("/static/viewer.js").text
-    assert "slow: 10000" in script and "fast: 3000" in script
-    assert "data.generation" in script
-    assert 'mode === "fast" && !generating' in script  # no stall notice while generating
-    assert "data.poll" in script and "POLL_MS[mode]" in script  # follows the server's mode
-    assert "startedWaiting = Date.now()" in script.split("async function tick")[1]
-    assert 'startMode === "slow"' in script  # a page that started slow keeps watching
-
-
-def test_failed_draft_page_names_the_generate_command(client, runs_dir, media):
-    job = make_job(runs_dir, media, "direct")
-    job.mark_stage("draft", "failed", error="boom")
-    text = client.get(f"/jobs/{job.id}").text
-    assert f"Fix the issue, then run <code>charswap generate {job.id} --draft</code>" in text
-    assert 'class="badge status-failed" id="job-status"' in text
-
-
-def test_finished_wan_job_page(client, runs_dir, media):
-    from viewer_jobs import finish_stage
-
-    job = make_job(runs_dir, media, "direct")
+def test_the_sound_button_keeps_its_label_and_shows_when_it_is_on(client, runs_dir, media):
+    job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")
-    finish_stage(job, media, "final")
-    text = client.get(f"/jobs/{job.id}").text
-    assert 'class="badge status-done" id="job-status">Finished' in text
-    assert f"/jobs/{job.id}/files/final.mp4" in text and 'data-poll="off"' in text
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert f'class="button wipe-sound" aria-pressed="false">{steps.SOUND}</button>' in text
+    script = client.get("/static/app.js").text
+    assert 'sound.setAttribute("aria-pressed"' in script and "Sound off" not in script
+    assert '.wipe-sound[aria-pressed="true"]' in client.get("/static/viewer.css").text
 
 
-def test_stale_final_page_badge(client, runs_dir, media):
-    from viewer_jobs import finish_stage
-
-    job = make_job(runs_dir, media, "direct")
-    finish_stage(job, media, "draft")
-    finish_stage(job, media, "final")
-    job.mark_stage("final", fingerprint="old")
-    text = client.get(f"/jobs/{job.id}").text
-    assert 'class="badge status-failed" id="job-status">Out of date' in text
-    assert f"charswap generate {job.id} --draft" in text
+def test_long_words_wrap_and_phones_can_scroll_past_the_player(client):
+    css = client.get("/static/viewer.css").text
+    assert css.count("overflow-wrap: anywhere") >= 3  # .card, .error/.notice, .facts dd
+    assert "touch-action: pan-y" in css and "touch-action: none" not in css
 
 
-def test_prompt_keeps_its_line_breaks_on_the_page(client, runs_dir, media):
-    job = make_job(runs_dir, media, "depth")
-    finish_stage(job, media, "draft")
-    job.mark_stage("draft", fingerprint=fingerprint(job), prompt="Line one.\nLine two.")
-    text = client.get(f"/jobs/{job.id}").text
-    assert text.count('class="multiline"') == 1
-    assert '<dd class="multiline">Line one.\nLine two.</dd>' in text
+def test_upload_step_shows_the_clip_and_the_photo_at_one_size(client):
+    css = client.get("/static/viewer.css").text
+    assert ".pair video, .pair img { height: var(--pair-height); max-height: none; }" in css
+
+
+def test_app_script_polls_and_never_interrupts_playback(client):
+    script = client.get("/static/app.js").text
+    assert "m.currentTime > 0" in script  # a clip paused part-way still counts as in use
+    assert "fast: 2000" in script and "slow: 10000" in script
+    assert "Object.keys(shown)" in script  # compares only what the page was rendered with
+    assert "if (!playing())" in script and 'getElementById("new-results").hidden = false' in script

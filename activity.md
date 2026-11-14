@@ -143,3 +143,17 @@
   - Frank: paid tests up to about $5 run without asking; ask above that or for runs at the same time. Why: small test charges are not worth an interruption.
 - **Lessons:**
   - A job prepared before the review gate was used still needs `charswap review --approve` before any paid step.
+
+## 2026-11-14 — Session 8: Walkthrough app (Plan 3a, visual part)
+- **Goal:** a local page to walk YouTube viewers through how a swap is made.
+- **Completed:**
+  - Spec and plan for the click-through app (14 tasks), each reviewed; the plan review caught a paid button without a price dialog (fixed in the plan).
+  - Built Tasks 1–4: `web/steps.py` (all texts), the five step screens and home page (`web/pages.py`), the before/after wipe player (`static/app.js`), `charswap app` (`view` stays as an alias).
+  - Browser checkpoint on the real job ea899aff…: every tab, synced playback, divider, phone width, dark mode, no console errors.
+  - Review fixes: step 2 opens on the newest result ("What the AI gets"), a paused clip blocks auto-reload, a labelled "Compare" divider, clip and photo at one size, 404s for odd file names, dead viewer code removed.
+  - Removed the New swap button (no upload yet); README gets a walkthrough section.
+- **Decisions:**
+  - Stop at the read-only walkthrough; Tasks 6–14 (buttons) are parked. Why: Frank only needs to show the steps on camera, and swaps are made with the CLI.
+  - No final for the demo job; the walkthrough ends at the draft. Why: Frank does not need it for the video.
+- **Lessons:**
+  - Picking the default tab by page order showed the least visual tab (Voice); order by pipeline stage instead.
