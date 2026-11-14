@@ -170,6 +170,17 @@ def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
     assert not job.path("prompt.txt").exists()
 
 
+@pytest.mark.parametrize("stage", ["draft", "final"])
+def test_the_elapsed_timer_is_not_read_out_every_second(client, runs_dir, media, stage):
+    job = _approved(runs_dir, media)
+    if stage == "final":
+        finish_stage(job, media, "draft")
+    job.mark_stage(stage, "running", started_at="2026-11-13T10:00:00+00:00")
+    text = client.get(f"/jobs/{job.id}/step/{4 if stage == 'draft' else 5}").text
+    assert 'role="status"' in text
+    assert '<span class="elapsed" aria-hidden="true" data-started="2026-11-13T10:00:00' in text
+
+
 def test_final_step_offers_the_download(client, runs_dir, media):
     job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")

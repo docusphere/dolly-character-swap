@@ -1,7 +1,7 @@
 {% from "macros.html" import wipe, placeholder %}
 {% if page.state == "running" %}
 <div class="running" role="status">
-  <span class="spinner" aria-hidden="true"></span> Making the {{ page.resolution }} final <span class="elapsed" data-started="{{ page.started_at }}"></span>
+  <span class="spinner" aria-hidden="true"></span> Making the {{ page.resolution }} final <span class="elapsed" aria-hidden="true" data-started="{{ page.started_at }}"></span>
   <p class="meta">{{ steps.DRAFT_TIME }}</p>
 </div>
 {% elif page.wipe %}
