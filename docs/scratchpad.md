@@ -14,6 +14,8 @@
 - [x] WaveSpeed Seedance generator (default provider; 968 tests, 96.92 % coverage; branch feat/wavespeed)
 - [x] S7 — Live WaveSpeed draft through charswap (Task 14): job ea899aff…, 227 s, ~$0.88, clean 4 s result
 - [x] S7 — Real WaveSpeed charge checked: dashboard shows $3.564 for about four 4 s 480p runs, so $0.88 per run holds
+- [x] S8 — Walkthrough app (Plan 3a Tasks 1–4 + review fixes): `charswap app` shows every swap step by step with before/after wipe players and technique tags; read-only, checked in a browser on job ea899aff…
+- [ ] (parked S8) Plan 3a Tasks 6–14 (buttons: upload, approve, draft/final with the price dialog). Frank only needs the walkthrough for the video. If picked up: Task 12's whole-file `step-5.html` block must keep `aria-hidden`, `steps.MAKING_FINAL` and `steps.SPENT_SWAP`; expected test counts are 13 higher; restore a New swap button on home.
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
 
 ## Do first in Plan 2 (from final Plan 1 review)
