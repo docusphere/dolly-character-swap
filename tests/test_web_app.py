@@ -297,6 +297,13 @@ def test_file_route_refuses_absolute_paths_and_symlinks(client, runs_dir, media,
     assert client.get(f"/jobs/{job.id}/files/link.mp4").status_code == 404
 
 
+def test_file_route_gives_404_for_a_symlink_loop_and_an_over_long_name(client, runs_dir, media):
+    job = make_job(runs_dir, media, "depth", done=0)
+    job.path("loop.mp4").symlink_to("loop.mp4")
+    assert client.get(f"/jobs/{job.id}/files/loop.mp4").status_code == 404
+    assert client.get(f"/jobs/{job.id}/files/{'a' * 300}.mp4").status_code == 404
+
+
 def test_file_route_for_unknown_job_is_404(client):
     assert client.get(f"/jobs/{'0' * 32}/files/prepared.mp4").status_code == 404
 

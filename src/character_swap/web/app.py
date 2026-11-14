@@ -138,9 +138,13 @@ def create_app(
             raise HTTPException(404, NOT_FOUND)
         try:
             path = job.path(name)  # containment: nothing outside the job folder
-        except (JobError, ValueError):
+        except (JobError, ValueError, RuntimeError):  # RuntimeError: a symlink loop
             raise HTTPException(404, NOT_FOUND) from None
-        if not path.is_file():
+        try:
+            present = path.is_file()
+        except OSError:  # for example a name too long for the file system
+            present = False
+        if not present:
             raise HTTPException(404, NOT_FOUND)
         # Range requests (video seeking) are handled by FileResponse.
         return FileResponse(path, headers={"Cache-Control": "no-store"})
