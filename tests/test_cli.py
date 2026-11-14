@@ -454,7 +454,7 @@ def test_view_serves_the_app_on_localhost_only(settings):
     server = FakeServer()
     opened = []
     code, out = run(
-        ["view", "--port", str(port), "--no-browser"],
+        ["app", "--port", str(port), "--no-browser"],
         settings,
         serve=server,
         open_browser=opened.append,
@@ -462,14 +462,15 @@ def test_view_serves_the_app_on_localhost_only(settings):
     assert code == 0 and opened == []
     [call] = server.calls
     assert call["host"] == "127.0.0.1" and call["port"] == port
-    assert f"Job viewer: http://127.0.0.1:{port}" in out.text and "Viewer stopped." in out.text
+    assert f"Character Swap app: http://127.0.0.1:{port}" in out.text and "App stopped." in out.text
     page = TestClient(call["app"], base_url="http://127.0.0.1").get("/")
     assert page.status_code == 200 and "No swaps yet" in page.text
 
 
 def test_view_has_no_host_option(settings):
-    with pytest.raises(SystemExit):
-        run(["view", "--host", "0.0.0.0", "--no-browser"], settings, serve=FakeServer())
+    for command in ("app", "view"):
+        with pytest.raises(SystemExit):
+            run([command, "--host", "0.0.0.0", "--no-browser"], settings, serve=FakeServer())
 
 
 def test_view_port_check_binds_localhost_only(settings, monkeypatch):
@@ -506,7 +507,7 @@ def test_view_port_check_binds_localhost_only(settings, monkeypatch):
 def test_view_default_port(settings, monkeypatch):
     monkeypatch.setattr(cli, "_port_free", lambda port: True)
     server = FakeServer()
-    code, _ = run(["view", "--no-browser"], settings, serve=server)
+    code, _ = run(["app", "--no-browser"], settings, serve=server)
     assert code == 0 and server.calls[0]["port"] == 8770
 
 
@@ -521,7 +522,7 @@ def test_view_opens_the_browser_once_the_server_runs(settings, monkeypatch):
         opened.set()
 
     code, _ = run(
-        ["view", "--port", str(port)],
+        ["app", "--port", str(port)],
         settings,
         serve=FakeServer(wait_for=opened),
         open_browser=open_browser,
@@ -534,7 +535,7 @@ def test_view_does_not_open_the_browser_if_the_server_fails(settings, monkeypatc
     urls = []
     with pytest.raises(OSError):
         run(
-            ["--debug", "view", "--port", str(free_port())],
+            ["--debug", "app", "--port", str(free_port())],
             settings,
             serve=FakeServer(raise_on_start=OSError("bind failed")),
             open_browser=urls.append,
@@ -544,20 +545,20 @@ def test_view_does_not_open_the_browser_if_the_server_fails(settings, monkeypatc
 
 
 def test_view_ctrl_c_stops_cleanly(settings):
-    # real uvicorn normally handles SIGINT itself and returns, so "Viewer stopped." prints via
+    # real uvicorn normally handles SIGINT itself and returns, so "App stopped." prints via
     # the normal path; this test covers the fallback.
     server = FakeServer(raise_on_start=KeyboardInterrupt())
-    code, out = run(["view", "--port", str(free_port()), "--no-browser"], settings, serve=server)
-    assert code == 0 and "Viewer stopped." in out.text
+    code, out = run(["app", "--port", str(free_port()), "--no-browser"], settings, serve=server)
+    assert code == 0 and "App stopped." in out.text
     assert "Interrupted" not in out.err.text and "resume" not in out.err.text
 
 
 def test_view_bind_failure_at_startup_is_explained(settings, monkeypatch):
     monkeypatch.setattr(cli, "_port_free", lambda port: True)  # lost the race after the check
     server = FakeServer(raise_on_start=SystemExit(1))  # what real uvicorn raises on bind failure
-    code, out = run(["view", "--port", "8771", "--no-browser"], settings, serve=server)
-    assert code == 2 and "Viewer stopped." not in out.text
-    assert "Port 8771 is busy; try `charswap view --port 8772`" in out.err.text
+    code, out = run(["app", "--port", "8771", "--no-browser"], settings, serve=server)
+    assert code == 2 and "App stopped." not in out.text
+    assert "Port 8771 is busy; try `charswap app --port 8772`" in out.err.text
 
 
 def test_port_free_sees_a_wildcard_listener():
@@ -573,21 +574,43 @@ def test_view_busy_port_is_explained(settings):
         busy.listen()
         port = busy.getsockname()[1]
         server = FakeServer()
-        code, out = run(["view", "--port", str(port), "--no-browser"], settings, serve=server)
+        code, out = run(["app", "--port", str(port), "--no-browser"], settings, serve=server)
     assert code == 2 and server.calls == []
-    assert f"Port {port} is busy; try `charswap view --port {port + 1}`" in out.err.text
+    assert f"Port {port} is busy; try `charswap app --port {port + 1}`" in out.err.text
 
 
 @pytest.mark.parametrize("port", ["0", "70000", "http"])
 def test_view_rejects_bad_ports(settings, port):
     with pytest.raises(SystemExit):
-        run(["view", "--port", port], settings, serve=FakeServer())
+        run(["app", "--port", port], settings, serve=FakeServer())
 
 
-def test_help_lists_view(capsys):
+def test_help_lists_the_app_and_its_old_name(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
-    assert "open the read-only job viewer" in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert "open the click-through app" in text and "the same as app" in text
+    assert "charswap app" in text
+
+
+def test_view_is_the_same_as_app(settings, monkeypatch):
+    monkeypatch.setattr(cli, "_port_free", lambda port: True)
+    server = FakeServer()
+    code, out = run(["view", "--no-browser"], settings, serve=server)
+    assert code == 0 and "Character Swap app: http://127.0.0.1:8770" in out.text
+    assert "App stopped. Work that was already running keeps going." in out.text
+
+
+def test_the_app_re_reads_dot_env_on_each_request(tmp_path, monkeypatch):
+    for name in ("REPLICATE_API_TOKEN", "WAVESPEED_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cli, "_port_free", lambda port: True)
+    server = FakeServer()
+    run(["app", "--no-browser"], Settings.load(root=tmp_path, environ={}), serve=server)
+    client = TestClient(server.calls[0]["app"], base_url="http://127.0.0.1")
+    assert "<code>WAVESPEED_API_KEY</code> is missing" in client.get("/").text
+    (tmp_path / ".env").write_text("REPLICATE_API_TOKEN=r\nWAVESPEED_API_KEY=w\n")
+    assert "is missing" not in client.get("/").text
 
 
 def test_provider_errors_are_friendly(tmp_path, prep_settings, video, monkeypatch):

@@ -78,7 +78,7 @@ from character_swap.stages import StageError
 
 Out = Callable[[str], None]
 
-VIEW_HOST = "127.0.0.1"  # the viewer is never reachable from the network
+VIEW_HOST = "127.0.0.1"  # the app is never reachable from the network
 BROWSER_DELAY = 1.0  # seconds; lets the server start listening before the browser asks
 # Keyed by pipeline.generator_key(job): each generator's paid key and unconfirmed-marker help.
 KEYS = {
@@ -189,7 +189,7 @@ EPILOG = """example:
   charswap generate <id> --draft
   charswap generate <id> --final
   charswap generate <id> --final --resolution 1080p
-  charswap view
+  charswap app
 
 other providers:
   charswap face add frank me.jpg
@@ -294,9 +294,13 @@ def _parser() -> argparse.ArgumentParser:
     face_sub.add_parser(
         "renew", help="upload the same saved photo again after PiAPI removed it"
     ).add_argument("name")
-    view = sub.add_parser("view", help="open the read-only job viewer in your browser")
-    view.add_argument("--port", type=_port, default=8770)
-    view.add_argument("--no-browser", action="store_true", help="only print the URL")
+    for name, text in (
+        ("app", "open the click-through app in your browser"),
+        ("view", "the same as app (its old name)"),
+    ):
+        app = sub.add_parser(name, help=text)
+        app.add_argument("--port", type=_port, default=8770)
+        app.add_argument("--no-browser", action="store_true", help="only print the URL")
     return parser
 
 
@@ -777,16 +781,18 @@ def _port_free(port: int) -> bool:
     return True
 
 
-def _view(args, settings, env) -> int:
+def _app(args, settings, env) -> int:
     from character_swap.web.app import create_app  # keeps other commands fast to start
 
     port = args.port
+    busy = f"Port {port} is busy; try `charswap app --port {port + 1}`"
     if not _port_free(port):
-        env.err(f"Port {port} is busy; try `charswap view --port {port + 1}`")
+        env.err(busy)
         return 2
     url = f"http://{VIEW_HOST}:{port}"
-    app = create_app(settings)
-    env.out(f"Job viewer: {url}  (Ctrl-C to stop)")
+    # A4: keys stay in .env; the app re-reads it on each request.
+    app = create_app(settings, reload_settings=lambda: Settings.load(root=settings.root))
+    env.out(f"Character Swap app: {url}  (Ctrl-C to stop)")
     opener = None
     if not args.no_browser:
         opener = threading.Timer(BROWSER_DELAY, env.open_browser, args=[url])
@@ -795,16 +801,16 @@ def _view(args, settings, env) -> int:
     try:
         env.serve(app, host=VIEW_HOST, port=port)
     except KeyboardInterrupt:
-        pass  # Ctrl-C is how the viewer is meant to stop; no resume hint here
+        pass  # Ctrl-C is how the app is meant to stop; no resume hint here
     except SystemExit as error:  # uvicorn exits with status 1 when it cannot bind
         if error.code in (None, 0):
             raise
-        env.err(f"Port {port} is busy; try `charswap view --port {port + 1}`")
+        env.err(busy)
         return 2
     finally:
         if opener is not None:
             opener.cancel()
-    env.out("Viewer stopped.")
+    env.out("App stopped. Work that was already running keeps going.")
     return 0
 
 
@@ -872,5 +878,6 @@ COMMANDS = {
     "generate": _generate,
     "doctor": _doctor,
     "face": _face,
-    "view": _view,
+    "app": _app,
+    "view": _app,  # the old name of the read-only viewer, which the app replaced
 }
