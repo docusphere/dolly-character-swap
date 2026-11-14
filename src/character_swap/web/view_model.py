@@ -11,12 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-import av
-
-from character_swap import review
-from character_swap.costs import estimate_stages, total_spend
+from character_swap.costs import estimate_stages
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
-from character_swap.media.video import stream_seconds
 from character_swap.modes import GENERATION_STAGES, PROVIDER_NAMES
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
@@ -66,21 +62,9 @@ class CostRow:
 
 
 @dataclass(frozen=True)
-class CostsView:
-    rows: tuple[CostRow, ...]
-    completed_usd: float
-    logged_usd: float
-    all_jobs_usd: float
-
-
-@dataclass(frozen=True)
 class JobSummary:
     id: str
     short_id: str
-    generator: str
-    mode: str
-    done_count: int
-    total_count: int
     cost_usd: float
     created_at: str
     error: str | None = None
@@ -242,33 +226,6 @@ def tilde(text: str) -> str:
     return text.replace(str(Path.home()), "~")
 
 
-def _size_text(path: Path) -> str:
-    size = path.stat().st_size
-    return f"{size / 1_000_000:.1f} MB" if size >= 100_000 else f"{size / 1000:.0f} KB"
-
-
-def video_facts(path: Path) -> str:
-    """'8.0 s · 1.2 MB'; a damaged or partial file is reported, never raised."""
-    try:
-        size = _size_text(path)
-    except OSError:
-        return "file missing"  # vanished since the folder scan
-    try:
-        seconds = stream_seconds(path, "video")
-    except (OSError, ValueError, av.error.FFmpegError):
-        return f"unreadable video · {size}"
-    return f"{seconds:.1f} s · {size}"
-
-
-def review_status(job: Job) -> dict[str, Any]:
-    """review.status() hashes every reviewed file; any read problem shows as unavailable."""
-    try:
-        decision = review.status(job)
-    except (OSError, ValueError) as exc:
-        return {"approved": False, "status": "unavailable", "note": str(exc)}
-    return decision if isinstance(decision, dict) else {"status": "unavailable"}
-
-
 # ---- costs -------------------------------------------------------------------
 def _usd(value: Any) -> float:
     try:
@@ -289,7 +246,7 @@ def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
     """The estimate logged when this stage's current prediction was created.
 
     Matched by prediction id, so a draft remade after new inputs never counts the old
-    charges (every charge still shows in "Logged for this job"). When nothing matches, only
+    charges (every charge stays in state.json's cost log). When nothing matches, only
     older log lines without an id are used.
     """
     entries = [entry for entry in _cost_entries(state) if entry.get("step") == stage]
@@ -348,15 +305,6 @@ def completed_cost(rows: tuple[CostRow, ...]) -> float:
     return round(sum(row.usd for row in rows), 4)
 
 
-def logged_cost(state: dict[str, Any]) -> float:
-    return round(sum(_usd(entry.get("usd")) for entry in _cost_entries(state)), 4)
-
-
-def costs_view(job: Job, state: dict[str, Any], runs_dir: Path) -> CostsView:
-    rows = cost_rows(job, state)
-    return CostsView(rows, completed_cost(rows), logged_cost(state), total_spend(runs_dir))
-
-
 _UNKNOWN = object()  # the inputs could not be read this time: say nothing about staleness
 
 
@@ -402,17 +350,10 @@ def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
         state = read_state(job)
         key = generator_key(job, state)
     except (ViewError, JobError) as exc:
-        return JobSummary(
-            job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), tilde(str(exc))
-        )
-    info = progress(state)
+        return JobSummary(job.id, job.id[:8], 0.0, _mtime_iso(folder), tilde(str(exc)))
     return JobSummary(
         id=job.id,
         short_id=job.id[:8],
-        generator=str(state.get("generator", "?")),
-        mode=state["mode"],
-        done_count=info["done_count"],
-        total_count=info["total_count"],
         cost_usd=completed_cost(cost_rows(job, state)),
         created_at=str(state.get("created_at") or _mtime_iso(folder)),
         step=current_step(job, state),

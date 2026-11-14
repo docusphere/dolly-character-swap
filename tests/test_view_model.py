@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from character_swap.costs import Estimate, Line, estimate_prepare, estimate_stages, record_spend
+from character_swap.costs import estimate_prepare, estimate_stages
 from character_swap.pipeline import PAID_STAGES
 from character_swap.review import decide, fingerprint
 from character_swap.web import view_model as vm
@@ -191,89 +191,57 @@ def test_depth_mesh_composite_fallback(runs_dir, media):
     assert vm.composite_name(job, {**job.state, "mode": "depth"}) == "composite-silent.mp4"
 
 
-def test_unreadable_video_is_reported_not_raised(runs_dir, media):
-    job = make_job(runs_dir, media, "direct")
-    job.path("original.mp4").write_bytes(b"not a video" * 20_000)
-    assert vm.video_facts(job.path("original.mp4")) == "unreadable video · 0.2 MB"
-    assert vm.video_facts(job.path("upload.mp4")).startswith("1.0 s · ")
-
-
-def test_video_facts_treats_a_vanished_file_as_missing(tmp_path, monkeypatch):
-    gone = tmp_path / "gone.mp4"
-    assert vm.video_facts(gone) == "file missing"
-    monkeypatch.setattr(vm, "stream_seconds", lambda *_a: 1.0)
-    assert vm.video_facts(gone) == "file missing"
-
-
-def test_review_read_errors_show_unavailable(runs_dir, media, monkeypatch):
-    job = make_job(runs_dir, media, "direct")
-
-    def broken(_job):
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(vm.review, "status", broken)
-    assert vm.review_status(job)["status"] == "unavailable"
-
-
 # ---- costs ---------------------------------------------------------------------
 def test_huggingface_depth_is_free(runs_dir, media):
     job = make_job(runs_dir, media, "depth", depth_provider="huggingface")
-    costs = vm.costs_view(job, job.state, runs_dir)
-    depth_row = next(row for row in costs.rows if row.step == "Depth video")
+    rows = vm.cost_rows(job, job.state)
+    depth_row = next(row for row in rows if row.step == "Depth video")
     assert depth_row == vm.CostRow("Depth video", "Hugging Face · free", 0.0, None)
     expected = round(estimate_prepare("depth", 30).total - 0.04, 4)
-    assert costs.completed_usd == pytest.approx(expected)
+    assert vm.completed_cost(rows) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("mode", ["depth", "depth_mesh", "face_mesh", "direct"])
 def test_finished_job_costs_match_the_prepare_estimate(runs_dir, media, mode):
     job = make_job(runs_dir, media, mode)
-    costs = vm.costs_view(job, job.state, runs_dir)
-    assert len(costs.rows) == len(PAID_STAGES[mode])
-    assert all(row.provider == "Replicate" for row in costs.rows)
-    assert all(row.link for row in costs.rows)
-    assert costs.completed_usd == pytest.approx(round(estimate_prepare(mode, 30).total, 4))
+    rows = vm.cost_rows(job, job.state)
+    assert len(rows) == len(PAID_STAGES[mode])
+    assert all(row.provider == "Replicate" for row in rows)
+    assert all(row.link for row in rows)
+    assert vm.completed_cost(rows) == pytest.approx(round(estimate_prepare(mode, 30).total, 4))
 
 
 def test_costs_count_only_completed_steps(runs_dir, media):
     job = make_job(runs_dir, media, "depth", done=3, failed="whisper down")
-    costs = vm.costs_view(job, job.state, runs_dir)
-    assert [row.step for row in costs.rows] == ["Separate vocals"]
-    assert costs.rows[0].link == "https://replicate.com/p/pred-separate"
-    assert costs.completed_usd == pytest.approx(0.017)
+    rows = vm.cost_rows(job, job.state)
+    assert [row.step for row in rows] == ["Separate vocals"]
+    assert rows[0].link == "https://replicate.com/p/pred-separate"
+    assert vm.completed_cost(rows) == pytest.approx(0.017)
 
 
-def test_logged_and_all_jobs_spend(runs_dir, media):
-    job = make_job(runs_dir, media, "face_mesh")
-    other = make_job(runs_dir, media, "face_mesh")
-    assert vm.costs_view(job, job.state, runs_dir).logged_usd == 0
-    record_spend(job, "prepare", Estimate((Line("a", 0.0188),)), runs_dir)
-    record_spend(other, "prepare", Estimate((Line("a", 0.02),)), runs_dir)
-    job.append_cost({"step": "odd", "usd": "not a number"})
-    job.append_cost("garbage")
-    costs = vm.costs_view(job, job.state, runs_dir)
-    assert costs.logged_usd == pytest.approx(0.0188)
-    assert costs.all_jobs_usd == pytest.approx(0.0388)
-
-
-def test_logged_cost_ignores_a_damaged_costs_field(runs_dir, media):
+def test_a_damaged_costs_field_or_entry_counts_as_zero(runs_dir, media):
     job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
     job.update(costs="oops")
-    assert vm.logged_cost(job.state) == 0.0
+    assert [row.usd for row in vm.cost_rows(job, job.state)] == [0.0]
+    job.update(costs=["garbage", {"step": "draft", "usd": "not a number", "task_id": "pred-draft"}])
+    assert [row.usd for row in vm.cost_rows(job, job.state)] == [0.0]
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", float("nan"), float("-inf")])
-def test_non_finite_logged_costs_count_as_zero(value):
-    state = {"costs": [{"usd": value}, {"usd": 0.5}]}
-    assert vm.logged_cost(state) == 0.5
+def test_non_finite_logged_costs_count_as_zero(runs_dir, media, value):
+    job = make_job(runs_dir, media, "direct")
+    finish_stage(job, media, "draft")
+    job.append_cost({"step": "draft", "usd": value, "task_id": "pred-draft"})
+    job.append_cost({"step": "draft", "usd": 0.5, "task_id": "pred-draft"})
+    assert [row.usd for row in vm.cost_rows(job, job.state)] == [0.5]
 
 
 def test_wan_draft_row_links_to_replicate(runs_dir, media):
     job = make_job(runs_dir, media, "direct")
     finish_stage(job, media, "draft")
     job.append_cost({"step": "draft", "usd": 0.08, "at": "x", "task_id": "pred-draft"})
-    costs = vm.costs_view(job, job.state, runs_dir)
-    rows = [(row.step, row.provider, row.usd, row.link) for row in costs.rows]
+    rows = [(row.step, row.provider, row.usd, row.link) for row in vm.cost_rows(job, job.state)]
     assert rows == [("Draft (480p)", "Replicate", 0.08, "https://replicate.com/p/pred-draft")]
 
 
@@ -282,9 +250,7 @@ def test_remade_draft_row_counts_only_the_current_prediction(runs_dir, media):
     finish_stage(job, media, "draft")
     job.append_cost({"step": "draft", "usd": 0.08, "at": "x", "task_id": "pred-old"})
     job.append_cost({"step": "draft", "usd": 0.08, "at": "y", "task_id": "pred-draft"})
-    costs = vm.costs_view(job, job.state, runs_dir)
-    assert [row.usd for row in costs.rows] == [0.08]
-    assert costs.logged_usd == pytest.approx(0.16)  # every charge is still logged
+    assert [row.usd for row in vm.cost_rows(job, job.state)] == [0.08]
 
 
 def test_unmatched_current_prediction_never_counts_old_charges(runs_dir, media):
@@ -393,7 +359,6 @@ def test_list_jobs_newest_first_with_step_thumb_and_cost(runs_dir, media):
     (runs_dir / "_incoming").mkdir()  # the app's uploads in progress
     summaries = vm.list_jobs(runs_dir)
     assert [s.id for s in summaries] == [new.id, old.id, wan.id]
-    assert (summaries[1].done_count, summaries[1].total_count) == (4, 9)
     paid = estimate_stages(["separate", "transcribe"], 30).total
     assert summaries[1].cost_usd == pytest.approx(paid)
     assert summaries[1].short_id == old.id[:8] and summaries[1].error is None
