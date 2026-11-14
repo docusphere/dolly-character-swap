@@ -29,7 +29,7 @@
 - `web.app.create_app`, `SECURITY_HEADERS`, `ALLOWED_SUFFIXES`, `LOCAL_HOSTS`; `web.view_model.read_state`, `stage_status`, `combine`, `progress`, `prediction_id`, `prediction_url`, `file_url`, `composite_name`, `tilde`, `video_facts`, `review_status`, `cost_rows`, `costs_view`, `completed_cost`, `logged_cost`, `stale_stages`, `list_jobs`, `JobSummary`
 - tests: `tests/fakes.py` (`FakeReplicate`, `FakeWaveSpeed`), `tests/viewer_jobs.py` (`Media`, `make_job`, `finish_stage`, `write_record`, `RECORDS`), `tests/helpers.py` (`solid`, `tone`, `write_video`, `write_wav`, `write_mask_pngs`), `tests/conftest.py` (`runs_dir`, `media`), `tests/test_cli.py` (`run`, `Recorder`, `FakeServer`, `free_port`, `_photo`, `_prepare_ids`, `_finish_stages`, `_interrupted_draft`, `_approved_wavespeed_job`, `wavespeed_services`, `ws_settings`, `prep_settings`, `settings`, `video`)
 
-**Dry run:** every code block in this plan was applied in order, by a script that reads the **Create** / **Replace** / **Append** / **Delete** blocks exactly as written, to a scratch worktree of `feat/click-through-app`; after each task the task's tests, `ruff format --check`, `ruff check` and the full suite ran. Every task passed; after Task 14 the suite has **1124 passing tests (1 live test deselected), 96.85 % coverage**, ruff clean. The full suite grows 1003 → 1015 → 1000 (Task 2 removes the old section tests) → 1003 → 1005 → 1022 → 1034 → 1048 → 1063 → 1082 → 1089 → 1123 → 1124.
+**Dry run:** every code block in this plan was applied in order, by a script that reads the **Create** / **Replace** / **Append** / **Delete** blocks exactly as written, to a scratch worktree of `feat/click-through-app`; after each task the task's tests, `ruff format --check`, `ruff check` and the full suite ran. Every task passed; after Task 14 the suite has **1128 passing tests (1 live test deselected), 96.83 % coverage**, ruff clean (the full suite was run after Tasks 4, 9 and 14; every other task ran its own tests and ruff). The full suite grows 1003 → 1016 → 1001 (Task 2 removes the old section tests) → 1004 → 1006 → 1023 → 1035 → 1049 → 1064 → 1086 → 1093 → 1127 → 1128.
 
 ## Decisions taken in this plan
 
@@ -96,7 +96,8 @@
 
 The wording comes first, so every screen built later reads its texts from one place (A9,
 A10). Plain English, one short line per step, technique tags with a one-sentence tip, the
-button labels, and which file each Prepare tab shows. Nothing reads this file yet.
+button labels, the short messages (the price question, "needs your decision", …), and which
+file each Prepare tab shows. Nothing reads this file yet.
 
 **Files:**
 - Create: `src/character_swap/web/steps.py`
@@ -195,6 +196,12 @@ def test_tab_files():
 def test_looks_default_to_lip_sync():
     assert [mode for mode, _label, _hint in steps.LOOKS] == ["depth_mesh", "depth"]
     assert steps.LOOKS[0][1] == "Better lip sync" and steps.LOOKS[1][1] == "Better likeness"
+
+
+def test_the_price_question_names_the_amount_and_who_charges_it():
+    assert steps.CHARGE.format(usd="$0.88", provider="WaveSpeed") == (
+        "Charge about $0.88 on WaveSpeed?"
+    )
 ````
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -377,6 +384,16 @@ READ_ONLY = "Made with the command line. Continue there: charswap status {id}"
 DIRECT_PREPARE = "Wan copies the motion straight from your clip, so nothing is hidden."
 WAITING = "Not made yet."
 RUNNING = "Working on it…"
+FILE_MISSING = "File missing."
+NEW_RESULTS = "New results are ready."
+REFRESH = "Refresh"
+LAST_STOPPED = "The last command stopped:"
+STALE_DRAFT = "This draft was made from files that are no longer approved."
+NEEDS_DECISION = "Needs your decision."
+DECISION_HOW = "Nothing will be bought again from here; do this from the command line:"
+CHARGE = "Charge about {usd} on {provider}?"  # the price dialog's question
+CHARGE_YES = "Yes, charge it"
+CHARGE_NO = "Cancel"
 
 
 def step(number: int) -> Step:
@@ -395,14 +412,14 @@ def tabs_for(mode: str) -> tuple[Tab, ...]:
 - [ ] **Step 4: Run the task's tests**
 
 Run: `uv run pytest tests/test_steps.py -q --no-cov`  
-Expected: PASS (12 passed).
+Expected: PASS (13 passed).
 
 - [ ] **Step 5: Lint, full suite, commit**
 
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1015 passed, 1 deselected; coverage 96.99 %
+uv run pytest    # expected: 1016 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/web/steps.py tests/test_steps.py
 git commit -m "feat: one file holds every step text (web/steps.py)"
 ````
@@ -2567,8 +2584,8 @@ WATCH_FIRST = "Watch it to the end first."
     {{ tags(page.step.tags) }}
   </div>
   <p id="new-results" class="notice info" role="status" hidden>
-    New results are ready.
-    <button type="button" id="refresh-button">Refresh</button>
+    {{ steps.NEW_RESULTS }}
+    <button type="button" id="refresh-button">{{ steps.REFRESH }}</button>
   </p>
   {% if page.read_only %}
   <p class="notice info">{{ steps.READ_ONLY.format(id=page.id) }}</p>
@@ -2617,7 +2634,7 @@ WATCH_FIRST = "Watch it to the end first."
 {% macro placeholder(state) %}
 <div class="placeholder placeholder-{{ state }}">
   {% if state == "running" %}<span class="spinner" aria-hidden="true"></span> {{ steps.RUNNING }}
-  {% elif state == "missing" %}File missing.
+  {% elif state == "missing" %}{{ steps.FILE_MISSING }}
   {% elif state == "failed" %}This step failed.
   {% else %}{{ steps.WAITING }}{% endif %}
 </div>
@@ -2712,7 +2729,7 @@ with:
 ````html
 <div class="pair">
   <figure class="media">
-    {% if page.upload %}<video controls preload="metadata" playsinline src="{{ page.upload }}"></video>{% else %}<div class="placeholder">File missing.</div>{% endif %}
+    {% if page.upload %}<video controls preload="metadata" playsinline src="{{ page.upload }}"></video>{% else %}<div class="placeholder">{{ steps.FILE_MISSING }}</div>{% endif %}
     <figcaption>Your clip</figcaption>
   </figure>
   <figure class="media">
@@ -2814,7 +2831,7 @@ with:
 </div>
 {% elif page.wipe %}
 {{ wipe(page.wipe) }}
-{% if page.stale %}<p class="notice">This draft was made from files that are no longer approved.</p>{% endif %}
+{% if page.stale %}<p class="notice">{{ steps.STALE_DRAFT }}</p>{% endif %}
 {% else %}
 {{ placeholder(page.state) }}
 {% endif %}
@@ -3297,7 +3314,7 @@ Expected: PASS (334 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1000 passed, 1 deselected; coverage 96.88 %
+uv run pytest    # expected: 1001 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/costs.py src/character_swap/web/app.py src/character_swap/web/pages.py src/character_swap/web/static/viewer.css src/character_swap/web/steps.py src/character_swap/web/templates/bar.html src/character_swap/web/templates/base.html src/character_swap/web/templates/home.html src/character_swap/web/templates/job.html src/character_swap/web/templates/macros.html src/character_swap/web/templates/message.html src/character_swap/web/templates/new.html src/character_swap/web/templates/step-1.html src/character_swap/web/templates/step-2.html src/character_swap/web/templates/step-3.html src/character_swap/web/templates/step-4.html src/character_swap/web/templates/step-5.html src/character_swap/web/view_model.py tests/test_cli.py tests/test_pages.py tests/test_view_model.py tests/test_web_app.py tests/viewer_jobs.py
 git commit -m "feat: the five step screens over a job's files (read-only)"
 ````
@@ -3537,7 +3554,7 @@ Expected: PASS (54 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1003 passed, 1 deselected; coverage 96.88 %
+uv run pytest    # expected: 1004 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/web/static/app.js src/character_swap/web/templates/base.html tests/test_web_app.py
 git commit -m "feat: before/after wipe player and live progress"
 ````
@@ -4019,7 +4036,7 @@ Expected: PASS (187 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1005 passed, 1 deselected; coverage 96.88 %
+uv run pytest    # expected: 1006 passed, 1 deselected; coverage 96.89 %
 git add src/character_swap/cli.py tests/test_cli.py
 git commit -m "feat: charswap app opens the click-through app (view stays as an alias)"
 ````
@@ -4521,7 +4538,7 @@ Expected: PASS (17 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1022 passed, 1 deselected; coverage 96.90 %
+uv run pytest    # expected: 1023 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/cli.py src/character_swap/lock.py tests/test_lock.py
 git commit -m "feat: one cross-process lock per job (run.lock)"
 ````
@@ -5249,7 +5266,7 @@ Expected: PASS (298 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1034 passed, 1 deselected; coverage 96.93 %
+uv run pytest    # expected: 1035 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/__main__.py src/character_swap/cli.py src/character_swap/jobs.py src/character_swap/pipeline.py src/character_swap/prompts.py tests/test_cli.py tests/test_jobs.py tests/test_pipeline.py tests/test_prompts.py
 git commit -m "feat: prepare --describe and --id-file; python -m character_swap; expired results are flagged"
 ````
@@ -6487,7 +6504,7 @@ Expected: PASS (205 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1048 passed, 1 deselected; coverage 96.95 %
+uv run pytest    # expected: 1049 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/cli.py src/character_swap/costs.py src/character_swap/pipeline.py tests/test_cli.py
 git commit -m "feat: --confirmed-usd; planned_charge and generate_refusal shared by the CLI and the app"
 ````
@@ -7411,7 +7428,7 @@ with:
   <p class="notice info" role="status"><span class="spinner" aria-hidden="true"></span> {{ steps.RUNNING }}</p>
   {% endif %}
   {% if page.failure %}
-  <div class="error" role="alert"><p>The last command stopped:</p><pre class="log">{{ page.failure }}</pre></div>
+  <div class="error" role="alert"><p>{{ steps.LAST_STOPPED }}</p><pre class="log">{{ page.failure }}</pre></div>
   {% endif %}
   {% if page.error %}
   <div class="error" role="alert"><p>{{ page.error }}</p></div>
@@ -7460,7 +7477,7 @@ Expected: PASS (69 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1063 passed, 1 deselected; coverage 96.97 %
+uv run pytest    # expected: 1064 passed, 1 deselected; coverage 96.98 %
 git add src/character_swap/web/app.py src/character_swap/web/pages.py src/character_swap/web/runner.py src/character_swap/web/static/viewer.css src/character_swap/web/templates/job.html src/character_swap/web/view_model.py tests/fakes.py tests/test_runner.py tests/test_web_app.py
 git commit -m "feat: the app starts charswap commands as child processes and follows them"
 ````
@@ -7486,11 +7503,21 @@ id; the page polls `/api/starts/{start}` and goes to step 2. In the browser, the
 is read locally for "Draft later: about $X" (whole seconds, at least 4, times $0.22).
 New dependency `python-multipart`; `media-src` allows `blob:` for that local read.
 
+**Prepare** is paid, so it opens the price dialog first ("Charge about $0.06 on Replicate?",
+spec §3): the `<dialog id="confirm">` is a macro in `macros.html` (Task 12's job pages reuse
+it, and `app.js`'s `ask()` serves both). The description goes to the command as one
+`--describe=<text>` item, so a description starting with "-" can never become an option.
+When the app starts it deletes `runs/_incoming/<start>` folders untouched for a day (uploads
+a restarted server will never follow; copies only, never a job record).
+
 **Files:**
 - Modify: `src/character_swap/cli.py`
 - Modify: `src/character_swap/web/app.py`
 - Modify: `src/character_swap/web/static/app.js`
+- Modify: `src/character_swap/web/static/viewer.css`
 - Modify: `src/character_swap/web/templates/base.html`
+- Modify: `src/character_swap/web/templates/macros.html`
+- Modify: `src/character_swap/web/templates/new.html`
 - Create: `src/character_swap/web/uploads.py`
 - Modify (by `uv add`): `pyproject.toml`, `uv.lock`
 - Modify: `tests/test_web_app.py`
@@ -7665,8 +7692,7 @@ def test_an_upload_starts_prepare_with_the_confirmed_price(
         "0.060800",
         "--id-file",
         str((incoming / "job-id").resolve()),
-        "--describe",
-        "Short dark hair.",
+        "--describe=Short dark hair.",
     ]
     assert client.get(f"/api/starts/{start}").json() == {"state": "running"}
 
@@ -7741,12 +7767,43 @@ def test_the_upload_script_reads_the_clip_length_and_posts_the_shown_price(clien
     assert "URL.createObjectURL(file)" in script and "Math.floor(probe.duration)" in script
     assert 'body.set("confirm_usd", button.dataset.usd)' in script
     assert '"X-Charswap-Token": token' in script and "/api/starts/" in script
+
+
+def test_a_description_starting_with_a_dash_is_never_an_option(client, processes, clip, photo):
+    response = _upload(client, clip, photo, describe="--yes is not a flag")
+    assert response.status_code == 202
+    assert processes.last.args[-1] == "--describe=--yes is not a flag"
+
+
+def test_prepare_asks_with_the_price_dialog_first(client):
+    text = client.get("/new").text
+    assert '<dialog id="confirm"' in text and "Yes, charge it" in text
+    assert 'data-question="Charge about $0.06 on Replicate?"' in text
+    assert "about $0.06 · Replicate" in text
+    script = client.get("/static/app.js").text
+    submit = script.split('form.addEventListener("submit"')[1]
+    assert submit.index("await ask(button.dataset.question)") < submit.index("await post(")
+
+
+def test_old_upload_folders_are_swept_when_the_app_starts(settings, runner, runs_dir):
+    import os
+    import time
+
+    old = runs_dir / "_incoming" / ("a" * 32)
+    new = runs_dir / "_incoming" / ("b" * 32)
+    for folder in (old, new):
+        folder.mkdir(parents=True)
+        (folder / "clip.mp4").write_bytes(b"x")
+    day_ago = time.time() - 2 * 24 * 3600
+    os.utime(old, (day_ago, day_ago))
+    create_app(settings, runner=runner)
+    assert not old.exists() and new.exists()  # a prepare still starting is never swept
 ````
 
 - [ ] **Step 3: Run them and watch them fail**
 
 Run: `uv run pytest tests/test_web_app.py -q --no-cov`  
-Expected: FAIL. 20 failed, 58 passed: `POST /jobs` answers 405 and there is no `charswap-token` meta tag.
+Expected: FAIL. 23 failed, 58 passed: `POST /jobs` answers 405 and there is no `charswap-token` meta tag.
 
 - [ ] **Step 4: Write the code**
 
@@ -7822,12 +7879,14 @@ from character_swap.web.pages import home_page, job_page, missing_keys, step_bar
 from character_swap.web.runner import ID_FILE, Runner
 from character_swap.web.uploads import (
     CLIP_SUFFIXES,
+    INCOMING,
     MAX_REQUEST,
     PHOTO_SUFFIXES,
     UploadError,
     check_clip,
     check_photo_file,
     save,
+    sweep_incoming,
 )
 from character_swap.web.view_model import (
     ESTIMATE_SECONDS,
@@ -7915,6 +7974,7 @@ with:
     runs_dir = settings.runs_dir
     current_settings = reload_settings or (lambda: settings)
     runner = runner or Runner(cwd=settings.root)
+    sweep_incoming(runs_dir)  # uploads a restarted server will never follow
     # Every POST needs this launch's token (from the page's <meta>) and our own Origin, so
     # another website open in the same browser can never start a paid step.
     token = secrets.token_urlsafe(32)
@@ -8033,7 +8093,7 @@ with:
             names = " and ".join(key.name for key in missing)
             return JSONResponse({"errors": {"form": f"Add {names} to .env first."}}, 409)
         form = await request.form(max_files=2, max_fields=10)
-        incoming = runs_dir / "_incoming" / secrets.token_hex(16)
+        incoming = runs_dir / INCOMING / secrets.token_hex(16)
         incoming.mkdir(parents=True)
         try:
             args = await _prepare_args(form, incoming)
@@ -8096,7 +8156,7 @@ async def _prepare_args(form, incoming: Path) -> list[str]:
     args += ["--mode", str(look), "--yes", "--confirmed-usd", f"{usd:.6f}"]
     args += ["--id-file", str((incoming / ID_FILE).resolve())]
     if describe:
-        args += ["--describe", describe]  # one argv item: never a shell
+        args.append(f"--describe={describe}")  # one argv item, never an option or a shell
     return args
 ````
 
@@ -8135,6 +8195,17 @@ with:
       return { ok: false, status: 0, data: { error: "The app is not answering. Is it running?" } };
     }
   }
+
+  // The price dialog: every paid button asks first (spec §3); true only for "Yes, charge it".
+  const dialog = document.getElementById("confirm");
+  const ask = (text, note) =>
+    new Promise((resolve) => {
+      document.getElementById("confirm-question").textContent = text;
+      document.getElementById("confirm-note").textContent = note || "";
+      dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
+      dialog.returnValue = "";
+      dialog.showModal();
+    });
 
   // 4. Step 1: the draft hint from the clip's length, then upload and start preparing.
   const form = document.getElementById("new-swap");
@@ -8182,6 +8253,7 @@ with:
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       form.querySelectorAll("[data-error-for]").forEach((node) => (node.textContent = ""));
+      if (!(await ask(button.dataset.question))) return; // Prepare is paid: ask first
       const body = new FormData(form);
       body.set("confirm_usd", button.dataset.usd); // the price shown on the button
       button.disabled = true;
@@ -8202,6 +8274,37 @@ with:
   const main = document.querySelector("main[data-job-id]");
   if (!main) return;
   const POLL_MS = { fast: 2000, slow: 10000 };
+````
+
+**Replace** in `src/character_swap/web/static/viewer.css`:
+
+````css
+  min-height: var(--target); padding: 0 var(--space-2); text-decoration: underline; cursor: pointer;
+}
+
+/* the before/after wipe player: two stacked videos, the top one clipped at the divider */
+.wipe { margin-top: var(--space-2); }
+.wipe-stage {
+````
+
+with:
+
+````css
+  min-height: var(--target); padding: 0 var(--space-2); text-decoration: underline; cursor: pointer;
+}
+
+/* paid buttons and the price dialog */
+.offer { display: inline-flex; flex-direction: column; gap: var(--space-1); }
+.dialog {
+  border: 0; border-radius: var(--radius); padding: var(--space-6);
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow); max-width: 28rem;
+}
+.dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.dialog .actions { justify-content: flex-end; }
+
+/* the before/after wipe player: two stacked videos, the top one clipped at the divider */
+.wipe { margin-top: var(--space-2); }
+.wipe-stage {
 ````
 
 **Replace** in `src/character_swap/web/templates/base.html`:
@@ -8227,6 +8330,75 @@ with:
   <link rel="stylesheet" href="/static/viewer.css">
 ````
 
+**Append** to `src/character_swap/web/templates/macros.html`:
+
+````html
+
+{% macro confirm_dialog() %}
+<dialog id="confirm" class="dialog" aria-labelledby="confirm-question">
+  <form method="dialog">
+    <p id="confirm-question" class="line"></p>
+    <p id="confirm-note" class="meta"></p>
+    <div class="actions">
+      <button value="cancel" class="button">{{ steps.CHARGE_NO }}</button>
+      <button value="ok" class="button primary">{{ steps.CHARGE_YES }}</button>
+    </div>
+  </form>
+</dialog>
+{% endmacro %}
+````
+
+**Replace** in `src/character_swap/web/templates/new.html`:
+
+````html
+{% extends "base.html" %}
+{% block title %}New swap{% endblock %}
+{% block body %}
+<main id="main" class="page">
+````
+
+with:
+
+````html
+{% extends "base.html" %}
+{% from "macros.html" import confirm_dialog %}
+{% block title %}New swap{% endblock %}
+{% block body %}
+<main id="main" class="page">
+````
+
+**Replace** in `src/character_swap/web/templates/new.html`:
+
+````html
+    </div>
+    <p class="field-error" data-error-for="form" role="alert"></p>
+    <div class="actions">
+      <button type="submit" class="button primary" data-usd="{{ prepare_usd }}"{% if missing %} disabled{% endif %}>{{ steps.PREPARE }} · about {{ money(prepare_usd) }}</button>
+      <p class="meta" id="draft-hint" hidden></p>
+    </div>
+  </form>
+</main>
+{% endblock %}
+````
+
+with:
+
+````html
+    </div>
+    <p class="field-error" data-error-for="form" role="alert"></p>
+    <div class="actions">
+      <span class="offer">
+        <button type="submit" class="button primary" data-usd="{{ prepare_usd }}" data-question="{{ steps.CHARGE.format(usd=money(prepare_usd), provider='Replicate') }}"{% if missing %} disabled{% endif %}>{{ steps.PREPARE }} · about {{ money(prepare_usd) }}</button>
+        <span class="meta">about {{ money(prepare_usd) }} · Replicate</span>
+      </span>
+      <p class="meta" id="draft-hint" hidden></p>
+    </div>
+  </form>
+  {{ confirm_dialog() }}
+</main>
+{% endblock %}
+````
+
 **Create** `src/character_swap/web/uploads.py`:
 
 ````python
@@ -8234,6 +8406,8 @@ with:
 
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 
 import av
@@ -8248,6 +8422,32 @@ MAX_REQUEST = 2 * MAX_FILE + 1024 * 1024  # refused before it is read
 CHUNK = 1024 * 1024
 CLIP_SUFFIXES = (".mp4", ".mov")
 PHOTO_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+INCOMING = "_incoming"  # runs/_incoming/<start>: a new swap's uploads until prepare copies them
+STALE_SECONDS = 24 * 3600
+
+
+def sweep_incoming(runs_dir: Path, *, older_than: float = STALE_SECONDS) -> list[Path]:
+    """Delete upload folders nobody touched for a day (left by a server restart).
+
+    They hold copies of the uploads only, never a job record; a prepare that is still
+    starting touched its folder minutes ago, so it is never swept.
+    """
+    removed = []
+    folder = Path(runs_dir) / INCOMING
+    if not folder.is_dir():
+        return removed
+    cutoff = time.time() - older_than
+    for start in folder.iterdir():
+        try:
+            stale = start.is_dir() and start.stat().st_mtime < cutoff
+        except OSError:
+            continue
+        if stale:
+            shutil.rmtree(start, ignore_errors=True)
+            removed.append(start)
+    return removed
 
 
 class UploadError(ValueError):
@@ -8307,15 +8507,15 @@ def check_photo_file(path: Path) -> None:
 - [ ] **Step 5: Run the task's tests**
 
 Run: `uv run pytest tests/test_web_app.py -q --no-cov`  
-Expected: PASS (78 passed).
+Expected: PASS (81 passed).
 
 - [ ] **Step 6: Lint, full suite, commit**
 
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1082 passed, 1 deselected; coverage 96.91 %
-git add src/character_swap/cli.py src/character_swap/web/app.py src/character_swap/web/static/app.js src/character_swap/web/templates/base.html src/character_swap/web/uploads.py tests/test_web_app.py pyproject.toml uv.lock
+uv run pytest    # expected: 1086 passed, 1 deselected; coverage above 96 %
+git add src/character_swap/cli.py src/character_swap/web/app.py src/character_swap/web/static/app.js src/character_swap/web/static/viewer.css src/character_swap/web/templates/base.html src/character_swap/web/templates/macros.html src/character_swap/web/templates/new.html src/character_swap/web/uploads.py tests/test_web_app.py pyproject.toml uv.lock
 git commit -m "feat: new swap upload with free checks; POSTs need the launch token and our Origin"
 ````
 
@@ -8389,17 +8589,17 @@ def test_final_step_offers_the_download(client, runs_dir, media):
 **Replace** in `tests/test_web_app.py`:
 
 ````python
-    assert "URL.createObjectURL(file)" in script and "Math.floor(probe.duration)" in script
-    assert 'body.set("confirm_usd", button.dataset.usd)' in script
-    assert '"X-Charswap-Token": token' in script and "/api/starts/" in script
+    os.utime(old, (day_ago, day_ago))
+    create_app(settings, runner=runner)
+    assert not old.exists() and new.exists()  # a prepare still starting is never swept
 ````
 
 with:
 
 ````python
-    assert "URL.createObjectURL(file)" in script and "Math.floor(probe.duration)" in script
-    assert 'body.set("confirm_usd", button.dataset.usd)' in script
-    assert '"X-Charswap-Token": token' in script and "/api/starts/" in script
+    os.utime(old, (day_ago, day_ago))
+    create_app(settings, runner=runner)
+    assert not old.exists() and new.exists()  # a prepare still starting is never swept
 
 
 # ---- approve and the prompt (in-process, under the job lock) --------------------------
@@ -8482,7 +8682,7 @@ def test_the_app_script_gates_approve_and_saves_the_prompt(client):
 - [ ] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/test_web_app.py -q --no-cov`  
-Expected: FAIL. 8 failed, 77 passed: the approve and prompt routes answer 405 and step 3 has no approve button.
+Expected: FAIL. 8 failed, 80 passed: the approve and prompt routes answer 405 and step 3 has no approve button.
 
 - [ ] **Step 3: Write the code**
 
@@ -8904,14 +9104,14 @@ with:
 - [ ] **Step 4: Run the task's tests**
 
 Run: `uv run pytest tests/test_web_app.py -q --no-cov`  
-Expected: PASS (85 passed).
+Expected: PASS (88 passed).
 
 - [ ] **Step 5: Lint, full suite, commit**
 
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1089 passed, 1 deselected; coverage 96.84 %
+uv run pytest    # expected: 1093 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/pipeline.py src/character_swap/web/app.py src/character_swap/web/static/app.js src/character_swap/web/templates/step-3.html src/character_swap/web/templates/step-4.html tests/test_web_app.py
 git commit -m "feat: approve and the prompt editor in the app, under the job lock"
 ````
@@ -8936,7 +9136,8 @@ New `web/actions.py` decides, only when nothing is running, what each step offer
 The paid POSTs (`/jobs/{id}/retry`, `/repair`, `/draft`, `/final`) need `confirm_usd`, run
 the free refusals first, and start the command with `--confirmed-usd`. `GET
 /api/jobs/{id}/estimate?action=…` gives the dialog its price and question ("Charge about $0.88
-on WaveSpeed?"); the provider is named only in that small price line (A11). Paid buttons are
+on WaveSpeed?") through the same `ask()` Prepare uses; the provider is named only in that
+small price line (A11). Paid buttons are
 disabled, with a notice, while a key is missing (A4). `/api/jobs/{id}` adds `decision`, and
 step pages embed exactly the same keys and values the API returns, so a page never reloads in
 a loop.
@@ -9394,7 +9595,7 @@ class Offers:
 
 
 def question(usd: float, provider: str) -> str:
-    return f"Charge about {usd_text(usd)} on {provider}?"
+    return steps.CHARGE.format(usd=usd_text(usd), provider=provider)
 
 
 def _load(job: Job, name: str) -> dict[str, Any]:
@@ -9564,7 +9765,7 @@ from character_swap.web.pages import home_page, job_page, missing_keys, step_bar
 from character_swap.web.runner import ID_FILE, Runner
 from character_swap.web.uploads import (
     CLIP_SUFFIXES,
-    MAX_REQUEST,
+    INCOMING,
 ````
 
 with:
@@ -9597,7 +9798,7 @@ from character_swap.web.pages import home_page, job_page, missing_keys, step_bar
 from character_swap.web.runner import ID_FILE, Runner, RunnerBusy
 from character_swap.web.uploads import (
     CLIP_SUFFIXES,
-    MAX_REQUEST,
+    INCOMING,
 ````
 
 **Replace** in `src/character_swap/web/app.py`:
@@ -9888,15 +10089,6 @@ with:
 
   // 7. Paid buttons: the price dialog first (a fresh estimate), then the POST with that
   //    price. The command started on the server refuses unless it still costs exactly that.
-  const dialog = document.getElementById("confirm");
-  const ask = (text, note) =>
-    new Promise((resolve) => {
-      document.getElementById("confirm-question").textContent = text;
-      document.getElementById("confirm-note").textContent = note || "";
-      dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
-      dialog.returnValue = "";
-      dialog.showModal();
-    });
   document.querySelectorAll("button[data-action]").forEach((button) =>
     button.addEventListener("click", async () => {
       const main = document.querySelector("main[data-job-id]");
@@ -9935,19 +10127,17 @@ with:
 **Replace** in `src/character_swap/web/static/viewer.css`:
 
 ````css
-  min-height: var(--target); padding: 0 var(--space-2); text-decoration: underline; cursor: pointer;
-}
 
-/* the before/after wipe player: two stacked videos, the top one clipped at the divider */
-.wipe { margin-top: var(--space-2); }
-.wipe-stage {
+/* paid buttons and the price dialog */
+.offer { display: inline-flex; flex-direction: column; gap: var(--space-1); }
+.dialog {
+  border: 0; border-radius: var(--radius); padding: var(--space-6);
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow); max-width: 28rem;
 ````
 
 with:
 
 ````css
-  min-height: var(--target); padding: 0 var(--space-2); text-decoration: underline; cursor: pointer;
-}
 
 /* paid buttons and the price dialog */
 .offer { display: inline-flex; flex-direction: column; gap: var(--space-1); }
@@ -9955,13 +10145,6 @@ with:
 .dialog {
   border: 0; border-radius: var(--radius); padding: var(--space-6);
   background: var(--surface); color: var(--text); box-shadow: var(--shadow); max-width: 28rem;
-}
-.dialog::backdrop { background: rgb(0 0 0 / 45%); }
-.dialog .actions { justify-content: flex-end; }
-
-/* the before/after wipe player: two stacked videos, the top one clipped at the divider */
-.wipe { margin-top: var(--space-2); }
-.wipe-stage {
 ````
 
 **Replace** in `src/character_swap/web/templates/job.html`:
@@ -9978,7 +10161,7 @@ with:
 
 ````html
 {% extends "base.html" %}
-{% from "macros.html" import tags, offer_list %}
+{% from "macros.html" import tags, offer_list, confirm_dialog %}
 {% block title %}Step {{ page.step.number }} · {{ page.step.title }}{% endblock %}
 {% block body %}
 <main id="main" class="page" data-job-id="{{ page.id }}" data-poll="{{ page.progress.poll }}" data-progress="{{ progress_json }}">
@@ -10010,16 +10193,7 @@ with:
   {% endif %}
   {% include "step-%d.html" % page.step.number %}
   <p class="field-error" id="action-error" role="alert"></p>
-  <dialog id="confirm" class="dialog" aria-labelledby="confirm-question">
-    <form method="dialog">
-      <p id="confirm-question" class="line"></p>
-      <p id="confirm-note" class="meta"></p>
-      <div class="actions">
-        <button value="cancel" class="button">Cancel</button>
-        <button value="ok" class="button primary">Yes, charge it</button>
-      </div>
-    </form>
-  </dialog>
+  {{ confirm_dialog() }}
 </main>
 {% endblock %}
 ````
@@ -10031,7 +10205,7 @@ with:
 {% macro offer_list(offers, job_id, missing) %}
 {% if offers.decision %}
 <div class="notice decision" role="alert">
-  <p><strong>Needs your decision.</strong> Nothing will be bought again from here; do this from the command line:</p>
+  <p><strong>{{ steps.NEEDS_DECISION }}</strong> {{ steps.DECISION_HOW }}</p>
   <pre class="log">{{ offers.decision }}</pre>
 </div>
 {% endif %}
@@ -10198,14 +10372,14 @@ with:
 - [ ] **Step 4: Run the task's tests**
 
 Run: `uv run pytest tests/test_actions.py tests/test_web_app.py -q --no-cov`  
-Expected: PASS (119 passed).
+Expected: PASS (122 passed).
 
 - [ ] **Step 5: Lint, full suite, commit**
 
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1123 passed, 1 deselected; coverage 96.85 %
+uv run pytest    # expected: 1127 passed, 1 deselected; coverage above 96 %
 git add src/character_swap/web/actions.py src/character_swap/web/app.py src/character_swap/web/static/app.js src/character_swap/web/static/viewer.css src/character_swap/web/templates/job.html src/character_swap/web/templates/macros.html src/character_swap/web/templates/step-2.html src/character_swap/web/templates/step-3.html src/character_swap/web/templates/step-4.html src/character_swap/web/templates/step-5.html tests/test_actions.py tests/test_web_app.py
 git commit -m "feat: paid buttons with a price dialog; needs-your-decision instead of a button"
 ````
@@ -10696,7 +10870,7 @@ Expected: PASS (39 passed).
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1124 passed, 1 deselected; coverage 96.85 %
+uv run pytest    # expected: 1128 passed, 1 deselected; coverage above 96 %
 git add tests/fake_cli.py tests/fakes.py tests/test_click_through.py tests/test_pipeline.py
 git commit -m "test: one full click-through on the real CLI with fake providers"
 ````
@@ -10842,7 +11016,7 @@ uv run charswap generate <id> --final                      # 1080p upgrade of th
 ## 2026-11-13 — Session 8: Plan 3a, the click-through app
 - **Goal:** a local app that does a whole swap by clicking, to film for the YouTube video.
 - **Completed:** `charswap app` (old name `view`): home, five step screens, the before/after wipe player, technique tags, live progress; upload, approve, prompt save, paid buttons with a price dialog; "needs your decision" instead of a button where a click could buy twice. CLI: `run.lock`, `--confirmed-usd`, `--describe`, `--id-file`, `python -m character_swap`, the `expired` flag.
-- **Decisions:** see the plan's P1–P12 table (docs/superpowers/plans/2026-11-13-click-through-app.md).
+- **Decisions:** see the plan's P1–P14 table (docs/superpowers/plans/2026-11-13-click-through-app.md).
 - **Lessons:**
   - The page and `/api/jobs/{id}` must embed exactly the same values, or the page reloads in a loop.
   - A lock holder clears `run.lock` when it lets go; otherwise a long-lived server pid reads as "running" forever.
@@ -10906,7 +11080,7 @@ with:
 ````bash
 uv run ruff format src tests && uv run ruff check --fix src tests
 uv run ruff format --check src tests
-uv run pytest    # expected: 1124 passed, 1 deselected; coverage 96.85 %
+uv run pytest    # expected: 1128 passed, 1 deselected; coverage 96.83 %
 git add CLAUDE.md README.md activity.md docs/scratchpad.md
 git commit -m "docs: the click-through app in CLAUDE.md, README, journal and checklist"
 ````
@@ -10914,7 +11088,7 @@ git commit -m "docs: the click-through app in CLAUDE.md, README, journal and che
 - [ ] **Step 3: Final verification**
 
 ````bash
-uv run pytest                      # expected: 1124 passed, 1 deselected; Total coverage: 96.85%
+uv run pytest                      # expected: 1128 passed, 1 deselected; Total coverage: 96.83%
 uv run ruff check src tests        # expected: All checks passed!
 uv run ruff format --check src tests
 git status --short                 # expected: nothing but the untracked outputs/ folder
@@ -10947,3 +11121,5 @@ The spec fit the code with these adjustments; none changes a decision or a money
 17. **`python-multipart`** is added with `uv add`; uv 0.6.6 also rewrites `uv.lock`'s format (`revision = 1`). That is uv's own output and is committed as written.
 18. **`charswap app` prints "App stopped. Work that was already running keeps going."** on Ctrl-C, because children have their own session.
 19. **Housekeeping beyond the spec's `CLAUDE.md` item:** the README's `charswap view` lines point at `charswap app`, and the journal and checklist are updated (Task 14). The full README and setup docs stay in Plan 3b.
+20. **Stale upload folders are swept on start.** `create_app` deletes `runs/_incoming/<start>` folders untouched for 24 hours (a server restart leaves them behind). They are copies of uploads, never job records or provider files, so A15 is unaffected; a prepare that is still starting touched its folder minutes ago and is never swept.
+21. **Texts in templates.** The messages a viewer reads on screen ("New results are ready.", "Needs your decision.", "Yes, charge it", "The last command stopped:", the stale-draft notice, "File missing.", the price question) live in `steps.py` (A10). A few labels stay in the templates (headings such as "Your swaps", form labels such as "Your clip", "Prompt", and the missing-key notice, which mixes text with `<code>` tags); moving them is a small follow-up.
