@@ -63,13 +63,20 @@ def test_prepare_tabs_fill_in_as_stages_finish(runs_dir, media):
     tabs = _tabs(page)
     assert list(tabs) == ["depth", "cutout", "face", "prepared", "voice"]
     assert [tab.state for tab in page.tabs] == ["ready", "running", "waiting", "waiting", "ready"]
-    assert page.tab.id == "voice"  # the newest ready tab when none is asked for
+    assert page.tab.id == "depth"  # the ready tab made last in the pipeline when none is asked
     depth = tabs["depth"].wipe
     assert depth.before == f"/jobs/{job.id}/files/original.mp4"
     assert depth.after == f"/jobs/{job.id}/files/depth.mp4" and depth.sound is False
     assert page.state == "running" and page.prep_done is False
     assert pages.job_page(job, runs_dir, 2, tab="depth").tab.id == "depth"
-    assert pages.job_page(job, runs_dir, 2, tab="cutout").tab.id == "voice"  # not ready yet
+    assert pages.job_page(job, runs_dir, 2, tab="cutout").tab.id == "depth"  # not ready yet
+
+
+@pytest.mark.parametrize("mode", ["depth", "face_mesh", "depth_mesh"])
+def test_a_prepared_job_opens_on_what_the_ai_gets(runs_dir, media, mode):
+    job = make_job(runs_dir, media, mode, provider="wavespeed")
+    assert pages.job_page(job, runs_dir, 2).tab.id == "prepared"  # embed is the last stage
+    assert pages.job_page(job, runs_dir, 2, tab="voice").tab.id == "voice"
 
 
 def test_finished_prepare_tabs_use_each_modes_files(runs_dir, media):

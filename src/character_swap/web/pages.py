@@ -16,6 +16,7 @@ from character_swap.pipeline import PROMPT_FILE, default_prompt, generator_key
 from character_swap.review import ReviewError, fingerprint
 from character_swap.web import steps
 from character_swap.web.view_model import (
+    STAGES_BY_MODE,
     JobSummary,
     combine,
     completed_cost,
@@ -186,14 +187,17 @@ def _tab(job: Job, state: dict[str, Any], tab: steps.Tab, original: str | None) 
     return TabView(*head, "ready", url, wipe=Wipe(original, after, tab.title), texts=texts)
 
 
-def _pick_tab(tabs: tuple[TabView, ...], wanted: str) -> TabView | None:
-    """The requested tab if it is ready, else the newest ready one, else the first."""
+def _pick_tab(tabs: tuple[TabView, ...], wanted: str, mode: str) -> TabView | None:
+    """The requested tab if it is ready, else the ready one whose last stage runs latest
+    in the pipeline (a prepared job opens on "What the AI gets"), else the first."""
     ready = [tab for tab in tabs if tab.state == "ready"]
     for tab in ready:
         if tab.id == wanted:
             return tab
     if ready:
-        return ready[-1]
+        order = STAGES_BY_MODE[mode]
+        last = {item.id: max(map(order.index, item.stages)) for item in steps.tabs_for(mode)}
+        return max(ready, key=lambda tab: last[tab.id])
     return tabs[0] if tabs else None
 
 
@@ -270,7 +274,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
         return JobPage(
             **common,
             tabs=tabs,
-            tab=_pick_tab(tabs, tab),
+            tab=_pick_tab(tabs, tab, state["mode"]),
             state=_state_word(combine([stage_status(state, name) for name in names])),
             error=_error(state, names),
         )
