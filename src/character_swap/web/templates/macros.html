@@ -1,0 +1,36 @@
+{% macro tags(items) %}
+{% if items %}
+<ul class="tags" aria-label="Techniques">
+  {% for tag in items %}
+  <li class="tag" title="{{ tag.tip }}">{{ tag.name }}<span class="sr-only">: {{ tag.tip }}</span></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}
+
+{% macro wipe(w) %}
+<div class="wipe" data-wipe>
+  <div class="wipe-stage">
+    <video class="wipe-before" muted playsinline preload="auto" src="{{ w.before }}"></video>
+    <video class="wipe-after" muted playsinline preload="auto" src="{{ w.after }}"></video>
+    <span class="wipe-line" aria-hidden="true"></span>
+    <span class="wipe-label wipe-label-before">Original</span>
+    <span class="wipe-label wipe-label-after">{{ w.after_label }}</span>
+  </div>
+  <div class="wipe-controls">
+    <button type="button" class="button wipe-play">Play</button>
+    <input type="range" class="wipe-seek" min="0" max="1000" value="0" step="1" aria-label="Position in the clip">
+    <input type="range" class="wipe-divider" min="0" max="100" value="50" aria-label="Divider: move it to compare">
+    {% if w.sound %}<button type="button" class="button wipe-sound" aria-pressed="false">Sound off</button>{% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro placeholder(state) %}
+<div class="placeholder placeholder-{{ state }}">
+  {% if state == "running" %}<span class="spinner" aria-hidden="true"></span> {{ steps.RUNNING }}
+  {% elif state == "missing" %}{{ steps.FILE_MISSING }}
+  {% elif state == "failed" %}This step failed.
+  {% else %}{{ steps.WAITING }}{% endif %}
+</div>
+{% endmacro %}

@@ -129,6 +129,11 @@ class Estimate:
         return "\n".join(rows)
 
 
+def usd_text(usd: float) -> str:
+    """'$0.88'. Amounts under a cent keep three decimals ('$0.002'), so they never read as free."""
+    return f"${usd:.2f}" if usd >= 0.01 or usd == 0 else f"${usd:.3f}"
+
+
 def cost_line(key: str, seconds: float) -> Line:
     price = PRICES[key]
     usd = price.usd * seconds if price.unit == "second" else price.usd

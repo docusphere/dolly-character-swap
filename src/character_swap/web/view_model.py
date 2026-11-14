@@ -1,4 +1,4 @@
-"""Everything the job viewer shows, computed from a job folder. Pure: no HTTP, no templates."""
+"""Shared facts the app shows, computed from a job folder. Pure: no HTTP, no templates."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from character_swap import review
 from character_swap.costs import estimate_stages, total_spend
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.video import stream_seconds
-from character_swap.modes import GENERATION_STAGES, MODES, PROVIDER_NAMES
+from character_swap.modes import GENERATION_STAGES, PROVIDER_NAMES
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
     PAID_STAGES,
@@ -28,12 +28,7 @@ from character_swap.review import ReviewError, fingerprint
 
 # Stage order per mode lives in pipeline.PREP_STAGES_BY_MODE (what prepare() runs).
 STAGES_BY_MODE = PREP_STAGES_BY_MODE
-SEEDANCE_PREP = ("depth", "face_mesh", "depth_mesh")
-ALL_MODES = (*SEEDANCE_PREP, "direct")
-# Modes whose draft/final can be generated (every mode since Plan 2b).
-GENERATING_MODES = tuple(name for name, mode in MODES.items() if mode.generates)
-ICONS = {"done": "✓", "pending": "◻", "running": "⟳", "failed": "✕"}
-STATUS_WORDS = {"done": "done", "pending": "waiting", "running": "running", "failed": "failed"}
+APP_MODES = ("depth", "depth_mesh")  # the modes the app's buttons work for (A3)
 ESTIMATE_SECONDS = 30  # per-run prices ignore length; matches the CLI's "up to 30 s" estimate
 STEP_NAMES = {
     "separate": "Separate vocals",
@@ -44,265 +39,22 @@ STEP_NAMES = {
     "draft": "Draft (480p)",
     "final": "Final (720p)",
 }
+# The small cost table: each paid stage's saved provider record (feeds "money spent").
+PAID_RECORD: dict[str, str] = {
+    "separate": "demucs-prediction.json",
+    "transcribe": "whisper-prediction.json",
+    "describe": "describe-prediction.json",
+    "depth": "depth-prediction.json",
+    "masks": "sam/sam-prediction.json",
+    "draft": "draft-prediction.json",
+    "final": "final-prediction.json",
+}
+RGB_REPAIR_RECORD = "rgb-repair/sam-prediction.json"
 _PREDICTION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
 class ViewError(ValueError):
     """The job folder cannot be shown (for example a damaged state.json)."""
-
-
-@dataclass(frozen=True)
-class Asset:
-    label: str
-    name: str  # file inside the job folder; "@composite" / "@character" are resolved per job
-    kind: str  # "video" | "audio" | "image": which player the page uses
-    stage: str | None  # the stage that writes it; None = present from job creation
-
-
-@dataclass(frozen=True)
-class Record:
-    label: str
-    name: str  # saved prediction record inside the job folder
-    stage: str  # the paid stage that wrote it
-
-
-@dataclass(frozen=True)
-class Section:
-    id: str
-    title: str
-    why: str
-    modes: tuple[str, ...]
-    stages: tuple[str, ...]
-    assets: tuple[Asset, ...] = ()
-    records: tuple[Record, ...] = ()
-    retry: str = "resume {id}"  # after `charswap`; {id} = job id (one form: generate <id> --draft)
-    seedance_title: str = ""  # used instead of title/why on Seedance jobs (draft/final)
-    seedance_why: str = ""
-    wavespeed_why: str = ""  # used instead of seedance_why on WaveSpeed jobs
-
-
-ON_REPLICATE = "View on Replicate ↗"
-
-# The single source of truth for what the job page shows, in page order.
-SECTIONS: tuple[Section, ...] = (
-    Section(
-        id="upload",
-        title="Upload & normalize",
-        why=(
-            "Every clip is converted to 24 frames per second, upright and at most 960 px, "
-            "so every later step lines up frame by frame."
-        ),
-        modes=ALL_MODES,
-        stages=("normalize",),
-        assets=(
-            Asset("Your upload", "upload.mp4", "video", None),
-            Asset("Normalized (24 fps, upright)", "original.mp4", "video", "normalize"),
-        ),
-    ),
-    Section(
-        id="vocals",
-        title="Vocals",
-        why=(
-            "The voice is separated from the music, then raised 3 semitones. The AI still "
-            "hears the exact words to move the lips, but not the original voice or song."
-        ),
-        modes=SEEDANCE_PREP,
-        stages=("separate", "pitch"),
-        assets=(
-            Asset("Original audio", "upload.mp4", "audio", None),
-            Asset("Isolated vocals", "vocals.wav", "audio", "separate"),
-            Asset("Vocals +3 semitones (what the AI hears)", "vocals-plus3.wav", "audio", "pitch"),
-        ),
-        records=(Record(ON_REPLICATE, "demucs-prediction.json", "separate"),),
-    ),
-    Section(
-        id="transcript",
-        title="Transcript & scene",
-        why=(
-            "The spoken words and a description of the room (never the people) go into the "
-            "prompt, so the AI keeps the setting and lip-syncs the right words."
-        ),
-        modes=SEEDANCE_PREP,
-        stages=("transcribe", "describe"),
-        assets=(Asset("Frame used for the description", "scene.jpg", "image", "describe"),),
-        records=(
-            Record("Transcript on Replicate ↗", "whisper-prediction.json", "transcribe"),
-            Record("Scene on Replicate ↗", "describe-prediction.json", "describe"),
-        ),
-    ),
-    Section(
-        id="depth",
-        title="Depth",
-        why=(
-            "Depth turns everything into colored shapes by distance. The AI can no longer "
-            "tell who the person is, but can still see exactly how they move."
-        ),
-        modes=("depth", "depth_mesh"),
-        stages=("depth",),
-        assets=(Asset("Depth video", "depth.mp4", "video", "depth"),),
-        records=(Record(ON_REPLICATE, "depth-prediction.json", "depth"),),
-    ),
-    Section(
-        id="mask",
-        title="Mask & composite",
-        why=(
-            "SAM 3 cuts out the person. Only the person is replaced by depth; the real "
-            "background stays, so the AI doesn't just trace an outline."
-        ),
-        modes=("depth", "depth_mesh"),
-        stages=("masks", "composite"),
-        assets=(
-            Asset("Mask", "mask.mp4", "video", "composite"),
-            Asset("Composite", "@composite", "video", "composite"),
-        ),
-        records=(Record(ON_REPLICATE, "sam/sam-prediction.json", "masks"),),
-    ),
-    Section(
-        id="face-mesh",
-        title="Face mesh",
-        why=(
-            "A wireframe tracks 478 points on the face so the new character copies every "
-            "expression and lip movement."
-        ),
-        modes=("face_mesh", "depth_mesh"),
-        stages=("face_mesh",),
-        assets=(Asset("Face mesh video", "composite-silent.mp4", "video", "face_mesh"),),
-    ),
-    Section(
-        id="prepared",
-        title="Prepared video",
-        why=(
-            "This is exactly what the AI receives: motion and pitched voice, without the "
-            "original identity."
-        ),
-        modes=SEEDANCE_PREP,
-        stages=("embed",),
-        assets=(Asset("Prepared video", "prepared.mp4", "video", "embed"),),
-    ),
-    Section(
-        id="source",
-        title="Source & character",
-        why=(
-            "Wan copies motion straight from the original video onto your character, "
-            "so no disguise is needed."
-        ),
-        modes=("direct",),
-        stages=("normalize",),
-        assets=(
-            Asset("Original (normalized)", "original.mp4", "video", "normalize"),
-            Asset("Character", "@character", "image", None),
-        ),
-    ),
-    Section(
-        id="review",
-        title="Review",
-        why=(
-            "Nothing is sent to the paid generator until you've watched the whole prepared "
-            "clip and approved it."
-        ),
-        modes=ALL_MODES,
-        stages=(),
-    ),
-    Section(
-        id="draft",
-        title="Draft (480p)",
-        why=(
-            "A cheaper 480p test run on Replicate. Wan copies the motion of your clip onto "
-            "the character, then your original soundtrack is put back unchanged."
-        ),
-        modes=GENERATING_MODES,
-        stages=("draft",),
-        assets=(Asset("Draft with the original sound", "draft.mp4", "video", "draft"),),
-        records=(Record(ON_REPLICATE, "draft-prediction.json", "draft"),),
-        retry="generate {id} --draft",
-        seedance_why=(
-            "A cheaper 480p test run on PiAPI. Seedance redraws the disguised people as your "
-            "characters, guided by the prompt, then your original soundtrack is put back "
-            "unchanged."
-        ),
-        wavespeed_why=(
-            "A cheaper 480p test run on WaveSpeed. Seedance redraws the disguised person as "
-            "your character, guided by the prompt, then your original soundtrack is put back "
-            "unchanged."
-        ),
-    ),
-    Section(
-        id="final",
-        title="Final (720p)",
-        why=(
-            "The same request with the same seed at 720p, so it matches the draft you liked. "
-            "The original soundtrack is restored again."
-        ),
-        modes=GENERATING_MODES,
-        stages=("final",),
-        assets=(Asset("Final with the original sound", "final.mp4", "video", "final"),),
-        records=(Record(ON_REPLICATE, "final-prediction.json", "final"),),
-        retry="generate {id} --final",
-        seedance_title="Final",
-        seedance_why=(
-            "1080p upgrades the exact draft you watched. 720p is a cheaper fresh run with the "
-            "same prompt, so it can differ a little. The original soundtrack is restored again."
-        ),
-        wavespeed_why=(
-            "A new take at 720p (or 1080p if you choose it) with the same prompt and inputs, "
-            "so it will look a little different from the draft. The original soundtrack is "
-            "restored again."
-        ),
-    ),
-)
-
-
-# stage -> saved prediction record, derived from SECTIONS so links and cost rows cannot drift
-PAID_RECORD: dict[str, str] = {
-    record.stage: record.name for section in SECTIONS for record in section.records
-}
-RGB_REPAIR_RECORD = "rgb-repair/sam-prediction.json"
-
-
-@dataclass(frozen=True)
-class MediaItem:
-    label: str
-    kind: str  # "video" | "audio" | "image"
-    url: str | None
-    state: str  # "ready" | "missing" | "waiting"
-
-
-@dataclass(frozen=True)
-class TextItem:
-    label: str
-    value: str
-    code: bool = False
-    multiline: bool = False  # keep the value's line breaks (a prompt.txt)
-
-
-@dataclass(frozen=True)
-class Link:
-    label: str
-    url: str
-
-
-@dataclass(frozen=True)
-class SectionView:
-    id: str
-    number: int
-    title: str
-    why: str
-    status: str
-    media: tuple[MediaItem, ...]
-    texts: tuple[TextItem, ...]
-    links: tuple[Link, ...]
-    error: str | None = None
-    stopped: bool = False  # Ctrl-C: show the resume hint instead of an error
-    retry: str = ""  # the full command to show, e.g. `charswap generate <id> --draft`
-
-
-@dataclass(frozen=True)
-class NavItem:
-    id: str
-    label: str
-    status: str  # done/pending/running/failed, or "costs"
-    icon: str
-    status_text: str
 
 
 @dataclass(frozen=True)
@@ -322,20 +74,6 @@ class CostsView:
 
 
 @dataclass(frozen=True)
-class JobView:
-    id: str
-    short_id: str
-    generator: str
-    mode: str
-    status: str
-    cost_usd: float
-    nav: tuple[NavItem, ...]
-    sections: tuple[SectionView, ...]
-    costs: CostsView
-    progress: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class JobSummary:
     id: str
     short_id: str
@@ -346,6 +84,9 @@ class JobSummary:
     cost_usd: float
     created_at: str
     error: str | None = None
+    step: int = 0  # the step its page opens on (1 to 5); 0 when unreadable
+    thumb: str | None = None  # a frame of the clip (scene.jpg) or the photo
+    read_only: bool = False  # made with the command line: no buttons (A3)
 
 
 # ---- small pure helpers --------------------------------------------------------
@@ -385,6 +126,10 @@ def combine(statuses: list[str]) -> str:
     return "pending"
 
 
+def prep_done(state: dict[str, Any]) -> bool:
+    return all(stage_status(state, name) == "done" for name in STAGES_BY_MODE[state["mode"]])
+
+
 def progress(state: dict[str, Any]) -> dict[str, Any]:
     """The cheap polling payload: reads state only (no hashing, no review).
 
@@ -414,6 +159,39 @@ def progress(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def saved_review(job: Job) -> dict[str, Any]:
+    """review.json as saved: read, never recomputed (no hashing). {} when missing or damaged."""
+    try:
+        data = json.loads(job.path("review.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def current_step(job: Job, state: dict[str, Any]) -> int:
+    """The step a job's page opens on. Cheap: state and the saved review only."""
+    if not prep_done(state):
+        return 2
+    decision = saved_review(job)
+    if not decision.get("approved"):
+        return 3
+    draft = state["stages"].get("draft")
+    if stage_status(state, "draft") != "done" or not isinstance(draft, dict):
+        return 4
+    if draft.get("fingerprint") != decision.get("fingerprint"):
+        return 4  # the approved inputs changed since the draft: a new draft is next
+    return 5
+
+
+def is_app_job(state: dict[str, Any], key: str) -> bool:
+    """A3: the app's buttons only work for one-person WaveSpeed jobs in a depth mode."""
+    return (
+        key == "seedance:wavespeed"
+        and state.get("mode") in APP_MODES
+        and not state.get("character_secondary")
+    )
+
+
 def prediction_id(job: Job, record: str) -> str | None:
     """The confirmed id in a saved prediction record; None when there is none."""
     try:
@@ -436,6 +214,17 @@ def file_url(job_id: str, name: str) -> str:
     return f"/jobs/{job_id}/files/{quote(name)}"
 
 
+def file_if_present(job: Job, name: object) -> str | None:
+    """The file's URL when `name` is a file inside the job folder, else None."""
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        present = job.path(name).is_file()
+    except JobError:
+        return None
+    return file_url(job.id, name) if present else None
+
+
 def composite_name(job: Job, state: dict[str, Any]) -> str:
     """depth_mesh draws the mesh over composite-silent.mp4; the depth-only copy is kept aside."""
     if state["mode"] != "depth_mesh":
@@ -446,28 +235,6 @@ def composite_name(job: Job, state: dict[str, Any]) -> str:
     ):
         return "depth-composite-silent.mp4"
     return "composite-silent.mp4"
-
-
-def _resolve(job: Job, state: dict[str, Any], name: str) -> str | None:
-    if name == "@composite":
-        return composite_name(job, state)
-    if name == "@character":
-        character = state.get("character_primary")
-        return character if isinstance(character, str) else None
-    return name
-
-
-def _media(job: Job, state: dict[str, Any], asset: Asset) -> MediaItem:
-    if asset.stage is not None and stage_status(state, asset.stage) != "done":
-        return MediaItem(asset.label, asset.kind, None, "waiting")
-    name = _resolve(job, state, asset.name)
-    try:
-        exists = name is not None and job.path(name).is_file()
-    except JobError:
-        exists = False
-    if not exists:
-        return MediaItem(asset.label, asset.kind, None, "missing")
-    return MediaItem(asset.label, asset.kind, file_url(job.id, name), "ready")
 
 
 def tilde(text: str) -> str:
@@ -493,60 +260,6 @@ def video_facts(path: Path) -> str:
     return f"{seconds:.1f} s · {size}"
 
 
-def _upload_texts(job: Job, state: dict[str, Any]) -> list[TextItem]:
-    texts = []
-    files = (("Upload", "upload.mp4", None), ("Normalized", "original.mp4", "normalize"))
-    for label, name, stage in files:
-        if stage and stage_status(state, stage) != "done":
-            continue
-        path = job.path(name)
-        if path.is_file():
-            texts.append(TextItem(label, video_facts(path)))
-    return texts
-
-
-def _transcript_texts(state: dict[str, Any]) -> list[TextItem]:
-    texts = []
-    if stage_status(state, "transcribe") == "done":
-        texts.append(TextItem("Transcript", str(state.get("transcript") or "(no speech found)")))
-    if stage_status(state, "describe") == "done":
-        texts.append(TextItem("Scene", str(state.get("scene") or "(no description)")))
-    return texts
-
-
-def _tracking_texts(job: Job, state: dict[str, Any]) -> list[TextItem]:
-    if stage_status(state, "face_mesh") not in ("done", "failed"):
-        return []
-    try:
-        report = json.loads(job.path("face-tracking.json").read_text(encoding="utf-8"))
-        frames, tracked = int(report["frames"]), int(report["tracked"])
-        missing = list(report.get("missing_frames", []))
-    except (OSError, ValueError, KeyError, TypeError):
-        return [TextItem("Tracking", "face-tracking.json missing or unreadable")]
-    text = f"Face found in {tracked} of {frames} frames"
-    if missing:
-        shown = ", ".join(str(frame) for frame in missing[:10])
-        text += f" · lost on frames {shown}{' …' if len(missing) > 10 else ''}"
-    return [TextItem("Tracking", text)]
-
-
-def review_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
-    status = str(decision.get("status", "unavailable"))
-    texts = [TextItem("Status", status)]
-    if decision.get("note"):
-        texts.append(TextItem("Note", str(decision["note"])))
-    fingerprint = decision.get("fingerprint")
-    if isinstance(fingerprint, str) and fingerprint:
-        texts.append(TextItem("Fingerprint", fingerprint[:12]))
-        if status != "approved":
-            command = (
-                f'charswap review {job.id} --approve --note "watched all" '
-                f"--fingerprint {fingerprint}"
-            )
-            texts.append(TextItem("Approve after watching", command, code=True))
-    return texts
-
-
 def review_status(job: Job) -> dict[str, Any]:
     """review.status() hashes every reviewed file; any read problem shows as unavailable."""
     try:
@@ -554,39 +267,6 @@ def review_status(job: Job) -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         return {"approved": False, "status": "unavailable", "note": str(exc)}
     return decision if isinstance(decision, dict) else {"status": "unavailable"}
-
-
-def _review_section_status(decision: dict[str, Any]) -> str:
-    return {"approved": "done", "rejected": "failed"}.get(str(decision.get("status")), "pending")
-
-
-def _links(job: Job, state: dict[str, Any], section: Section) -> list[Link]:
-    if state.get("generator") == "seedance" and section.id in GENERATION_STAGES:
-        return []  # Seedance providers (PiAPI, WaveSpeed) have no public page per task
-    if section.id == "mask" and state.get("mask_source") == "rgb":
-        pairs = [
-            ("First attempt ↗", PAID_RECORD["masks"]),
-            ("Repair ↗", RGB_REPAIR_RECORD),
-        ]
-    else:
-        pairs = [(record.label, record.name) for record in section.records]
-    links = []
-    for label, record in pairs:
-        url = prediction_url(job, record)
-        if url:
-            links.append(Link(label, url))
-    return links
-
-
-INTERRUPTED = "interrupted"  # what pipeline._tracked records on Ctrl-C
-
-
-def _error(state: dict[str, Any], section: Section) -> str | None:
-    for name in section.stages:
-        entry = state["stages"].get(name)
-        if isinstance(entry, dict) and entry.get("status") == "failed":
-            return tilde(str(entry.get("error") or "This step failed."))
-    return None
 
 
 # ---- costs -------------------------------------------------------------------
@@ -618,6 +298,10 @@ def _generation_cost(job: Job, state: dict[str, Any], stage: str) -> float:
     if not matching:
         matching = [entry for entry in entries if not entry.get("task_id")]
     return round(sum(_usd(entry.get("usd")) for entry in matching), 4)
+
+
+def _is_seedance(key: str) -> bool:
+    return key.startswith("seedance")
 
 
 def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
@@ -673,32 +357,6 @@ def costs_view(job: Job, state: dict[str, Any], runs_dir: Path) -> CostsView:
     return CostsView(rows, completed_cost(rows), logged_cost(state), total_spend(runs_dir))
 
 
-# ---- the two pages -------------------------------------------------------------
-def sections_for(mode: str) -> tuple[Section, ...]:
-    return tuple(section for section in SECTIONS if mode in section.modes)
-
-
-def overall_status(
-    state_progress: dict[str, Any], decision: dict[str, Any], *, stale: bool = False
-) -> str:
-    generation = state_progress["generation"]
-    if "failed" in state_progress["stages"].values() or "failed" in generation.values():
-        return "Failed"
-    if "running" in generation.values():
-        return "Generating"
-    if state_progress["active"]:
-        return "Preparing"
-    if stale:  # a draft/final made from inputs that are no longer approved is never "done"
-        return "Out of date"
-    if generation["final"] == "done":
-        return "Finished"
-    if generation["draft"] == "done":
-        return "Draft ready"
-    return {"approved": "Approved", "rejected": "Rejected"}.get(
-        str(decision.get("status")), "Ready for review"
-    )
-
-
 _UNKNOWN = object()  # the inputs could not be read this time: say nothing about staleness
 
 
@@ -725,127 +383,14 @@ def stale_stages(job: Job, state: dict[str, Any]) -> frozenset[str]:
     )
 
 
-def _seedance_texts(state: dict[str, Any], stage: str, key: str) -> list[TextItem]:
-    entry = state.get("stages", {}).get(stage)
-    if not isinstance(entry, dict):
-        return []
-    prompt, resolution = entry.get("prompt"), entry.get("resolution")
-    if stage == "draft" and isinstance(prompt, str) and prompt:
-        label = f"Prompt sent to {PROVIDER_NAMES.get(key, 'Seedance')}"
-        return [TextItem(label, prompt, multiline=True)]
-    # Saved when a final starts: a failed one says nothing (a plain --final may pick another)
-    started = stage_status(state, "final") in ("done", "running")
-    if stage == "final" and started and isinstance(resolution, str) and resolution:
-        return [TextItem("Resolution", resolution)]
-    return []
-
-
-def _is_seedance(key: str) -> bool:
-    return key.startswith("seedance")
-
-
-def section_text(section: Section, key: str) -> tuple[str, str]:
-    """The section's (title, why) for a job's generator_key."""
-    if not _is_seedance(key):
-        return section.title, section.why
-    why = section.seedance_why or section.why
-    if key == "seedance:wavespeed" and section.wavespeed_why:
-        why = section.wavespeed_why
-    return section.seedance_title or section.title, why
-
-
-def _stale_texts(job: Job, decision: dict[str, Any]) -> list[TextItem]:
-    note = "Made from inputs that are no longer approved."
-    if decision.get("status") != "approved":
-        note += " Review the new files in the Review section above, then run:"
-    return [
-        TextItem("Out of date", note),
-        TextItem("Make a new draft", f"charswap generate {job.id} --draft", code=True),
-    ]
-
-
-def _section_view(
-    job: Job,
-    state: dict[str, Any],
-    section: Section,
-    number: int,
-    decision: dict[str, Any],
-    stale: frozenset[str],
-    key: str,
-) -> SectionView:
-    if section.id == "review":
-        status = _review_section_status(decision)
-        texts = review_texts(job, decision)
-    else:
-        status = combine([stage_status(state, name) for name in section.stages])
-        texts = []
-        if section.id == "upload":
-            texts = _upload_texts(job, state)
-        elif section.id == "transcript":
-            texts = _transcript_texts(state)
-        elif section.id == "face-mesh":
-            texts = _tracking_texts(job, state)
-        elif section.id in stale:
-            texts = _stale_texts(job, decision)
-        if section.id in GENERATION_STAGES and _is_seedance(key):
-            texts = [*texts, *_seedance_texts(state, section.id, key)]
-    error = _error(state, section)
-    title, why = section_text(section, key)
-    return SectionView(
-        id=section.id,
-        number=number,
-        title=title,
-        why=why,
-        status=status,
-        media=tuple(_media(job, state, asset) for asset in section.assets),
-        texts=tuple(texts),
-        links=tuple(_links(job, state, section)),
-        error=error,
-        stopped=error == INTERRUPTED,
-        retry="charswap " + section.retry.format(id=job.id),
-    )
-
-
-def job_view(job: Job, runs_dir: Path) -> JobView:
-    state = read_state(job)
-    mode = state["mode"]
-    decision = review_status(job)
-    stale = stale_stages(job, state) if MODES[mode].generates else frozenset()
-    key = generator_key(job, state)
-    sections = tuple(
-        _section_view(job, state, section, number, decision, stale, key)
-        for number, section in enumerate(sections_for(mode), start=1)
-    )
-    nav = tuple(
-        NavItem(
-            view.id,
-            f"{view.number} {view.title}",
-            view.status,
-            ICONS[view.status],
-            STATUS_WORDS[view.status],
-        )
-        for view in sections
-    ) + (NavItem("costs", "Costs", "costs", "$", "summary"),)
-    costs = costs_view(job, state, runs_dir)
-    state_progress = progress(state)
-    if stale and state_progress["poll"] == "off":
-        state_progress["poll"] = "slow"  # a new draft (from the terminal) still shows up live
-    return JobView(
-        id=job.id,
-        short_id=job.id[:8],
-        generator=str(state.get("generator", "?")),
-        mode=mode,
-        status=overall_status(state_progress, decision, stale=bool(stale)),
-        cost_usd=costs.completed_usd,
-        nav=nav,
-        sections=sections,
-        costs=costs,
-        progress=state_progress,
-    )
-
-
+# ---- the home list -------------------------------------------------------------
 def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
+
+
+def _thumb(job: Job, state: dict[str, Any]) -> str | None:
+    """A frame of the clip (the scene description's still), else the character photo."""
+    return file_if_present(job, "scene.jpg") or file_if_present(job, state.get("character_primary"))
 
 
 def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
@@ -855,7 +400,8 @@ def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
         return None  # not a job folder (spend log, stray files, half-created jobs)
     try:
         state = read_state(job)
-    except ViewError as exc:
+        key = generator_key(job, state)
+    except (ViewError, JobError) as exc:
         return JobSummary(
             job.id, job.id[:8], "?", "?", 0, 0, 0.0, _mtime_iso(folder), tilde(str(exc))
         )
@@ -869,6 +415,9 @@ def _summarize(runs_dir: Path, folder: Path) -> JobSummary | None:
         total_count=info["total_count"],
         cost_usd=completed_cost(cost_rows(job, state)),
         created_at=str(state.get("created_at") or _mtime_iso(folder)),
+        step=current_step(job, state),
+        thumb=_thumb(job, state),
+        read_only=not is_app_job(state, key),
     )
 
 

@@ -464,7 +464,7 @@ def test_view_serves_the_app_on_localhost_only(settings):
     assert call["host"] == "127.0.0.1" and call["port"] == port
     assert f"Job viewer: http://127.0.0.1:{port}" in out.text and "Viewer stopped." in out.text
     page = TestClient(call["app"], base_url="http://127.0.0.1").get("/")
-    assert page.status_code == 200 and "No jobs yet" in page.text
+    assert page.status_code == 200 and "No swaps yet" in page.text
 
 
 def test_view_has_no_host_option(settings):

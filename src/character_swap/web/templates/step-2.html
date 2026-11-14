@@ -1,0 +1,44 @@
+{% from "macros.html" import tags, wipe, placeholder %}
+{% if page.tabs %}
+<nav class="tabs" aria-label="What preparing made">
+  {% for tab in page.tabs %}
+  {% if tab.state == "ready" %}
+  <a class="tab{% if tab.id == page.tab.id %} tab-selected{% endif %}" href="{{ tab.url }}"{% if tab.id == page.tab.id %} aria-current="page"{% endif %}>{{ tab.title }}</a>
+  {% else %}
+  <span class="tab tab-{{ tab.state }}" aria-disabled="true">{% if tab.state == "running" %}<span class="spinner" aria-hidden="true"></span> {% endif %}{{ tab.title }}<span class="sr-only"> ({{ tab.state }})</span></span>
+  {% endif %}
+  {% endfor %}
+</nav>
+{% set tab = page.tab %}
+<section class="panel" aria-labelledby="tab-title">
+  <h2 id="tab-title">{{ tab.title }}</h2>
+  <p class="line">{{ tab.line }}</p>
+  {{ tags(tab.tags) }}
+  {% if tab.wipe %}
+  {{ wipe(tab.wipe) }}
+  {% elif tab.audio %}
+  <div class="audio-list">
+    {% for label, url in tab.audio %}
+    <figure class="media"><audio controls preload="metadata" src="{{ url }}"></audio><figcaption>{{ label }}</figcaption></figure>
+    {% endfor %}
+  </div>
+  {% else %}
+  {{ placeholder(tab.state) }}
+  {% endif %}
+  {% if tab.texts %}
+  <dl class="facts">
+    {% for label, value in tab.texts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+  </dl>
+  {% endif %}
+</section>
+{% else %}
+<p class="line">{{ steps.DIRECT_PREPARE }}</p>
+{% if page.original %}<video controls preload="metadata" playsinline src="{{ page.original }}"></video>{% endif %}
+{% endif %}
+<div class="actions">
+  {% if page.prep_done %}
+  <a class="button primary" href="/jobs/{{ page.id }}/step/3">{{ steps.NEXT_CHECK }}</a>
+  {% elif page.state == "running" %}
+  <p class="meta">{{ steps.PREPARE_TIME }}</p>
+  {% endif %}
+</div>

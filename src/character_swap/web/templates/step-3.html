@@ -1,0 +1,14 @@
+{% from "macros.html" import wipe, placeholder %}
+{% if page.wipe %}
+{{ wipe(page.wipe) }}
+{% else %}
+{{ placeholder("waiting") }}
+{% endif %}
+<div class="actions">
+  {% if page.approved %}
+  <p class="ok">Approved.</p>
+  <a class="button primary" href="/jobs/{{ page.id }}/step/4">{{ steps.NEXT_DRAFT }}</a>
+  {% elif not page.prep_done %}
+  <a class="button" href="/jobs/{{ page.id }}/step/2">{{ steps.NEXT_PREPARE }}</a>
+  {% endif %}
+</div>

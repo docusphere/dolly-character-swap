@@ -1,0 +1,17 @@
+<div class="pair">
+  <figure class="media">
+    {% if page.upload %}<video controls preload="metadata" playsinline src="{{ page.upload }}"></video>{% else %}<div class="placeholder">{{ steps.FILE_MISSING }}</div>{% endif %}
+    <figcaption>Your clip</figcaption>
+  </figure>
+  <figure class="media">
+    {% if page.photo %}<img src="{{ page.photo }}" alt="Your photo">{% else %}<div class="placeholder">No photo.</div>{% endif %}
+    <figcaption>Your photo</figcaption>
+  </figure>
+</div>
+<dl class="facts">
+  <dt>Look</dt><dd>{{ page.look }}</dd>
+  {% if page.description %}<dt>Described as</dt><dd>{{ page.description }}</dd>{% endif %}
+</dl>
+<div class="actions">
+  <a class="button primary" href="/jobs/{{ page.id }}/step/2">{{ steps.NEXT_PREPARE }}</a>
+</div>

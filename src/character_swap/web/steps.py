@@ -147,6 +147,7 @@ DESCRIBE_HINT = "Face shape, hair, age. It is added to the prompt."
 # Buttons and short messages.
 NEW_SWAP = "New swap"
 PREPARE = "Prepare"
+NEXT_PREPARE = "Next: prepare"
 NEXT_CHECK = "Next: check it"
 APPROVE = "Looks good, approve"
 WATCH_FIRST = "Watch it to the end first."

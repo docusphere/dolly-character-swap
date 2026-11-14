@@ -96,13 +96,15 @@ def make_job(
     running: bool = False,
     failed: str | None = None,
     depth_provider: str = "replicate",
+    provider: str = "",
 ) -> Job:
     """A job whose first `done` stages are finished (all when None).
 
     The next stage is marked running when `running`, or failed with message `failed`.
+    provider="wavespeed" makes the kind of job the app's buttons work for (with a photo).
     """
     generator = "wan" if mode == "direct" else "seedance"
-    character = media.image if mode == "direct" else None
+    character = media.image if mode == "direct" or provider else None
     job = Job.create(
         runs_dir,
         media.video,
@@ -110,6 +112,7 @@ def make_job(
         mode=mode,
         depth_provider=depth_provider,
         character=character,
+        provider=provider,
     )
     stages = STAGES_BY_MODE[mode]
     count = len(stages) if done is None else done

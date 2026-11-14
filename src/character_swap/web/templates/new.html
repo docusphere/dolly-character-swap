@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}New swap{% endblock %}
+{% block body %}
+<main id="main" class="page">
+  {% include "bar.html" %}
+  <div class="step-head">
+    <p class="step-count">Step 1 of 5</p>
+    <h1>{{ step.heading }}</h1>
+    <p class="line">{{ step.line }}</p>
+  </div>
+  {% if missing %}
+  <div class="notice" role="alert">
+    {% for key in missing %}
+    <p><code>{{ key.name }}</code> is missing. Add it to the <code>.env</code> file in this folder, then reload. Get it at {{ key.where }}.</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <form class="card upload" id="new-swap" data-post="/jobs" data-draft-per-second="{{ draft_per_second }}" novalidate>
+    <div class="drops">
+      <div class="field">
+        <label class="drop" for="clip"><span class="drop-title">Your clip</span><span class="meta">One person, 4 to 30 seconds, mp4 or mov</span></label>
+        <input id="clip" name="clip" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" required>
+        <p class="field-error" data-error-for="clip" role="alert"></p>
+      </div>
+      <div class="field">
+        <label class="drop" for="photo"><span class="drop-title">Your photo</span><span class="meta">jpg, png or webp, face clearly visible</span></label>
+        <input id="photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" required>
+        <p class="field-error" data-error-for="photo" role="alert"></p>
+      </div>
+    </div>
+    <div class="field">
+      <label for="describe">{{ steps.DESCRIBE }}</label>
+      <textarea id="describe" name="describe" maxlength="300" rows="2"></textarea>
+      <p class="meta">{{ steps.DESCRIBE_HINT }}</p>
+      <p class="field-error" data-error-for="describe" role="alert"></p>
+    </div>
+    <fieldset class="field looks">
+      <legend>Look</legend>
+      {% for value, label, hint in steps.LOOKS %}
+      <label class="look"><input type="radio" name="look" value="{{ value }}"{% if loop.first %} checked{% endif %}> <span>{{ label }}</span> <span class="meta">{{ hint }}</span></label>
+      {% endfor %}
+    </fieldset>
+    <div class="field">
+      <label class="check"><input type="checkbox" name="rights" value="yes" required> {{ steps.RIGHTS }}</label>
+      <p class="field-error" data-error-for="rights" role="alert"></p>
+    </div>
+    <p class="field-error" data-error-for="form" role="alert"></p>
+    <div class="actions">
+      <button type="submit" class="button primary" data-usd="{{ prepare_usd }}"{% if missing %} disabled{% endif %}>{{ steps.PREPARE }} · about {{ money(prepare_usd) }}</button>
+      <p class="meta" id="draft-hint" hidden></p>
+    </div>
+  </form>
+</main>
+{% endblock %}
