@@ -162,7 +162,7 @@ class Plan:
     segment: dict  # saved in state.json as "segment"; cut_segment's frame map is added to it
     scene_seconds: float
     moved: tuple[bool, bool]  # --from and --to sit on a shot cut
-    inside: tuple[float, ...]  # shot cuts inside the part, more than SNAP from both edges
+    inside: tuple[float, ...]  # shot cuts strictly inside the part (never its two edges)
 
 
 def _nearest(edges: list[float], moment: float) -> int:
@@ -208,7 +208,7 @@ def plan_part(scene: Path, start: float, end: float) -> Plan:
         "crop": {"x": x, "y": y, "w": w, "h": h},
         "cuts": [round(cut, 6) for cut in scan.cuts],
     }
-    inside = tuple(cut for cut in scan.cuts if begin + SNAP < cut < finish - SNAP)
+    inside = tuple(cut for cut in scan.cuts if begin + 1e-6 < cut < finish - 1e-6)
     return Plan(segment, picture, (first in scan.cuts, last in scan.cuts), inside)
 
 

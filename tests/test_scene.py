@@ -146,6 +146,13 @@ def test_a_cut_inside_the_part_is_reported(three_shots):
     assert plan.inside == pytest.approx((at(30), at(150)), abs=1e-5)
 
 
+def test_a_second_cut_right_after_a_snapped_edge_is_reported(tmp_path):
+    clip = write_shots(tmp_path / "s.mp4", [(RED, 30), (BLUE, 5), (GREEN, 115), (RED, 30)])
+    plan = scene.plan_part(clip, 1.1, 6.4)  # --from snaps to the cut at 1.25 s ...
+    assert (plan.segment["start_frame"], plan.segment["end_frame"]) == (30, 150)
+    assert plan.inside == pytest.approx((at(35),), abs=1e-5)  # ... 0.21 s before the next one
+
+
 @pytest.mark.parametrize(("start", "end"), [(3.0, 3.0), (4.0, 3.0), (-1.0, 3.0), (1.0, 9.0)])
 def test_times_outside_the_scene_or_in_the_wrong_order_are_refused(three_shots, start, end):
     with pytest.raises(scene.SceneError, match=r"The scene is 7\.5 s; pick --from and --to"):
