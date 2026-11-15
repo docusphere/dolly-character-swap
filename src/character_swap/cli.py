@@ -18,6 +18,7 @@ import av
 
 from character_swap.config import Settings
 from character_swap.costs import (
+    Estimate,
     estimate_prepare,
     estimate_repair,
     estimate_stages,
@@ -615,12 +616,28 @@ def _prepare(args, settings, env) -> int:
         )
         env.track(job, "resume {id}")
         env.out(f"JOB {job.id}")
-        prepare_job(job, env.services_factory(settings), status=env.out)
-        if not free:
-            record_spend(job, "prepare", estimate, settings.runs_dir)
+        _prepare_and_log(job, settings, env, None if free else estimate)
         watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
         env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
         return 0
+
+
+def _prepare_and_log(job: Job, settings: Settings, env: Env, estimate: Estimate | None) -> None:
+    """prepare_job, then log its spend once (None: free, nothing to log). Also logged when a
+    free check after every paid step stops the job (the one-person check): that was paid."""
+    try:
+        prepare_job(job, env.services_factory(settings), status=env.out)
+    except CharSwapError:
+        if not remaining_paid_stages(job):
+            _log_prepare_spend(job, estimate, settings)
+        raise
+    _log_prepare_spend(job, estimate, settings)
+
+
+def _log_prepare_spend(job: Job, estimate: Estimate | None, settings: Settings) -> None:
+    if estimate is None or any(c["step"] == "prepare" for c in job.state.get("costs", [])):
+        return
+    record_spend(job, "prepare", estimate, settings.runs_dir)
 
 
 def _save_setting(job: Job, text: str) -> None:
@@ -648,10 +665,8 @@ def _resume(args, settings, env) -> int:
         if not args.yes and not env.proceed():
             return 1
     env.out(f"Resuming {job.id}; finished steps are skipped and saved predictions are re-checked.")
-    prepare_job(job, env.services_factory(settings), status=env.out)
-    if not any(c["step"] == "prepare" for c in job.state.get("costs", [])):
-        estimate = estimate_prepare(job.mode, seconds=30, skip=prep_skip(job))
-        record_spend(job, "prepare", estimate, settings.runs_dir)
+    estimate = estimate_prepare(job.mode, seconds=30, skip=prep_skip(job))
+    _prepare_and_log(job, settings, env, estimate)
     return 0
 
 

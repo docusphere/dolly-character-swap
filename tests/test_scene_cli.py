@@ -251,6 +251,23 @@ def test_two_people_say_start_a_new_job_not_resume(settings, tmp_path, monkeypat
     assert "charswap resume" not in out.err.text and "Fix the issue" not in out.err.text
 
 
+def test_a_stop_at_the_one_person_check_still_logs_the_prep_spend(
+    settings, scene_clip, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("character_swap.pipeline.pitch_vocals", fake_pitch)
+    services = prep_services(tmp_path, boxes=TWO)
+    code, out = run(
+        scene_args(scene_clip, tmp_path, "--yes"), settings, services_factory=lambda s: services
+    )
+    assert code == 2 and "more than one person" in out.err.text
+    (folder,) = [p for p in settings.runs_dir.iterdir() if p.is_dir()]
+    job = Job.load(settings.runs_dir, folder.name)
+    assert [c["step"] for c in job.state["costs"]] == ["prepare"]
+    assert job.state["costs"][0]["usd"] == pytest.approx(0.0608)
+    code, out = run(["resume", job.id, "--yes"], settings, services_factory=lambda s: services)
+    assert code == 2 and [c["step"] for c in job.state["costs"]] == ["prepare"]
+
+
 # ---- generate and repair ---------------------------------------------------------------
 def ready_scene_job(settings, tmp_path):
     """An approved depth_mesh scene job whose part is 13 s (307 scene frames, padded).
