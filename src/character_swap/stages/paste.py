@@ -20,6 +20,7 @@ from character_swap.stages.masks import NoMasks, segment
 
 SCENE = "full-scene.mp4"
 NOBODY = "SAM 3 found nobody on the AI clip; only the original outline is used."
+AGAIN = "run the same command again"  # the lay-back runs inside generate, not resume
 MASK_SLACK = 2  # SAM 3 decodes the AI clip itself: a frame or two more or fewer is laid back
 
 
@@ -68,7 +69,7 @@ def lay_back(
 
     masks_b: Path | None
     try:
-        found = segment(raw, folder, "person", replicate, on_created=log)
+        found = segment(raw, folder, "person", replicate, on_created=log, again=AGAIN)
     except NoMasks:
         masks_b = None
     else:

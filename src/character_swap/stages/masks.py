@@ -14,8 +14,13 @@ class NoMasks(StageError):
     """SAM 3 found nothing to cut out: its zip held no mask_*.png."""
 
 
-def segment(video: Path, out_dir: Path, subject: str, replicate, on_created=None) -> Path:
-    """One raw PNG mask per frame. `on_created` runs once when a NEW paid run is created."""
+def segment(
+    video: Path, out_dir: Path, subject: str, replicate, on_created=None, again: str = ""
+) -> Path:
+    """One raw PNG mask per frame. `on_created` runs once when a NEW paid run is created.
+
+    `again`: what to run instead of `charswap resume` after a bad result (see download_or_fail).
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     url = replicate.upload(video)
     record = out_dir / "sam-prediction.json"
@@ -26,9 +31,15 @@ def segment(video: Path, out_dir: Path, subject: str, replicate, on_created=None
         on_created=on_created,
     )
     if not isinstance(output, str):
-        raise bad_output(record, "SAM 3", output)
+        raise bad_output(record, "SAM 3", output, again)
     archive = download_or_fail(
-        replicate, output, out_dir / "masks.zip", record=record, what="SAM 3", cost="~$0.002"
+        replicate,
+        output,
+        out_dir / "masks.zip",
+        record=record,
+        what="SAM 3",
+        cost="~$0.002",
+        again=again,
     )
     raw = out_dir / "raw-masks"
     raw.mkdir(exist_ok=True)
@@ -44,7 +55,7 @@ def segment(video: Path, out_dir: Path, subject: str, replicate, on_created=None
     except zipfile.BadZipFile as exc:
         raise StageError(
             f"SAM 3 result is not a valid zip ({exc}). "
-            f"Delete {record} and resume to regenerate it (costs ~$0.002)."
+            f"Delete {record} and {again or 'resume'} to regenerate it (costs ~$0.002)."
         ) from exc
     if not written:
         raise NoMasks(

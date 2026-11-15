@@ -197,10 +197,13 @@ def ai_video(tmp_path, frames=FRAMES):
     return write_video(tmp_path / f"ai-{frames}.mp4", [picture] * frames)
 
 
-def gen_services(tmp_path, *, frames=FRAMES, b_boxes=((32, 16, 96, 80),), b_count=FRAMES):
+def gen_services(
+    tmp_path, *, frames=FRAMES, b_boxes=((32, 16, 96, 80),), b_count=FRAMES, **replicate
+):
     fake = FakeReplicate(
         outputs={SAM_VERSION: "u/b"},
         files={"u/b": masks_zip(list(b_boxes), count=b_count, size=(128, 96))},
+        **replicate,
     )
     generator = FakeSeedance(ai_video(tmp_path, frames))
     return Services(
@@ -308,6 +311,21 @@ def test_result_masks_off_by_more_than_two_still_stop(runs_dir, tmp_path, b_coun
     job = approved_scene_job(runs_dir, tmp_path)
     with pytest.raises(StageError, match=rf"{b_count} masks for the AI clip's 96 frames"):
         generate(job, gen_services(tmp_path, b_count=b_count), "draft", runs_dir=runs_dir, **QUIET)
+
+
+@pytest.mark.parametrize(
+    ("trouble", "says"),
+    [
+        ("fail_download", r"expired.*Delete .*draft-sam.*sam-prediction\.json and run the same"),
+        ("flaky_download", r"Could not download.*Run the same command again to retry; no new"),
+    ],
+)
+def test_a_lay_back_download_problem_says_run_the_same_command(runs_dir, tmp_path, trouble, says):
+    job = approved_scene_job(runs_dir, tmp_path)
+    services = gen_services(tmp_path, **{trouble: {"u/b"}})
+    with pytest.raises(StageError, match=says) as info:
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert "resume" not in str(info.value).lower()
 
 
 def test_a_new_sam_run_never_mixes_in_old_masks(runs_dir, tmp_path):
