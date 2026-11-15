@@ -314,6 +314,9 @@ def crowded_frames(mask_dir: Path) -> tuple[int, int]:
 SHORT = 0.5  # an AI clip this much shorter than the part holds its last frame
 ASPECT = 0.05  # the AI picture's aspect may differ this much from the crop box's
 CRF = 16  # the one re-encode of the scene: visually lossless
+AI_LIT = 0.02  # an AI clip's edge row or column with more of its pixels above BAR_MAX is picture
+AI_MIN_SHARE = 0.4  # the AI picture inside its bars is at least this share of each side
+TRIM_GAIN = 0.01  # removing AI bars must bring the aspect at least this much closer to the box's
 
 
 @dataclass(frozen=True)
@@ -325,15 +328,71 @@ class AiClip:
     box: tuple[int, int, int, int]  # its picture inside any black bars the AI added
 
 
+def _lit_shares(path: Path) -> tuple[np.ndarray, np.ndarray, int]:
+    """The share of every row's and every column's pixels above BAR_MAX over all frames,
+    and how many frames there were. Robust to a few noisy pixels in generated bars."""
+    rows = columns = None
+    frames = 0
+    with av.open(str(path)) as container:
+        stream = _video_stream(container, path)
+        for frame in container.decode(stream):
+            bright = frame.to_ndarray(format="gray") > BAR_MAX
+            row, column = bright.mean(axis=1), bright.mean(axis=0)
+            rows = row if rows is None else rows + row
+            columns = column if columns is None else columns + column
+            frames += 1
+    if rows is None or columns is None:
+        raise SceneError(f"{Path(path).name} has no video frames.")
+    return rows / frames, columns / frames, frames
+
+
+def _trims(lit: np.ndarray) -> list[tuple[int, int]]:
+    """(first, stop) choices along one side, most preferred first: no trim, the same trim
+    on both ends (AI bars are symmetric), the trim as found (even numbers)."""
+    size = len(lit) // 2 * 2
+    found = np.flatnonzero(lit)
+    if not len(found):
+        return [(0, size)]
+    first, stop = _inward(found)
+    side = min(first, size - stop)
+    return [(0, size), (side, size - side), (first, stop)]
+
+
+def _ai_box(rows: np.ndarray, columns: np.ndarray, aspect: float) -> tuple[int, int, int, int]:
+    """The AI picture inside its bars: the box whose aspect is closest to `aspect`, at least
+    AI_MIN_SHARE of each side. A trim is taken only when it is TRIM_GAIN closer than one
+    with less trimming, so a clip of the right aspect keeps a dark edge of its picture."""
+    height, width = len(rows), len(columns)
+    options = sorted(
+        (
+            (rank_x + rank_y, (left, top, right - left, bottom - top))
+            for rank_x, (left, right) in enumerate(_trims(columns > AI_LIT))
+            for rank_y, (top, bottom) in enumerate(_trims(rows > AI_LIT))
+        ),
+        key=lambda option: option[0],
+    )
+
+    def off(box):
+        return abs(math.log(box[2] / box[3] / aspect))
+
+    best = options[0][1]
+    for _rank, box in options[1:]:
+        if box[2] < AI_MIN_SHARE * width or box[3] < AI_MIN_SHARE * height:
+            continue
+        if off(box) < off(best) - TRIM_GAIN:
+            best = box
+    return best
+
+
 def ai_clip(raw: Path, segment: dict) -> AiClip:
     """Facts about the AI's clip. Refuses one too short or with another aspect (cropped)."""
     with av.open(str(raw)) as probe:
         stream = _video_stream(probe, raw)
         rate = Fraction(stream.average_rate or FPS)
         width, height = stream.width, stream.height
-    rows, columns, frames = _luma_extent(raw, 0.0, math.inf)
-    box = _box(rows, columns)
     crop = segment["crop"]
+    rows, columns, frames = _lit_shares(raw)
+    box = _ai_box(rows, columns, crop["w"] / crop["h"])
     seconds = float(frames / rate)
     aspect = (box[2] / box[3]) / (crop["w"] / crop["h"])
     if seconds < segment["seconds"] - SHORT or abs(aspect - 1) > ASPECT:

@@ -406,6 +406,59 @@ def test_an_ai_clip_with_another_aspect_is_refused(lay, tmp_path):
         scene.paste_back(clip, raw, masks_a, None, segment, tmp_path / "out.mp4")
 
 
+# ---- the AI clip's own bars ------------------------------------------------------------
+WIDE = {"crop": {"x": 0, "y": 140, "w": 1920, "h": 800}, "seconds": 1.0}  # a 2.4:1 crop box
+
+
+def _framed(path, size, bars, *, frames=24, edge=0, specks=0.0, seed=0):
+    """A picture letterboxed by `bars` rows each side of a `size` frame. `edge`: the picture's
+    own top rows that are dark; `specks`: the share of bar pixels that flicker bright."""
+    rng = np.random.default_rng(seed)
+    width, height = size
+    pictures = []
+    for _ in range(frames):
+        picture = solid(YELLOW, size)
+        picture[:bars] = 0
+        picture[height - bars :] = 0
+        picture[bars : bars + edge] = 8
+        if specks:
+            for band in (slice(0, bars), slice(height - bars, height)):
+                lit = rng.random((bars, width)) < specks
+                picture[band][lit] = 90
+        pictures.append(picture)
+    return write_video(path, pictures)
+
+
+@pytest.mark.parametrize(
+    ("size", "bars", "box"),
+    [((640, 480), 106, (0, 106, 640, 268)), ((480, 480), 140, (0, 140, 480, 200))],
+)
+def test_a_wide_picture_letterboxed_in_a_480p_frame_is_found(tmp_path, size, bars, box):
+    raw = _framed(tmp_path / "raw.mp4", size, bars)  # the picture is under 300 rows
+    assert scene.ai_clip(raw, WIDE).box == box
+
+
+def test_noisy_ai_bars_still_count_as_bars(tmp_path, small_boxes):
+    raw = _framed(tmp_path / "raw.mp4", (480, 480), 140, specks=0.002)
+    assert scene.ai_clip(raw, WIDE).box == (0, 140, 480, 200)
+
+
+def test_a_dark_top_edge_of_the_ai_picture_is_not_cut_off(tmp_path, small_boxes):
+    raw = _framed(tmp_path / "raw.mp4", (480, 480), 140, edge=6)  # trims the top only: 2.47:1
+    assert scene.ai_clip(raw, WIDE).box == (0, 140, 480, 200)
+
+
+def test_an_ai_clip_without_bars_keeps_its_dark_edge(tmp_path, small_boxes):
+    raw = _framed(tmp_path / "raw.mp4", (480, 200), 0, edge=6)  # already 2.4:1
+    assert scene.ai_clip(raw, WIDE).box == (0, 0, 480, 200)
+
+
+def test_bars_that_leave_another_aspect_are_still_refused(tmp_path):
+    raw = _framed(tmp_path / "raw.mp4", (480, 480), 60)  # 480 x 360: 4:3, cropped by the AI
+    with pytest.raises(scene.SceneError, match=r"480x480, 1\.0 s; it can't be laid back"):
+        scene.ai_clip(raw, WIDE)
+
+
 def test_too_few_subject_masks_are_refused(lay, tmp_path):
     clip, segment, _masks_a = lay
     few = write_mask_pngs(tmp_path / "few", 10, box=(48, 16, 80, 48), size=(128, 64))
