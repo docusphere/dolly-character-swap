@@ -51,6 +51,32 @@ have the right to use (prepare asks). One person per clip for now; two people ne
 and put back unchanged. The draft is saved as `runs/<id>/draft.mp4` and the final as
 `runs/<id>/final.mp4`.
 
+## Swap one shot of a longer scene
+
+When your clip has several shots and only one person in one of them should become you, give
+the part with `--from` and `--to` (seconds, as your editor shows them) and say who to swap
+with `--subject`:
+
+```bash
+uv run charswap prepare inputs/scene.mp4 --from 2.6 --to 15.4 \
+  --subject "man with white face paint" --character inputs/me.jpg
+```
+
+Each time moves to a shot cut found within 0.3 s, so the part is exactly one shot; prepare
+prints what it found before asking anything. Only that part goes to the AI, made whole
+seconds long by holding its last frame, with any black bars left out. Every other frame and
+the whole soundtrack stay the original's. The draft and final are the full scene: after the
+AI is done, its new person is laid back over the untouched scene (one extra SAM 3 run on the
+result, about $0.002, shown in the price). The price is for the part, never the whole scene:
+a 13 s part costs about $2.86 for the draft.
+
+Name the one person in `--subject`; if SAM 3 finds two people in the part, prepare stops and
+says so. Scene swaps need WaveSpeed and the `depth_mesh` (default) or `depth` mode.
+
+If GPT-4o mini refuses to describe the setting (it can, on film stills), describe it yourself
+and go on for free: `uv run charswap resume <id> --setting "a dim room with ..."`. You can
+also give `--setting` to `prepare` from the start, for any Seedance swap.
+
 ## Try it with Wan (open source, on Replicate)
 
 You need [uv](https://docs.astral.sh/uv/) and a [Replicate API token](https://replicate.com/account/api-tokens) in `.env` as `REPLICATE_API_TOKEN=...`. (Rubber Band, `brew install rubberband`, is only needed for the Seedance modes.)

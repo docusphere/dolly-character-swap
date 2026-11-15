@@ -12,12 +12,14 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - CLI: `uv run charswap --help`
 - Faces (free): `uv run charswap face add|list|check|renew`
 - Prompt (Seedance): `uv run charswap prompt <job>`
+- One shot of a scene: `uv run charswap prepare scene.mp4 --from S --to S --subject "..." --character me.jpg` (`--setting TEXT` skips the paid description; also on `resume`)
 - Generate (paid, asks first): `uv run charswap generate <job> --draft|--final [--resolution 720p|1080p]`
 - Walkthrough app: `uv run charswap app` (read-only)
 
 ## Layout
 - `src/character_swap/providers/` is the ONLY code that calls the network.
 - `stages/` = one pipeline step per file; `media/` = local video/audio work.
+- Scene swaps (`segment` in `state.json`; `pipeline.is_scene_job`): `media/scene.py` finds cuts and bars, cuts the part, pastes back; `stages/paste.py` lays the result back inside generate. Single-shot jobs never take these branches.
 - `web/` = read-only walkthrough app (FastAPI + Jinja2, localhost only; GET routes only, never changes job state). Texts live in `web/steps.py`, screens in `web/pages.py`.
 - A job's Seedance provider (`provider` in `state.json`) is fixed at prepare; old jobs are resolved by `pipeline.generator_key`.
 - Jobs live in `runs/<id>/` with `state.json` (resumable). Saved faces live in `faces/` (`faces.json` + photos).
