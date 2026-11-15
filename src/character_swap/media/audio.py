@@ -98,11 +98,18 @@ def _fit_video(generated: Path, seconds: float, dst: Path) -> Path:
 
 
 def restore_original_audio(
-    generated: Path, original: Path, dst: Path, *, seconds: float | None = None
+    generated: Path,
+    original: Path,
+    dst: Path,
+    *,
+    seconds: float | None = None,
+    fit: bool = True,
 ) -> Path:
     """Replace the generated audio with the original's audio packets, byte for byte.
 
     With seconds, the original sound stops there (later packets are left out, never re-encoded).
+    fit=False never re-times the picture (a scene keeps its own frame rate): a gap over
+    MAX_MISMATCH raises instead.
     """
     with av.open(str(original)) as probe:
         if not probe.streams.audio:
@@ -112,7 +119,7 @@ def restore_original_audio(
         audio_seconds = min(audio_seconds, seconds)
     gap = audio_seconds - stream_seconds(generated, "video")
     with tempfile.TemporaryDirectory() as scratch:
-        if MAX_MISMATCH < abs(gap) <= FIT_LIMIT:
+        if fit and MAX_MISMATCH < abs(gap) <= FIT_LIMIT:
             generated = _fit_video(generated, audio_seconds, Path(scratch) / "fitted.mp4")
             gap = audio_seconds - stream_seconds(generated, "video")
         if abs(gap) > MAX_MISMATCH:
@@ -149,11 +156,11 @@ def copy_video_only(video: Path, dst: Path) -> Path:
 
 
 def add_original_soundtrack(
-    generated: Path, upload: Path, dst: Path, *, seconds: float | None = None
+    generated: Path, upload: Path, dst: Path, *, seconds: float | None = None, fit: bool = True
 ) -> Path:
     """Generated pictures + the upload's untouched audio; silent if the upload had none."""
     with av.open(str(upload)) as probe:
         has_audio = bool(probe.streams.audio)
     if not has_audio:
         return copy_video_only(generated, dst)
-    return restore_original_audio(generated, upload, dst, seconds=seconds)
+    return restore_original_audio(generated, upload, dst, seconds=seconds, fit=fit)

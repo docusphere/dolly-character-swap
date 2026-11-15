@@ -53,14 +53,16 @@ def middle_frame(path: Path) -> Image.Image:
 class VideoWriter:
     """Write RGB frames to an H.264 MP4. Use as a context manager."""
 
-    def __init__(self, path: Path, width: int, height: int, fps: int = FPS):
+    def __init__(
+        self, path: Path, width: int, height: int, fps: int | Fraction = FPS, crf: int = 18
+    ):
         self._path = Path(path)
         self._container = av.open(str(path), "w")
         self._stream = self._container.add_stream("libx264", rate=fps)
         self._stream.width, self._stream.height = width, height
         self._stream.pix_fmt = "yuv420p"
-        self._stream.options = {"crf": "18", "preset": "fast"}
-        self._time_base = Fraction(1, fps)
+        self._stream.options = {"crf": str(crf), "preset": "fast"}
+        self._time_base = 1 / Fraction(fps)
         self._index = 0
         self._closed = False
 

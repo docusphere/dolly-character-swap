@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from fractions import Fraction
 
 import av
 import numpy as np
@@ -154,3 +155,23 @@ def test_normalize_whole_seconds_still_checks_the_minimum(tmp_path):
     src = write_video(tmp_path / "in.mp4", [solid((10, 20, 30))] * 108)  # 4.5 s
     with pytest.raises(ClipLengthError, match="whole seconds it is 4s.*at least 5s"):
         normalize(src, tmp_path / "out.mp4", min_seconds=4.5, max_seconds=30, whole_seconds=True)
+
+
+def test_writer_keeps_a_fractional_rate_and_a_crf(tmp_path):
+    rate = Fraction(24000, 1001)
+    path = tmp_path / "scene.mp4"
+    with VideoWriter(path, 64, 64, fps=rate, crf=16) as writer:
+        for _ in range(48):
+            writer.write(solid((120, 60, 30)))
+    with av.open(str(path)) as container:
+        assert container.streams.video[0].average_rate == rate
+    assert count_frames(path) == 48
+    assert stream_seconds(path, "video") == pytest.approx(48 / float(rate), abs=1e-3)
+
+
+def test_writer_defaults_are_unchanged(tmp_path):
+    path = tmp_path / "out.mp4"
+    with VideoWriter(path, 64, 64) as writer:
+        writer.write(solid((10, 10, 10)))
+    with av.open(str(path)) as container:
+        assert container.streams.video[0].average_rate == 24

@@ -3,6 +3,7 @@ import wave
 import av
 import pytest
 
+from character_swap.media import audio
 from character_swap.media.audio import (
     DurationMismatchError,
     NoAudioError,
@@ -208,3 +209,28 @@ def test_restore_cut_works_when_the_original_audio_starts_late(tmp_path):
     kept = audio_packets(result)
     assert kept == audio_packets(shifted)[: len(kept)]
     assert abs(stream_seconds(result, "audio") - 2.0) <= 0.03
+
+
+def test_restore_without_fit_never_retimes_the_picture(tmp_path, monkeypatch):
+    original = write_video(
+        tmp_path / "scene.mp4", [solid((40, 40, 40))] * 34, audio_seconds=34 / 24
+    )
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 26)  # 0.33 s short
+    monkeypatch.setattr(audio, "_fit_video", lambda *a: pytest.fail("the picture was re-timed"))
+    with pytest.raises(DurationMismatchError):
+        restore_original_audio(generated, original, tmp_path / "out.mp4", fit=False)
+
+
+def test_restore_without_fit_copies_the_sound_when_it_fits(tmp_path):
+    original = write_video(tmp_path / "scene.mp4", [solid((40, 40, 40))] * 24, audio_seconds=1)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 24)
+    result = restore_original_audio(generated, original, tmp_path / "out.mp4", fit=False)
+    assert audio_packets(result) == audio_packets(original)
+
+
+def test_soundtrack_passes_fit_through(tmp_path, monkeypatch):
+    upload = write_video(tmp_path / "scene.mp4", [solid((40, 40, 40))] * 34, audio_seconds=34 / 24)
+    generated = write_video(tmp_path / "gen.mp4", [solid((150, 150, 150))] * 26)
+    monkeypatch.setattr(audio, "_fit_video", lambda *a: pytest.fail("the picture was re-timed"))
+    with pytest.raises(DurationMismatchError):
+        add_original_soundtrack(generated, upload, tmp_path / "out.mp4", fit=False)
