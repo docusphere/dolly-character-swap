@@ -14,6 +14,8 @@ from pathlib import Path
 
 import av
 import numpy as np
+from PIL import Image
+from scipy.ndimage import gaussian_filter, label, maximum_filter
 
 from character_swap.errors import CharSwapError
 from character_swap.media.audio import MAX_MISMATCH, RATE, embed_samples, read_audio
@@ -267,3 +269,43 @@ def job_frames(frame_map: list[int], first: int, stop: int) -> list[int]:
             k += 1
         found.append(k)
     return found
+
+
+NEAR = 0.04  # B counts only this close to A (share of the picture height)
+GROW = 0.015  # the pasted region reaches this far past A and B
+FEATHER = 0.01  # its edge is blurred this much (Gaussian sigma)
+SECOND = 0.25  # a separate region at least this share of the largest is another person
+CROWDED = 0.10  # more than this share of such frames stops a scene job's prepare
+
+
+def _grow(mask: np.ndarray, radius: float) -> np.ndarray:
+    size = 2 * max(1, round(radius)) + 1
+    return maximum_filter(mask.astype(np.uint8), size=size) > 0
+
+
+def lay_alpha(a: np.ndarray, b: np.ndarray | None) -> np.ndarray:
+    """The pasted region's alpha (0 to 1): dilate(A + (B near A)), feathered.
+
+    a: the original subject mask; b: SAM 3 "person" on the AI result, or None. Both are
+    booleans the size of the crop box. B away from A (someone else the AI redrew) is left out.
+    """
+    height = a.shape[0]
+    union = a.copy()
+    if b is not None:
+        union |= b & _grow(a, NEAR * height)
+    region = _grow(union, GROW * height)
+    return gaussian_filter(region.astype(np.float32), sigma=FEATHER * height)
+
+
+def crowded_frames(mask_dir: Path) -> tuple[int, int]:
+    """(frames with a second separate region at least SECOND the size of the largest, frames)."""
+    files = sorted(Path(mask_dir).glob("mask_*.png"))
+    crowded = 0
+    for path in files:
+        labels, count = label(np.asarray(Image.open(path).convert("L")) > 127)
+        if count < 2:
+            continue
+        sizes = np.sort(np.bincount(labels.ravel())[1:])
+        if sizes[-2] >= SECOND * sizes[-1]:
+            crowded += 1
+    return crowded, len(files)

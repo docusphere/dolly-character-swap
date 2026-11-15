@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from PIL import Image
 
 from character_swap.media import scene
 from character_swap.media.audio import RATE, read_audio
@@ -243,3 +244,45 @@ def test_the_frame_map_at_24_fps_is_one_to_one(tmp_path):
 
 def test_job_frames_holds_the_last_one_past_the_map():
     assert scene.job_frames([5, 6, 7], 5, 10) == [0, 1, 2, 2, 2]
+
+
+# ---- the pasted region -------------------------------------------------------------
+def _box_mask(top, bottom, left, right, size=(400, 600)):
+    mask = np.zeros(size, dtype=bool)
+    mask[top:bottom, left:right] = True
+    return mask
+
+
+def test_the_region_covers_a_and_feathers_its_edge():
+    a = _box_mask(150, 250, 250, 350)  # 400 px high: grow 6 px, feather sigma 4 px
+    alpha = scene.lay_alpha(a, None)
+    assert alpha[200, 300] > 0.99  # inside A
+    assert 0.9 < alpha[150, 300] < 1.0  # on A's edge: inside the grown region, feathered
+    assert alpha[150 - 8, 300] < 0.5  # 8 px out: past the 6 px growth
+    assert alpha[50, 50] == 0.0  # far away: exactly the scene
+
+
+def test_b_next_to_a_is_added_but_someone_far_away_is_not():
+    a = _box_mask(150, 250, 250, 350)
+    hair = _box_mask(140, 250, 250, 350)  # SAM 3 on the result: 10 px more on top
+    shoulder = _box_mask(300, 380, 500, 580)  # another person the AI redrew, far from A
+    alpha = scene.lay_alpha(a, hair | shoulder)
+    assert alpha[150 - 8, 300] > 0.9  # the hairline is pasted
+    assert alpha[340, 540] == 0.0  # the shoulder is not
+    assert scene.lay_alpha(a, np.zeros_like(a)).tolist() == scene.lay_alpha(a, None).tolist()
+
+
+def _write_masks(folder, masks):
+    folder.mkdir(parents=True, exist_ok=True)
+    for index, mask in enumerate(masks):
+        Image.fromarray(mask.astype(np.uint8) * 255).save(folder / f"mask_{index:05d}.png")
+    return folder
+
+
+def test_crowded_frames_count_a_second_person(tmp_path):
+    one = _box_mask(10, 40, 10, 40, size=(64, 96))
+    two = one | _box_mask(10, 40, 60, 90, size=(64, 96))  # the same size again
+    speck = one | _box_mask(50, 54, 60, 64, size=(64, 96))  # 16 px: under 25 % of 900
+    empty = np.zeros((64, 96), dtype=bool)
+    folder = _write_masks(tmp_path / "masks", [one, two, speck, empty])
+    assert scene.crowded_frames(folder) == (1, 4)
