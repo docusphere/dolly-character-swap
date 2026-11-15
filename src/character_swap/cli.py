@@ -46,6 +46,7 @@ from character_swap.pipeline import (
     check_can_generate,
     draft_prompt_changed,
     final_resolution,
+    generation_estimate,
     generation_files,
     generation_label,
     generation_prompt,
@@ -53,9 +54,12 @@ from character_swap.pipeline import (
     generator_key,
     generator_promotes,
     is_promote,
+    is_scene_job,
+    needs_lay_back_charge,
     needs_new_charge,
     next_step,
     pin_provider,
+    prep_skip,
     refuse_another_final,
     remaining_paid_stages,
     rename_old_prompt_names,
@@ -274,6 +278,11 @@ def _parser() -> argparse.ArgumentParser:
         "(saved provider predictions are re-checked, not re-bought)",
     )
     resume.add_argument("job")
+    resume.add_argument(
+        "--setting",
+        metavar="TEXT",
+        help="describe the setting yourself and go on for free (when the description failed)",
+    )
     resume.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     review = sub.add_parser("review", help="approve or reject the prepared clip")
     review.add_argument("job")
@@ -614,9 +623,22 @@ def _prepare(args, settings, env) -> int:
         return 0
 
 
+def _save_setting(job: Job, text: str) -> None:
+    """resume --setting: the describe stage then uses it and makes no call."""
+    setting = _setting(text, job.mode)
+    if job.stage_done("describe"):
+        raise JobError(
+            "The setting is already done for this job, so --setting changes nothing. "
+            "Nothing was charged."
+        )
+    job.update(setting=setting)
+
+
 def _resume(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     env.track(job, "resume {id}")
+    if args.setting is not None:
+        _save_setting(job, args.setting)
     if job.mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     remaining = remaining_paid_stages(job)
@@ -628,7 +650,8 @@ def _resume(args, settings, env) -> int:
     env.out(f"Resuming {job.id}; finished steps are skipped and saved predictions are re-checked.")
     prepare_job(job, env.services_factory(settings), status=env.out)
     if not any(c["step"] == "prepare" for c in job.state.get("costs", [])):
-        record_spend(job, "prepare", estimate_prepare(job.mode, seconds=30), settings.runs_dir)
+        estimate = estimate_prepare(job.mode, seconds=30, skip=prep_skip(job))
+        record_spend(job, "prepare", estimate, settings.runs_dir)
     return 0
 
 
@@ -692,6 +715,11 @@ def _prompt(args, settings, env) -> int:
 
 def _repair(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
+    if is_scene_job(job):
+        raise StageError(
+            "This job already cuts out on the original colors, so there is nothing to repair. "
+            "Nothing was charged."
+        )
     env.track(job, "repair {id}")
     if job.mode not in ("depth", "depth_mesh"):
         raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
@@ -760,7 +788,9 @@ def _generate(args, settings, env) -> int:
         )
         if is_promote(job, stage, resolution):
             SeedanceGenerator.promote_body(request.draft_task_id)  # refuses with no task id
-        estimate = generator_for(job, services).estimate(request, stage)
+        estimate = generation_estimate(
+            job, generator_for(job, services), request, stage, replacing_stale=remake
+        )
         if stage == "draft" and request.prompt:
             env.out(
                 f"Prompt sent to Seedance (change it with `charswap prompt {job.id}`):\n"
@@ -793,7 +823,12 @@ def _generate(args, settings, env) -> int:
         if remake:
             archive_stale_draft(job)
     elif resumes_without_charge(job, stage):
-        env.out(f"Found a saved {stage} request; resuming it (no new charge).")
+        if needs_lay_back_charge(job, stage):
+            env.out(LAY_BACK_ONLY)
+            if not args.yes and not env.proceed():
+                return 1
+        else:
+            env.out(f"Found a saved {stage} request; resuming it (no new charge).")
     result = generate_stage(
         job,
         services,
@@ -806,6 +841,9 @@ def _generate(args, settings, env) -> int:
     if stage == "draft":
         env.out(_after_draft_hint(job, services))
     return 0
+
+
+LAY_BACK_ONLY = "The AI part resumes free; laying it back needs one SAM 3 run (~$0.002)."
 
 
 def _has_final_files(job: Job) -> bool:
@@ -836,7 +874,9 @@ def _after_draft_hint(job: Job, services: Services) -> str:
     generator = generator_for(job, services)
     try:
         price = {
-            res: generator.estimate(
+            res: generation_estimate(
+                job,
+                generator,
                 build_request(job, faces=services.faces, stage="final", final_resolution=res),
                 "final",
             ).total

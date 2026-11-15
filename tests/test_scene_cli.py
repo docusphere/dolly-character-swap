@@ -3,12 +3,19 @@
 import pytest
 from PIL import Image
 
-from character_swap import cli
+from character_swap import cli, pipeline
 from character_swap.config import Settings
-from character_swap.faces import PHOTO_CONSENT
+from character_swap.faces import PHOTO_CONSENT, FaceLibrary
 from character_swap.jobs import Job
 from character_swap.media.video import count_frames
-from helpers import SCENE_RATE, write_shots
+from character_swap.modes import MODES
+from character_swap.pipeline import Services
+from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveSpeedGenerator
+from character_swap.review import decide, fingerprint
+from character_swap.stages.describe import DESCRIBE_MODEL
+from fakes import FakeWaveSpeed, RefusingReplicate
+from helpers import SCENE_RATE, solid, write_shots, write_video
+from scene_jobs import fake_pitch, make_scene_job, prep_services
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
 
@@ -193,3 +200,176 @@ def test_a_setting_is_refused_for_wan(settings, tmp_path):
         settings,
     )
     assert code == 2 and "--setting only matters for Seedance modes" in out.err.text
+
+
+# ---- resume --setting ----------------------------------------------------------------
+def test_resume_with_a_setting_skips_the_paid_description(settings, tmp_path, monkeypatch):
+    job = make_scene_job(settings.runs_dir, tmp_path)
+    ids = _prepare_ids(monkeypatch)
+    code, out = run(
+        ["resume", job.id, "--setting", "A dim room.", "--yes"],
+        settings,
+        services_factory=lambda s: object(),
+    )
+    assert code == 0 and ids == [job.id] and job.state["setting"] == "A dim room."
+    assert "Remaining paid steps: separate, transcribe, depth, masks " in out.text
+    assert job.state["costs"][-1]["usd"] == pytest.approx(0.0598)  # no $0.001 description
+
+
+def test_resume_refuses_a_setting_once_the_description_is_done(settings, tmp_path, monkeypatch):
+    job = make_scene_job(settings.runs_dir, tmp_path)
+    job.mark_stage("describe")
+    monkeypatch.setattr(cli, "prepare_job", lambda *a, **k: pytest.fail("must not run"))
+    code, out = run(["resume", job.id, "--setting", "A dim room."], settings)
+    assert code == 2 and "The setting is already done for this job" in out.err.text
+    assert "setting" not in job.state
+
+
+def test_a_refused_description_continues_for_free(settings, tmp_path, monkeypatch):
+    monkeypatch.setattr("character_swap.pipeline.pitch_vocals", fake_pitch)
+    job = make_scene_job(settings.runs_dir, tmp_path)
+    services = prep_services(tmp_path, cls=RefusingReplicate, refuse=DESCRIBE_MODEL)
+    code, out = run(["resume", job.id, "--yes"], settings, services_factory=lambda s: services)
+    assert code == 2
+    assert f'charswap resume {job.id} --setting "a dim room with ..."' in out.err.text
+    code, out = run(
+        ["resume", job.id, "--setting", "A dim room.", "--yes"],
+        settings,
+        services_factory=lambda s: services,
+    )
+    assert code == 0, out.err.text
+    keys = [run["key"] for run in services.replicate.runs]
+    assert keys.count(DESCRIBE_MODEL) == 1 and job.stage_done("embed")  # no new description
+
+
+# ---- generate and repair ---------------------------------------------------------------
+def ready_scene_job(settings, tmp_path):
+    """An approved depth_mesh scene job whose part is 13 s (307 scene frames, padded).
+
+    The prepared files are stand-ins; the review hashes whatever is there.
+    """
+    job = make_scene_job(settings.runs_dir, tmp_path, mode="depth_mesh", face_frames=307)
+    for name in MODES["depth_mesh"].review_files:
+        if name.endswith(".json"):  # face-landmarks.json
+            job.path(name).write_text('{"fps": 24, "frames": []}')
+        else:
+            write_video(job.path(name), [solid((5, 5, 5))] * 24)
+    for stage in MODES["depth_mesh"].prep_stages:
+        job.mark_stage(stage)
+    job.update(video={"seconds": 13.0}, transcript="hello there", scene="A studio.")
+    decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
+    return job
+
+
+def ws_services(settings):
+    """The real WaveSpeed generator on a fake WaveSpeed; ws_services.last is that fake."""
+    output = write_video(settings.root / "wavespeed-out.mp4", [solid((20, 200, 20))] * 24)
+    fake = FakeWaveSpeed(files={"https://cdn.wavespeed.ai/out.mp4": output})
+    ws_services.last = fake
+    return Services(
+        replicate=None,
+        face_detector=lambda: None,
+        generators={"seedance:wavespeed": SeedanceWaveSpeedGenerator(fake)},
+        faces=FaceLibrary(settings.root),
+    )
+
+
+@pytest.fixture
+def laid_back(monkeypatch):
+    """The lay-back without SAM or paste: it saves its SAM record and copies the raw clip."""
+    calls = []
+
+    def fake_lay_back(job, stage, replicate, dst, *, runs_dir, status):
+        calls.append(stage)
+        folder = job.path(f"{stage}-sam")
+        folder.mkdir(exist_ok=True)
+        (folder / "sam-prediction.json").write_text('{"id": "s1", "status": "succeeded"}')
+        dst.write_bytes(job.path(f"{stage}-raw.mp4").read_bytes())
+        return dst
+
+    monkeypatch.setattr(pipeline, "lay_back", fake_lay_back)
+    return calls
+
+
+def test_the_draft_price_is_the_padded_part_plus_the_lay_back(settings, tmp_path, laid_back):
+    job = ready_scene_job(settings, tmp_path)
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda q: asked.append(q) and False,
+        services_factory=ws_services,
+    )
+    assert code == 1 and asked == ["Continue?"] and ws_services.last.bodies == []
+    assert "Seedance draft (480p)        ~$1.4300" in out.text  # 13 s, never the 17 s scene
+    assert "SAM 3 masks" in out.text and "Total                        ~$2.8620" in out.text
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=ws_services
+    )
+    assert code == 0 and laid_back == ["draft"] and len(ws_services.last.bodies) == 1
+    assert "makes a new 720p take (~$5.72)" in out.text
+    assert "`--resolution 1080p` for a new 1080p take (~$14.30)" in out.text
+
+
+@pytest.mark.parametrize("saved", ["record", "raw"])
+def test_a_free_resume_still_asks_before_buying_the_lay_back(settings, tmp_path, laid_back, saved):
+    job = ready_scene_job(settings, tmp_path)
+    if saved == "record":
+        job.path("draft-prediction.json").write_text('{"id": "p", "status": "succeeded"}')
+    else:
+        write_video(job.path("draft-raw.mp4"), [solid((20, 200, 20))] * 24)
+    job.mark_stage("draft", "failed", fingerprint=fingerprint(job))  # e.g. Ctrl-C
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda q: asked.append(q) and False,
+        services_factory=ws_services,
+    )
+    assert code == 1 and asked == ["Continue?"] and laid_back == []
+    assert "The AI part resumes free; laying it back needs one SAM 3 run (~$0.002)." in out.text
+    code, out = run(
+        ["generate", job.id, "--draft", "--yes"], settings, services_factory=ws_services
+    )
+    assert code == 0 and laid_back == ["draft"] and ws_services.last.bodies == []
+
+
+def test_with_both_saved_the_resume_asks_nothing(settings, tmp_path, laid_back):
+    job = ready_scene_job(settings, tmp_path)
+    write_video(job.path("draft-raw.mp4"), [solid((20, 200, 20))] * 24)
+    job.path("draft-sam").mkdir()
+    job.path("draft-sam/sam-prediction.json").write_text('{"id": "s", "status": "succeeded"}')
+    job.mark_stage("draft", "failed", fingerprint=fingerprint(job))
+    asked = []
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=asked.append,
+        services_factory=ws_services,
+    )
+    assert code == 0 and asked == [] and "resuming it (no new charge)" in out.text
+
+
+def test_a_remakes_price_includes_a_new_lay_back(settings, tmp_path, laid_back):
+    job = ready_scene_job(settings, tmp_path)
+    write_video(job.path("draft.mp4"), [solid((20, 200, 20))] * 24)
+    job.path("draft-sam").mkdir()
+    job.path("draft-sam/sam-prediction.json").write_text('{"id": "s", "status": "succeeded"}')
+    job.mark_stage("draft", fingerprint="inputs that are no longer approved")
+    code, out = run(
+        ["generate", job.id, "--draft"],
+        settings,
+        confirm=lambda q: False,
+        services_factory=ws_services,
+    )
+    assert code == 1 and "SAM 3 masks" in out.text and "~$2.8620" in out.text
+    assert job.path("draft-sam/sam-prediction.json").exists()  # declined: nothing archived
+
+
+def test_repair_is_refused_on_a_scene_job(settings, tmp_path, monkeypatch):
+    job = make_scene_job(settings.runs_dir, tmp_path)
+    monkeypatch.setattr(cli, "repair_with_rgb", lambda *a, **k: pytest.fail("must not run"))
+    asked = []
+    code, out = run(["repair", job.id], settings, confirm=asked.append)
+    assert code == 2 and asked == []
+    assert "already cuts out on the original colors" in out.err.text
