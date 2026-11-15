@@ -295,6 +295,21 @@ def test_result_masks_that_do_not_match_name_the_record(runs_dir, tmp_path):
     assert str(job.path("draft-sam") / "sam-prediction.json") in error
 
 
+@pytest.mark.parametrize("b_count", [FRAMES - 2, FRAMES - 1, FRAMES + 1, FRAMES + 2])
+def test_result_masks_off_by_a_frame_or_two_are_still_laid_back(runs_dir, tmp_path, b_count):
+    job = approved_scene_job(runs_dir, tmp_path)
+    generate(job, gen_services(tmp_path, b_count=b_count), "draft", runs_dir=runs_dir, **QUIET)
+    assert job.stage_done("draft")
+    assert _near(list(iter_frames(job.path("draft.mp4")))[70], 32, 24, MAGENTA)
+
+
+@pytest.mark.parametrize("b_count", [FRAMES - 3, FRAMES + 3])
+def test_result_masks_off_by_more_than_two_still_stop(runs_dir, tmp_path, b_count):
+    job = approved_scene_job(runs_dir, tmp_path)
+    with pytest.raises(StageError, match=rf"{b_count} masks for the AI clip's 96 frames"):
+        generate(job, gen_services(tmp_path, b_count=b_count), "draft", runs_dir=runs_dir, **QUIET)
+
+
 def test_a_new_sam_run_never_mixes_in_old_masks(runs_dir, tmp_path):
     job = approved_scene_job(runs_dir, tmp_path)
     stale = job.path("draft-sam/raw-masks")

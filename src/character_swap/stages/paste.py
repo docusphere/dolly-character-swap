@@ -20,6 +20,7 @@ from character_swap.stages.masks import NoMasks, segment
 
 SCENE = "full-scene.mp4"
 NOBODY = "SAM 3 found nobody on the AI clip; only the original outline is used."
+MASK_SLACK = 2  # SAM 3 decodes the AI clip itself: a frame or two more or fewer is laid back
 
 
 def _blank(folder: Path) -> bool:
@@ -74,7 +75,7 @@ def lay_back(
         masks_b = folder / "clean-masks"
         clean_border_fragments(found, masks_b)
         count = len(list(masks_b.glob("mask_*.png")))
-        if count != clip.frames:
+        if abs(count - clip.frames) > MASK_SLACK:
             raise StageError(
                 f"SAM 3 gave {count} masks for the AI clip's {clip.frames} frames. Delete "
                 f"{folder / 'sam-prediction.json'} and run the same command again (~$0.002). "
