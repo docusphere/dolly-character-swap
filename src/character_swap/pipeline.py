@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 import av
 
-from character_swap.costs import estimate_prepare, record_spend, usd_text
+from character_swap.costs import Estimate, cost_line, estimate_prepare, record_spend, usd_text
 from character_swap.faces import FaceError
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.audio import (
@@ -49,6 +49,7 @@ from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene, use_setting
 from character_swap.stages.face_mesh import FaceDetector, track_and_draw
 from character_swap.stages.masks import segment
+from character_swap.stages.paste import lay_back
 from character_swap.stages.pitch import pitch_vocals
 from character_swap.stages.separate import separate_vocals
 from character_swap.stages.transcribe import transcribe
@@ -484,7 +485,7 @@ def archive_stale_draft(job: Job) -> list[Path]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     moves = []
     for stage in GENERATION_STAGES:
-        for name in generation_files(stage):
+        for name in (*generation_files(stage), f"{stage}-sam"):  # a scene job's lay-back masks
             source = job.path(name)
             if source.exists():
                 target = job.path(f"{stage}-old-{stamp}{name[len(stage) :]}")
@@ -500,6 +501,32 @@ def archive_stale_draft(job: Job) -> list[Path]:
 def needs_new_charge(job: Job, stage: str) -> bool:
     """False when a saved provider request or a downloaded result exists (resume is free)."""
     return not already_paid(job, stage)
+
+
+def paste_record(stage: str) -> str:
+    """A scene job's saved SAM 3 run on its AI result (the lay-back)."""
+    return f"{stage}-sam/sam-prediction.json"
+
+
+def needs_lay_back_charge(job: Job, stage: str) -> bool:
+    """A scene job whose lay-back SAM 3 run (~$0.002) was never created."""
+    return is_scene_job(job) and not job.path(paste_record(stage)).exists()
+
+
+def generation_estimate(
+    job: Job,
+    generator: Generator,
+    request: GenerationRequest,
+    stage: str,
+    *,
+    replacing_stale: bool = False,
+) -> Estimate:
+    """What this step charges: the generator's price, plus the lay-back's SAM 3 run on a scene
+    job while it is still to be bought (always on a remake: the old masks are archived)."""
+    estimate = generator.estimate(request, stage)
+    if is_scene_job(job) and (replacing_stale or needs_lay_back_charge(job, stage)):
+        return Estimate(lines=(*estimate.lines, cost_line("sam3", 0)))
+    return estimate
 
 
 # A Seedance job made before WaveSpeed has no saved provider. It was PiAPI's when it has
@@ -797,13 +824,27 @@ def generate(
     with _tracked(job, stage, fingerprint=inputs, **extra), _wrap(label):
         if not raw.exists():  # downloaded already: never ask the provider again
             generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
-        _notify(status, "Putting the original soundtrack back")
-        # Wan keeps the exact call it always had; only whole-second jobs cut the sound.
-        cut = {"seconds": request.seconds} if job.generator in WHOLE_SECONDS else {}
-        _write_atomically(
-            result,
-            lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
-        )
+        if is_scene_job(job):
+            _notify(status, "Laying the new person back into the scene")
+            _write_atomically(
+                result,
+                lambda part: lay_back(
+                    job,
+                    stage,
+                    services.replicate,
+                    part,
+                    runs_dir=runs_dir,
+                    status=lambda text: _notify(status, text),
+                ),
+            )
+        else:
+            _notify(status, "Putting the original soundtrack back")
+            # Wan keeps the exact call it always had; only whole-second jobs cut the sound.
+            cut = {"seconds": request.seconds} if job.generator in WHOLE_SECONDS else {}
+            _write_atomically(
+                result,
+                lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
+            )
     _notify(status, f"{stage.capitalize()} ready: {result}")
     return result
 

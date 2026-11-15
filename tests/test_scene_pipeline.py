@@ -2,18 +2,44 @@
 
 import json
 
+import av
 import pytest
+from PIL import Image
 
 from character_swap import pipeline
+from character_swap.costs import Estimate, Line
 from character_swap.jobs import Job, JobError, clean_setting
 from character_swap.media.scene import SceneError
-from character_swap.pipeline import is_scene_job, prepare, remaining_paid_stages
+from character_swap.media.video import count_frames, iter_frames
+from character_swap.pipeline import (
+    Services,
+    archive_stale_draft,
+    build_request,
+    generate,
+    generation_estimate,
+    is_scene_job,
+    needs_lay_back_charge,
+    prepare,
+    remaining_paid_stages,
+)
+from character_swap.review import decide, fingerprint
 from character_swap.stages import StageError
+from character_swap.stages import paste as paste_stage
 from character_swap.stages.describe import DESCRIBE_MODEL
 from character_swap.stages.masks import SAM_VERSION
-from fakes import RefusingReplicate
+from fakes import FakeReplicate, RefusingReplicate
 from helpers import solid, write_shots, write_video
-from scene_jobs import BLUE, RED, TWO, fake_pitch, make_scene_job, prep_services
+from scene_jobs import (
+    BLUE,
+    FRAMES,
+    GREEN,
+    RED,
+    TWO,
+    fake_pitch,
+    make_scene_job,
+    masks_zip,
+    prep_services,
+)
 
 QUIET = {"status": lambda _m: None}
 
@@ -136,3 +162,199 @@ def test_the_segment_is_saved_as_json(runs_dir, tmp_path):
     job = make_scene_job(runs_dir, tmp_path)
     saved = json.loads(job.path("state.json").read_text())["segment"]
     assert saved["fps"] == "24000/1001" and saved["crop"] == {"x": 0, "y": 0, "w": 64, "h": 48}
+
+
+# ---- generate: the lay-back ----------------------------------------------------------
+YELLOW, MAGENTA = (220, 220, 40), (220, 40, 220)
+
+
+class FakeSeedance:
+    """Stands in for the WaveSpeed generator: one paid create per record, a canned video."""
+
+    name, provider, model = "seedance", "wavespeed", "fake/seedance"
+    finals, promotes = ("720p", "1080p"), False
+
+    def __init__(self, video):
+        self.video, self.creates = video, 0
+
+    def estimate(self, request, stage):
+        return Estimate(lines=(Line(f"Fake {stage}", 0.88),))
+
+    def generate(self, request, stage, *, record, dest, on_created=None):
+        if not record.exists():
+            self.creates += 1
+            record.write_text(json.dumps({"id": f"p-{stage}", "status": "succeeded"}))
+            if on_created is not None:
+                on_created({"id": f"p-{stage}", "status": "starting"})
+        dest.write_bytes(self.video.read_bytes())
+        return dest
+
+
+def ai_video(tmp_path, frames=FRAMES):
+    """The AI's draft at twice the job's size: a yellow room, the new person where A is."""
+    picture = solid(YELLOW, (128, 96))
+    picture[16:80, 32:96] = MAGENTA  # ONE's box (16, 8, 48, 40), doubled
+    return write_video(tmp_path / f"ai-{frames}.mp4", [picture] * frames)
+
+
+def gen_services(tmp_path, *, frames=FRAMES, b_boxes=((32, 16, 96, 80),), b_count=FRAMES):
+    fake = FakeReplicate(
+        outputs={SAM_VERSION: "u/b"},
+        files={"u/b": masks_zip(list(b_boxes), count=b_count, size=(128, 96))},
+    )
+    generator = FakeSeedance(ai_video(tmp_path, frames))
+    return Services(
+        replicate=fake,
+        face_detector=lambda: None,
+        generators={"seedance:wavespeed": generator},
+    )
+
+
+def approved_scene_job(runs_dir, tmp_path):
+    job = make_scene_job(runs_dir, tmp_path)
+    prepare(job, prep_services(tmp_path), **QUIET)
+    decide(job, approved=True, note="watched all", fingerprint=fingerprint(job))
+    return job
+
+
+def audio_packets(path):
+    with av.open(str(path)) as container:
+        return [bytes(p) for p in container.demux(audio=0) if p.dts is not None]
+
+
+def _near(frame, x, y, color):
+    patch = frame[y - 2 : y + 2, x - 2 : x + 2].astype(int)
+    return abs(patch - color).mean() < 16
+
+
+def test_a_scene_draft_is_the_whole_scene_with_the_new_person(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    services = gen_services(tmp_path)
+    result = generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert result == job.path("draft.mp4") and job.stage_done("draft")
+    frames = list(iter_frames(result))
+    assert len(frames) == count_frames(job.path("full-scene.mp4")) == 143
+    assert audio_packets(result) == audio_packets(job.path("full-scene.mp4"))
+    assert _near(frames[10], 32, 24, RED) and _near(frames[130], 32, 24, GREEN)  # other shots
+    assert _near(frames[70], 32, 24, MAGENTA) and _near(frames[70], 4, 44, BLUE)
+    (run,) = services.replicate.runs
+    assert run["input"]["prompt"] == "person"
+    assert run["input"]["video"] == "https://fake.replicate/draft-raw.mp4"
+    assert [(c["step"], c["usd"]) for c in job.state["costs"]] == [
+        ("draft", 0.88),
+        ("draft-paste", 0.002),
+    ]
+    assert job.state["costs"][1]["task_id"] == "pred-1"
+
+
+def test_nobody_on_the_result_uses_the_original_outline(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    services = gen_services(tmp_path, b_count=0)  # a zip with no mask_*.png
+    said = []
+    generate(job, services, "draft", runs_dir=runs_dir, status=said.append)
+    assert paste_stage.NOBODY in said and job.stage_done("draft")
+    assert _near(list(iter_frames(job.path("draft.mp4")))[70], 32, 24, MAGENTA)
+
+
+def test_blank_masks_on_the_result_also_mean_nobody(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    said = []
+    services = gen_services(tmp_path, b_boxes=())  # SAM 3 returns only empty masks
+    generate(job, services, "draft", runs_dir=runs_dir, status=said.append)
+    assert paste_stage.NOBODY in said and job.stage_done("draft")
+
+
+def test_a_crash_while_laying_back_buys_nothing_again(runs_dir, tmp_path, monkeypatch):
+    job = approved_scene_job(runs_dir, tmp_path)
+    services = gen_services(tmp_path)
+    real, calls = paste_stage.paste_back, []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("disk full")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(paste_stage, "paste_back", flaky)
+    with pytest.raises(StageError, match="disk full"):
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert job.path("draft-raw.mp4").exists() and not job.path("draft.mp4").exists()
+    assert not job.path("draft.part.mp4").exists()
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    generator = services.generators["seedance:wavespeed"]
+    assert generator.creates == 1 and len(services.replicate.runs) == 1  # nothing bought twice
+    assert [c["step"] for c in job.state["costs"]] == ["draft", "draft-paste"]
+    assert job.stage_done("draft")
+
+
+def test_result_masks_that_do_not_match_name_the_record(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    with pytest.raises(StageError, match=r"10 masks for the AI clip's 96 frames\. Delete .*"):
+        generate(job, gen_services(tmp_path, b_count=10), "draft", runs_dir=runs_dir, **QUIET)
+    error = job.state["stages"]["draft"]["error"]
+    assert str(job.path("draft-sam") / "sam-prediction.json") in error
+
+
+def test_a_new_sam_run_never_mixes_in_old_masks(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    stale = job.path("draft-sam/raw-masks")
+    stale.mkdir(parents=True)
+    for index in range(96, 120):  # left over from an earlier result whose record was deleted
+        (stale / f"mask_{index:05d}.png").write_bytes(b"old")
+    generate(job, gen_services(tmp_path), "draft", runs_dir=runs_dir, **QUIET)
+    clean = list((job.path("draft-sam") / "clean-masks").glob("mask_*.png"))
+    assert job.stage_done("draft") and len(clean) == FRAMES
+
+
+def test_an_ai_clip_that_cannot_be_laid_back_buys_no_sam(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    services = gen_services(tmp_path, frames=48)  # 2.0 s for a 3.96 s part
+    with pytest.raises(StageError, match="can't be laid back into the 4.0 s shot"):
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert services.replicate.runs == [] and job.path("draft-raw.mp4").exists()
+
+
+def test_the_price_includes_the_lay_back_until_it_is_bought(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    generator = FakeSeedance(ai_video(tmp_path))
+    request = build_request(job, stage="draft")
+    items = [line.item for line in generation_estimate(job, generator, request, "draft").lines]
+    assert items == ["Fake draft", "SAM 3 masks"] and needs_lay_back_charge(job, "draft")
+    job.path("draft-sam").mkdir()
+    job.path("draft-sam/sam-prediction.json").write_text('{"id": "s", "status": "succeeded"}')
+    estimate = generation_estimate(job, generator, request, "draft")
+    assert [line.item for line in estimate.lines] == ["Fake draft"]
+    assert not needs_lay_back_charge(job, "draft") and needs_lay_back_charge(job, "final")
+    remake = generation_estimate(job, generator, request, "draft", replacing_stale=True)
+    assert remake.total == pytest.approx(0.882)  # the old masks are archived first
+
+
+def test_a_new_draft_never_reuses_the_old_results_masks(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    generate(job, gen_services(tmp_path), "draft", runs_dir=runs_dir, **QUIET)
+    moved = archive_stale_draft(job)
+    assert not job.path("draft-sam").exists()
+    (old,) = [path for path in moved if path.name.endswith("-sam")]
+    assert old.name.startswith("draft-old-") and (old / "sam-prediction.json").exists()
+
+
+def test_a_single_shot_job_never_lays_back_or_reads_a_scene(runs_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "lay_back", lambda *a, **k: pytest.fail("laid back"))
+    monkeypatch.setattr(pipeline, "check_sound", lambda *a: pytest.fail("read a scene"))
+    clip = write_video(tmp_path / "c.mp4", [solid(RED)] * 96, audio_seconds=4)
+    photo = tmp_path / "me.jpg"
+    Image.new("RGB", (64, 64), (200, 150, 120)).save(photo, "JPEG")
+    job = Job.create(
+        runs_dir, clip, generator="seedance", mode="depth", character=photo, provider="wavespeed"
+    )
+    prepare(job, prep_services(tmp_path), **QUIET)
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    services = gen_services(tmp_path)
+    generator = services.generators["seedance:wavespeed"]
+    request = build_request(job, stage="draft")
+    assert generation_estimate(job, generator, request, "draft") == generator.estimate(
+        request, "draft"
+    )
+    generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert job.stage_done("draft") and services.replicate.runs == []
+    assert [c["step"] for c in job.state["costs"]] == ["draft"]
