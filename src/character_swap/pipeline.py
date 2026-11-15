@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 import av
 
-from character_swap.costs import record_spend
+from character_swap.costs import estimate_prepare, record_spend, usd_text
 from character_swap.faces import FaceError
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.audio import (
@@ -27,6 +27,7 @@ from character_swap.media.audio import (
     read_audio,
 )
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
+from character_swap.media.scene import CROWDED, check_sound, crowded_frames
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import (
     GENERATION_STAGES,
@@ -45,7 +46,7 @@ from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
 from character_swap.stages import StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
-from character_swap.stages.describe import describe_scene
+from character_swap.stages.describe import describe_scene, use_setting
 from character_swap.stages.face_mesh import FaceDetector, track_and_draw
 from character_swap.stages.masks import segment
 from character_swap.stages.pitch import pitch_vocals
@@ -60,9 +61,24 @@ PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
 }
 
 
+SCENE = "full-scene.mp4"  # a scene swap's whole scene; upload.mp4 is the part the AI gets
+
+
+def is_scene_job(job: Job, state: dict[str, Any] | None = None) -> bool:
+    """True for a scene swap (state.json has a "segment"); single-shot jobs run as before."""
+    state = job.state if state is None else state
+    return isinstance(state.get("segment"), dict)
+
+
+def prep_skip(job: Job) -> tuple[str, ...]:
+    """Paid prep stages this job leaves out: the description, when you wrote the setting."""
+    return ("describe",) if job.state.get("setting") else ()
+
+
 def remaining_paid_stages(job: Job) -> list[str]:
     """Paid stages this job's mode needs that are not finished yet."""
-    return [name for name in PAID_STAGES[job.mode] if not job.stage_done(name)]
+    skip = prep_skip(job)
+    return [name for name in PAID_STAGES[job.mode] if name not in skip and not job.stage_done(name)]
 
 
 def clip_seconds(job: Job) -> float:
@@ -145,13 +161,20 @@ def _tracked(job: Job, name: str, **info: object) -> Iterator[None]:
     job.mark_stage(name, started_at=started_at, **info)
 
 
-def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
+def _stage(
+    job: Job,
+    name: str,
+    label: str,
+    work: Callable[[], object],
+    status: Status,
+    **info: object,
+) -> None:
     if job.stage_done(name):
         _notify(status, f"{label} · already done")
         return
     _notify(status, label)
     clear_review(job)  # any new work invalidates a previous approval
-    with _tracked(job, name), _wrap(label):
+    with _tracked(job, name, **info), _wrap(label):
         work()
 
 
@@ -189,7 +212,18 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
         status,
     )
     _stage(job, "transcribe", "Transcribing speech", lambda: transcribe(job, r), status)
-    _stage(job, "describe", "Describing the setting", lambda: describe_scene(job, r), status)
+    setting = job.state.get("setting")
+    if setting:
+        _stage(
+            job,
+            "describe",
+            "Using the setting you wrote",
+            lambda: use_setting(job, setting),
+            status,
+            source="you",
+        )
+    else:
+        _stage(job, "describe", "Describing the setting", lambda: describe_scene(job, r), status)
 
     if MODES[job.mode].uses_depth:
         _stage(job, "depth", "Generating depth video", lambda: _depth(job, services), status)
@@ -197,14 +231,14 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
             job,
             "masks",
             "Cutting out the subject (SAM 3)",
-            lambda: _masks(job, r, "depth.mp4"),
+            lambda: _subject_masks(job, r),
             status,
         )
         _stage(
             job,
             "composite",
             "Compositing depth subject over background",
-            lambda: _composite(job),
+            lambda: _composite_checked(job),
             status,
         )
     if MODES[job.mode].uses_mesh:
@@ -256,10 +290,37 @@ def _masks(job: Job, replicate, video: str, folder: str = "sam") -> Path:
     return clean
 
 
+def _subject_masks(job: Job, replicate) -> None:
+    if is_scene_job(job):  # S5: "man with white face paint" can't be seen in a depth map
+        _masks(job, replicate, "original.mp4")
+        job.update(mask_source="rgb")
+    else:
+        _masks(job, replicate, "depth.mp4")
+
+
 def _composite(job: Job, folder: str = "sam") -> None:
     composite_depth_subject(
         job.path("original.mp4"), job.path("depth.mp4"), job.path(folder) / "clean-masks", job.root
     )
+
+
+def _composite_checked(job: Job) -> None:
+    _composite(job)
+    if is_scene_job(job):
+        _check_one_person(job)
+
+
+def _check_one_person(job: Job) -> None:
+    """S6: one photo means one person to hide. Runs after mask.mp4 exists, so it can be watched."""
+    crowded, total = crowded_frames(job.path("sam") / "clean-masks")
+    if total and crowded > CROWDED * total:
+        again = usd_text(estimate_prepare(job.mode, 30, skip=prep_skip(job)).total)
+        raise StageError(
+            f"SAM 3 found more than one person in {crowded} of {total} frames (watch "
+            f"{job.path('mask.mp4')}: white is what was cut out). Start a new job with "
+            '--subject naming the one to swap, for example --subject "man with white face '
+            f'paint" (preparing again costs about {again}).'
+        )
 
 
 def _mesh(job: Job, services: Services) -> None:
@@ -328,6 +389,8 @@ def _readable_clip_seconds(job: Job) -> float:
 
 def _check_soundtrack_fits(job: Job) -> None:
     """Free pre-flight: refuse to pay for a video whose original sound can't be put back."""
+    if is_scene_job(job):  # the scene's own sound goes back on the scene's own picture
+        check_sound(job.path(SCENE))
     upload = job.path("upload.mp4")
     try:
         with av.open(str(upload)) as probe:
