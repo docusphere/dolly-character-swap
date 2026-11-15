@@ -103,6 +103,7 @@ def test_the_summary_comes_before_the_rights_question(settings, scene_clip, tmp_
     assert "No black bars found, so it sees 64x48." in text
     assert "never sent anywhere" in text
     assert text.index("Scene: 6.0 s") < text.index(PHOTO_CONSENT)
+    assert "the result with this face also goes to Replicate" in PHOTO_CONSENT  # the lay-back
 
 
 def test_a_scene_job_is_made_from_the_cut_part(settings, scene_clip, tmp_path, monkeypatch):

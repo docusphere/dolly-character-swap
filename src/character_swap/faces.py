@@ -25,8 +25,9 @@ CONSENT = (
 # Asked by `charswap prepare` when a plain photo is sent (WaveSpeed); provider-neutral.
 PHOTO_CONSENT = (
     "You confirm you have the right to use this person's face: your own, or someone who "
-    "agreed to it. The photo is sent with your clip to the video provider. If it's a "
-    "made-up character, answer yes."
+    "agreed to it. The photo is sent with your clip to the video provider. In a scene swap, "
+    "the result with this face also goes to Replicate to put it back in the scene. If it's "
+    "a made-up character, answer yes."
 )
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 MIN_SIDE = 300  # PiAPI: 300-6000 px per side, aspect 0.4-2.5, under 30 MB
