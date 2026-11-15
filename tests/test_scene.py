@@ -383,6 +383,33 @@ def test_the_spliced_scene_keeps_its_sound_byte_for_byte(lay, tmp_path):
     assert count_frames(final) == 120
 
 
+def _gray(patch):
+    return float(patch.astype(int).mean())
+
+
+def test_every_frame_of_the_part_shows_the_ai_frame_made_from_it(lay, tmp_path):
+    clip, segment, _masks_a = lay
+    left = _box_mask(8, 56, 8, 56, size=(64, 128))  # A on even job frames ...
+    right = _box_mask(8, 56, 72, 120, size=(64, 128))  # ... and on odd ones
+    masks_a = _write_masks(tmp_path / "a", [right if k % 2 else left for k in range(96)])
+    # AI frame k is gray 10 + 3k (the part uses job frames 0 to 72; later ones are spare)
+    shades = [solid((10 + 3 * min(k, 80),) * 3, (128, 64)) for k in range(96)]
+    raw = write_video(tmp_path / "raw.mp4", shades)
+    out = tmp_path / "out.mp4"
+    scene.paste_back(clip, raw, masks_a, None, segment, out)
+    first, stop = segment["start_frame"], segment["end_frame"]
+    made_from = scene.job_frames(segment["frame_map"], first, stop)
+    assert made_from != list(range(stop - first))  # 23.976 fps: some job frames are skipped
+    frames = list(iter_frames(out))
+    for index in range(first, stop):
+        k = made_from[index - first]
+        pasted, kept = (96, 32) if k % 2 else (32, 96)  # x of A's middle, and of the other box
+        frame = frames[index]
+        shade = (_gray(frame[46:50, pasted - 2 : pasted + 2]) - 10) / 3
+        assert abs(shade - k) < 0.5, f"scene frame {index} shows AI frame {shade:.1f}, not {k}"
+        assert _near(frame, kept, 48, BLUE), f"scene frame {index} used the wrong mask"
+
+
 def test_a_slightly_short_ai_clip_holds_its_last_frame(lay, tmp_path):
     clip, segment, masks_a = lay
     raw = _ai(tmp_path / "raw.mp4", frames=64)  # 2.67 s for a 3.0 s part: 0.34 s short
