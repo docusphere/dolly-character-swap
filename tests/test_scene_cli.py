@@ -15,7 +15,7 @@ from character_swap.review import decide, fingerprint
 from character_swap.stages.describe import DESCRIBE_MODEL
 from fakes import FakeWaveSpeed, RefusingReplicate
 from helpers import SCENE_RATE, solid, write_shots, write_video
-from scene_jobs import fake_pitch, make_scene_job, prep_services
+from scene_jobs import TWO, fake_pitch, make_scene_job, prep_services
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
 
@@ -240,6 +240,15 @@ def test_a_refused_description_continues_for_free(settings, tmp_path, monkeypatc
     assert code == 0, out.err.text
     keys = [run["key"] for run in services.replicate.runs]
     assert keys.count(DESCRIBE_MODEL) == 1 and job.stage_done("embed")  # no new description
+
+
+def test_two_people_say_start_a_new_job_not_resume(settings, tmp_path, monkeypatch):
+    monkeypatch.setattr("character_swap.pipeline.pitch_vocals", fake_pitch)
+    job = make_scene_job(settings.runs_dir, tmp_path)
+    services = prep_services(tmp_path, boxes=TWO)
+    code, out = run(["resume", job.id, "--yes"], settings, services_factory=lambda s: services)
+    assert code == 2 and "Start a new job" in out.err.text
+    assert "charswap resume" not in out.err.text and "Fix the issue" not in out.err.text
 
 
 # ---- generate and repair ---------------------------------------------------------------

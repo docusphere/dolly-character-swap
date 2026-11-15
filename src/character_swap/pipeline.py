@@ -44,7 +44,7 @@ from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveS
 from character_swap.providers.generators.wan_replicate import WanGenerator
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
-from character_swap.stages import StageError
+from character_swap.stages import NewJobNeeded, StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene, use_setting
 from character_swap.stages.face_mesh import FaceDetector, track_and_draw
@@ -316,7 +316,7 @@ def _check_one_person(job: Job) -> None:
     crowded, total = crowded_frames(job.path("sam") / "clean-masks")
     if total and crowded > CROWDED * total:
         again = usd_text(estimate_prepare(job.mode, 30, skip=prep_skip(job)).total)
-        raise StageError(
+        raise NewJobNeeded(
             f"SAM 3 found more than one person in {crowded} of {total} frames (watch "
             f"{job.path('mask.mp4')}: white is what was cut out). Start a new job with "
             '--subject naming the one to swap, for example --subject "man with white face '

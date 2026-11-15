@@ -8,6 +8,10 @@ class StageError(CharSwapError, RuntimeError):
     """A pipeline step could not complete; the message says what to do."""
 
 
+class NewJobNeeded(StageError):
+    """This job can't go on: the message says how to start a new one (so no resume hint)."""
+
+
 def download_or_fail(replicate, url, dest, *, record, what: str, cost: str):
     """Download a result; on failure say exactly which record to delete to regenerate it."""
     try:

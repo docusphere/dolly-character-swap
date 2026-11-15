@@ -79,7 +79,7 @@ from character_swap.providers.replicate import unconfirmed_message as replicate_
 from character_swap.providers.wavespeed import unconfirmed_message as wavespeed_unconfirmed
 from character_swap.review import decide
 from character_swap.review import status as review_status
-from character_swap.stages import StageError
+from character_swap.stages import NewJobNeeded, StageError
 
 Out = Callable[[str], None]
 
@@ -340,8 +340,8 @@ def _port(text: str) -> int:
     return port
 
 
-def _hint(env: Env) -> None:
-    if env.job_id:
+def _hint(env: Env, error: CharSwapError) -> None:
+    if env.job_id and not isinstance(error, NewJobNeeded):
         env.err(f"Fix the issue, then run: {env.retry_command()}")
 
 
@@ -372,7 +372,7 @@ def main(
         return COMMANDS[args.command](args, settings, env)
     except CharSwapError as error:
         err(f"Error: {error}")
-        _hint(env)
+        _hint(env, error)
         return 2
     except KeyboardInterrupt:
         if (env.retry or "").startswith("repair"):
