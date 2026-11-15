@@ -309,3 +309,114 @@ def crowded_frames(mask_dir: Path) -> tuple[int, int]:
         if sizes[-2] >= SECOND * sizes[-1]:
             crowded += 1
     return crowded, len(files)
+
+
+SHORT = 0.5  # an AI clip this much shorter than the part holds its last frame
+ASPECT = 0.05  # the AI picture's aspect may differ this much from the crop box's
+CRF = 16  # the one re-encode of the scene: visually lossless
+
+
+@dataclass(frozen=True)
+class AiClip:
+    width: int
+    height: int
+    frames: int
+    rate: Fraction  # read from the file, never assumed
+    box: tuple[int, int, int, int]  # its picture inside any black bars the AI added
+
+
+def ai_clip(raw: Path, segment: dict) -> AiClip:
+    """Facts about the AI's clip. Refuses one too short or with another aspect (cropped)."""
+    with av.open(str(raw)) as probe:
+        stream = _video_stream(probe, raw)
+        rate = Fraction(stream.average_rate or FPS)
+        width, height = stream.width, stream.height
+    rows, columns, frames = _luma_extent(raw, 0.0, math.inf)
+    box = _box(rows, columns)
+    crop = segment["crop"]
+    seconds = float(frames / rate)
+    aspect = (box[2] / box[3]) / (crop["w"] / crop["h"])
+    if seconds < segment["seconds"] - SHORT or abs(aspect - 1) > ASPECT:
+        raise SceneError(
+            f"The AI clip is {width}x{height}, {seconds:.1f} s; it can't be laid back into the "
+            f"{segment['seconds']:.1f} s shot. It is kept at {raw}; nothing more was charged. "
+            "A new draft would most likely come back the same, so don't buy one; this needs a "
+            "fix in the tool."
+        )
+    return AiClip(width, height, frames, rate, box)
+
+
+def _mask(
+    path: Path,
+    size: tuple[int, int],
+    *,
+    frame: tuple[int, int] | None = None,
+    box: tuple[int, int, int, int] | None = None,
+) -> np.ndarray:
+    """A mask PNG as booleans of `size`: first scaled to `frame`, then cut to `box`."""
+    image = Image.open(path).convert("L")
+    if frame is not None and image.size != frame:
+        image = image.resize(frame, Image.Resampling.NEAREST)
+    if box is not None:
+        left, top, width, height = box
+        image = image.crop((left, top, left + width, top + height))
+    if image.size != size:
+        image = image.resize(size, Image.Resampling.BILINEAR)
+    return np.asarray(image) > 127
+
+
+def paste_back(
+    scene: Path, raw: Path, masks_a: Path, masks_b: Path | None, segment: dict, dst: Path
+) -> None:
+    """Lay the AI's person back into the scene's own frames, one frame at a time (no sound).
+
+    masks_a: the job's subject masks, one PNG per job frame. masks_b: SAM 3 "person" on the AI
+    clip, one PNG per AI frame, or None. Outside the part every frame is written as decoded;
+    inside it only lay_alpha's region changes, never outside the crop box. The video keeps the
+    scene's size, frame count and rate. Add the sound with
+    media.audio.add_original_soundtrack(..., fit=False).
+    """
+    clip = ai_clip(raw, segment)
+    crop = segment["crop"]
+    x, y, w, h = crop["x"], crop["y"], crop["w"], crop["h"]
+    first, stop = segment["start_frame"], segment["end_frame"]
+    frame_map = segment["frame_map"]
+    made_from = job_frames(frame_map, first, stop)
+    a_files = sorted(Path(masks_a).glob("mask_*.png"))
+    b_files = sorted(Path(masks_b).glob("mask_*.png")) if masks_b else []
+    if len(a_files) < len(frame_map):
+        raise SceneError(
+            f"The job has {len(a_files)} masks for the part's {len(frame_map)} frames. "
+            "Prepare a new job."
+        )
+    left, top, width, height = clip.box
+    with av.open(str(scene)) as container, av.open(str(raw)) as ai_container:
+        stream = _video_stream(container, scene)
+        ai_frames = ai_container.decode(_video_stream(ai_container, raw))
+        ai_index, ai_frame = -1, None
+        rate = Fraction(segment["fps"])
+        with VideoWriter(dst, stream.width, stream.height, fps=rate, crf=CRF) as writer:
+            for index, frame in enumerate(container.decode(stream)):
+                picture = frame.to_ndarray(format="rgb24")
+                if first <= index < stop:
+                    k = made_from[index - first]
+                    wanted = min(round(k * clip.rate / FPS), clip.frames - 1)
+                    while ai_index < wanted:
+                        following = next(ai_frames, None)
+                        if following is None:
+                            break
+                        ai_frame, ai_index = following, ai_index + 1
+                    a = _mask(a_files[k], (w, h))
+                    b = None
+                    if b_files:
+                        b_file = b_files[min(ai_index, len(b_files) - 1)]
+                        b = _mask(b_file, (w, h), frame=(clip.width, clip.height), box=clip.box)
+                    alpha = lay_alpha(a, b) if a.any() else None
+                    if alpha is not None and ai_frame is not None:
+                        art = ai_frame.to_image().crop((left, top, left + width, top + height))
+                        art = np.asarray(art.resize((w, h), Image.Resampling.LANCZOS))
+                        part = picture[y : y + h, x : x + w].astype(np.float32)
+                        mixed = part + alpha[:, :, None] * (art.astype(np.float32) - part)
+                        picture = picture.copy()
+                        picture[y : y + h, x : x + w] = np.rint(mixed).astype(np.uint8)
+                writer.write(picture)

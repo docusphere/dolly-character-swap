@@ -1,11 +1,20 @@
+import av
 import numpy as np
 import pytest
 from PIL import Image
 
 from character_swap.media import scene
-from character_swap.media.audio import RATE, read_audio
+from character_swap.media.audio import RATE, add_original_soundtrack, read_audio
 from character_swap.media.video import count_frames, iter_frames, normalize, stream_seconds
-from helpers import SCENE_RATE, solid, tone, write_shots, write_video, write_wav
+from helpers import (
+    SCENE_RATE,
+    solid,
+    tone,
+    write_mask_pngs,
+    write_shots,
+    write_video,
+    write_wav,
+)
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
 
@@ -286,3 +295,119 @@ def test_crowded_frames_count_a_second_person(tmp_path):
     empty = np.zeros((64, 96), dtype=bool)
     folder = _write_masks(tmp_path / "masks", [one, two, speck, empty])
     assert scene.crowded_frames(folder) == (1, 4)
+
+
+# ---- laying the AI's person back -----------------------------------------------------
+YELLOW, MAGENTA = (220, 220, 40), (220, 40, 220)
+
+
+@pytest.fixture
+def lay(tmp_path, small_boxes):
+    """A 120-frame scene (bars of 16 px) whose middle shot (frames 24 to 95) is swapped.
+
+    The crop box is 128 x 64 at y = 16; mask A is the square x 48-80, y 16-48 of it.
+    """
+    clip = write_shots(
+        tmp_path / "scene.mp4",
+        [(RED, 24), (BLUE, 72), (GREEN, 24)],
+        size=(128, 96),
+        bars=16,
+        audio_seconds=at(120),
+    )
+    plan = scene.plan_part(clip, 1.0, 4.0)
+    crop = plan.segment["crop"]
+    box = (crop["x"], crop["y"], crop["w"], crop["h"])
+    frame_map = scene.cut_segment(
+        clip, plan.segment["start"], plan.segment["end"], box, tmp_path / "part.mp4"
+    )
+    masks_a = write_mask_pngs(tmp_path / "a", 96, box=(48, 16, 80, 48), size=(128, 64))
+    return clip, {**plan.segment, "frame_map": frame_map}, masks_a
+
+
+def _ai(path, frames=96, size=(256, 256), bars=64):
+    """The AI's clip: its own bars, a yellow room and the new person (magenta) where A is."""
+    picture = solid(YELLOW, size)
+    picture[:bars] = 0
+    picture[size[1] - bars :] = 0
+    picture[96:160, 96:160] = MAGENTA  # x 48-80, y 16-48 of the 128 x 64 box, at twice the size
+    return write_video(path, [picture] * frames)
+
+
+def _masks_b(folder, frames=96):
+    """SAM 3 "person" on the AI clip, at half its size: the person and a far-away shoulder."""
+    folder.mkdir(parents=True)
+    for index in range(frames):
+        mask = np.zeros((128, 128), dtype=np.uint8)
+        mask[48:80, 48:80] = 255  # the new person
+        mask[40:60, 100:124] = 255  # someone else the AI redrew
+        Image.fromarray(mask).save(folder / f"mask_{index:05d}.png")
+    return folder
+
+
+def _near(frame, x, y, color):
+    patch = frame[y - 2 : y + 2, x - 2 : x + 2].astype(int)
+    return abs(patch - color).mean() < 16
+
+
+def test_the_ai_person_lands_exactly_on_a_and_nothing_else_changes(lay, tmp_path):
+    clip, segment, masks_a = lay
+    raw = _ai(tmp_path / "draft-raw.mp4")
+    out = tmp_path / "pasted.mp4"
+    scene.paste_back(clip, raw, masks_a, _masks_b(tmp_path / "b"), segment, out)
+    frames, originals = list(iter_frames(out)), list(iter_frames(clip))
+    assert len(frames) == len(originals) == 120
+    with av.open(str(out)) as container:
+        assert container.streams.video[0].average_rate == SCENE_RATE
+    for index in (0, 23, 96, 119):  # outside the part: the scene as decoded
+        assert abs(frames[index].astype(int) - originals[index]).mean() < 2
+    for index in (24, 60, 95):  # the first, a middle and the last frame of the part
+        frame = frames[index]
+        assert _near(frame, 64, 48, MAGENTA)  # A's middle (the box starts at y = 16)
+        assert _near(frame, 51, 35, MAGENTA) and _near(frame, 77, 61, MAGENTA)  # A's corners
+        assert _near(frame, 36, 48, BLUE)  # beside A: the scene, not the AI's room
+        assert _near(frame, 112, 34, BLUE)  # the far-away shoulder is not pasted
+        assert frame[:12].max() <= 24 and frame[84:].max() <= 24  # the bars stay black
+
+
+def test_the_spliced_scene_keeps_its_sound_byte_for_byte(lay, tmp_path):
+    clip, segment, masks_a = lay
+    silent = tmp_path / "pasted.mp4"
+    scene.paste_back(clip, _ai(tmp_path / "raw.mp4"), masks_a, None, segment, silent)
+    final = add_original_soundtrack(silent, clip, tmp_path / "draft.mp4", fit=False)
+
+    def packets(path):
+        with av.open(str(path)) as container:
+            return [bytes(p) for p in container.demux(audio=0) if p.dts is not None]
+
+    assert packets(final) == packets(clip)
+    assert count_frames(final) == 120
+
+
+def test_a_slightly_short_ai_clip_holds_its_last_frame(lay, tmp_path):
+    clip, segment, masks_a = lay
+    raw = _ai(tmp_path / "raw.mp4", frames=64)  # 2.67 s for a 3.0 s part: 0.34 s short
+    out = tmp_path / "pasted.mp4"
+    scene.paste_back(clip, raw, masks_a, None, segment, out)
+    assert _near(list(iter_frames(out))[95], 64, 48, MAGENTA)
+
+
+def test_a_much_shorter_ai_clip_is_refused(lay, tmp_path):
+    clip, segment, masks_a = lay
+    raw = _ai(tmp_path / "draft-raw.mp4", frames=48)  # 2.0 s for a 3.0 s part
+    with pytest.raises(scene.SceneError, match=r"256x256, 2\.0 s; it can't be laid back into"):
+        scene.paste_back(clip, raw, masks_a, None, segment, tmp_path / "out.mp4")
+    assert not (tmp_path / "out.mp4").exists()
+
+
+def test_an_ai_clip_with_another_aspect_is_refused(lay, tmp_path):
+    clip, segment, masks_a = lay
+    raw = _ai(tmp_path / "draft-raw.mp4", bars=0)  # square: the AI cropped the picture
+    with pytest.raises(scene.SceneError, match=r"the 3\.0 s shot\. It is kept at .*draft-raw"):
+        scene.paste_back(clip, raw, masks_a, None, segment, tmp_path / "out.mp4")
+
+
+def test_too_few_subject_masks_are_refused(lay, tmp_path):
+    clip, segment, _masks_a = lay
+    few = write_mask_pngs(tmp_path / "few", 10, box=(48, 16, 80, 48), size=(128, 64))
+    with pytest.raises(scene.SceneError, match="10 masks for the part's 73 frames"):
+        scene.paste_back(clip, _ai(tmp_path / "raw.mp4"), few, None, segment, tmp_path / "o.mp4")
