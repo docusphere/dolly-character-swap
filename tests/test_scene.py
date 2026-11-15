@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 
 from character_swap.media import scene
+from character_swap.media.audio import RATE, read_audio
+from character_swap.media.video import count_frames, iter_frames, normalize, stream_seconds
 from helpers import SCENE_RATE, solid, tone, write_shots, write_video, write_wav
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
@@ -170,3 +172,74 @@ def test_a_missing_scene_is_refused(tmp_path):
 @pytest.mark.parametrize(("seconds", "padded"), [(1.0, 4), (4.0, 4), (4.0001, 5), (12.8, 13)])
 def test_the_part_is_padded_to_whole_seconds(seconds, padded):
     assert scene.padded_seconds(seconds) == padded
+
+
+# ---- cutting the part --------------------------------------------------------------
+def _cut(clip, tmp_path, start, end):
+    plan = scene.plan_part(clip, start, end)
+    crop = plan.segment["crop"]
+    box = (crop["x"], crop["y"], crop["w"], crop["h"])
+    part = tmp_path / "part.mp4"
+    frame_map = scene.cut_segment(clip, plan.segment["start"], plan.segment["end"], box, part)
+    return plan.segment, frame_map, part
+
+
+def test_the_part_is_cropped_24_fps_and_whole_seconds(three_shots, tmp_path, small_boxes):
+    segment, frame_map, part = _cut(three_shots, tmp_path, 1.1, 6.4)
+    frames = list(iter_frames(part))
+    assert len(frames) == 6 * 24 and frames[0].shape == (64, 64, 3)
+    assert stream_seconds(part, "video") == pytest.approx(6.0, abs=1e-6)
+    assert len(frame_map) == 121  # ceil(5.005 s x 24)
+    assert (frame_map[0], frame_map[1], frame_map[2], frame_map[-1]) == (30, 30, 31, 149)
+    for frame in frames:  # only the face shot: no police frame, no bars
+        assert abs(frame.astype(int) - BLUE).mean() < 6
+    last_real = frames[len(frame_map) - 1].astype(int)
+    for held in frames[len(frame_map) :]:
+        assert abs(held.astype(int) - last_real).max() <= 2
+
+
+def test_the_parts_sound_is_the_scenes_padded_with_silence(three_shots, tmp_path):
+    _segment, _frame_map, part = _cut(three_shots, tmp_path, 1.1, 6.4)
+    assert stream_seconds(part, "audio") == pytest.approx(6.0, abs=0.05)
+    sound = read_audio(part)
+    assert abs(sound[:, RATE : 2 * RATE]).max() > 0.05  # the tone
+    assert abs(sound[:, round(5.2 * RATE) : round(5.9 * RATE)]).max() < 1e-3  # the padding
+
+
+def test_normalize_keeps_every_frame_of_the_part(three_shots, tmp_path):
+    _segment, _frame_map, part = _cut(three_shots, tmp_path, 1.1, 6.4)
+    facts = normalize(
+        part, tmp_path / "original.mp4", min_seconds=4, max_seconds=30, whole_seconds=True
+    )
+    assert facts["frames"] == 6 * 24 and count_frames(tmp_path / "original.mp4") == 6 * 24
+
+
+def test_a_silent_scene_gives_a_silent_part(tmp_path):
+    clip = write_shots(tmp_path / "s.mp4", [(RED, 30), (BLUE, 90)])
+    _segment, _frame_map, part = _cut(clip, tmp_path, 1.2, 4.5)
+    assert count_frames(part) == 4 * 24
+    with pytest.raises(ValueError, match="no audio stream"):
+        stream_seconds(part, "audio")
+
+
+def test_the_frame_map_at_23_976_fps(tmp_path):
+    clip = write_shots(tmp_path / "s.mp4", [(BLUE, 310)])
+    part = tmp_path / "part.mp4"
+    frame_map = scene.cut_segment(clip, 0.0, at(310), (0, 0, 64, 48), part)
+    assert frame_map[:4] == [0, 0, 1, 2]  # job frame k shows scene frame k - 1
+    assert len(frame_map) == 311 and frame_map[-1] == 309
+    assert count_frames(part) == 13 * 24
+    made_from = scene.job_frames(frame_map, 0, 310)
+    assert made_from[0] == 0 and made_from[1] == 2 and made_from[300] == 301
+    assert made_from[-1] == 310
+
+
+def test_the_frame_map_at_24_fps_is_one_to_one(tmp_path):
+    clip = write_shots(tmp_path / "s.mp4", [(BLUE, 96)], fps=24)
+    frame_map = scene.cut_segment(clip, 0.0, 4.0, (0, 0, 64, 48), tmp_path / "part.mp4")
+    assert frame_map == list(range(96))
+    assert scene.job_frames(frame_map, 0, 96) == list(range(96))
+
+
+def test_job_frames_holds_the_last_one_past_the_map():
+    assert scene.job_frames([5, 6, 7], 5, 10) == [0, 1, 2, 2, 2]

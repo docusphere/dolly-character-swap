@@ -6,6 +6,8 @@ Local and free: nothing here calls the network.
 from __future__ import annotations
 
 import math
+import shutil
+import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -14,8 +16,8 @@ import av
 import numpy as np
 
 from character_swap.errors import CharSwapError
-from character_swap.media.audio import MAX_MISMATCH
-from character_swap.media.video import FPS, stream_seconds
+from character_swap.media.audio import MAX_MISMATCH, RATE, embed_samples, read_audio
+from character_swap.media.video import FPS, VideoWriter, stream_seconds
 
 CUT_MIN = 12.0  # a cut changes the picture by at least this much (mean, of 255) ...
 CUT_RATIO = 4.0  # ... and by at least 4 times the median change of the frames around it
@@ -206,3 +208,62 @@ def plan_part(scene: Path, start: float, end: float) -> Plan:
     }
     inside = tuple(cut for cut in scan.cuts if begin + SNAP < cut < finish - SNAP)
     return Plan(segment, picture, (first in scan.cuts, last in scan.cuts), inside)
+
+
+def cut_segment(
+    scene: Path, start: float, end: float, crop: tuple[int, int, int, int], dst: Path
+) -> list[int]:
+    """Write the part the AI gets: cropped, 24 fps, exactly N x 24 frames, sound padded.
+
+    Job frame k shows the latest scene frame at or before start + k/24 (normalize's rule).
+    After the last real frame, that frame is held to N seconds; the sound is the scene's from
+    start to end (counted from its first audio packet), as stereo AAC, padded with silence.
+    Returns the frame map: the scene frame index of every real job frame.
+    """
+    x, y, w, h = crop
+    padded = padded_seconds(end - start)
+    real = math.ceil((end - start) * FPS - 1e-6)
+    frame_map: list[int] = []
+    with tempfile.TemporaryDirectory() as scratch:
+        silent = Path(scratch) / "part.mp4"
+        with av.open(str(scene)) as container, VideoWriter(silent, w, h) as writer:
+            stream = _video_stream(container, scene)
+            frames = enumerate(container.decode(stream))
+            current, upcoming, picture = None, next(frames, None), None
+            for k in range(real):
+                moment = start + k / FPS
+                while (
+                    upcoming is not None
+                    and float(upcoming[1].time) <= moment + 1e-6
+                    and float(upcoming[1].time) < end - 1e-6
+                ):
+                    current, upcoming = upcoming, next(frames, None)
+                if current is None:
+                    raise SceneError(f"{Path(scene).name} has no frame at {start:.2f} s.")
+                if not frame_map or frame_map[-1] != current[0]:
+                    picture = current[1].to_ndarray(format="rgb24")[y : y + h, x : x + w]
+                frame_map.append(current[0])
+                writer.write(picture)
+            for _ in range(padded * FPS - real):
+                writer.write(picture)
+        with av.open(str(scene)) as probe:
+            has_audio = bool(probe.streams.audio)
+        if not has_audio:
+            shutil.copyfile(silent, dst)
+            return frame_map
+        sound = read_audio(scene)[:, round(start * RATE) : round(end * RATE)]
+        samples = np.zeros((2, padded * RATE), dtype=np.float32)
+        samples[:, : sound.shape[1]] = sound[:, : padded * RATE]
+        embed_samples(silent, samples, dst)
+    return frame_map
+
+
+def job_frames(frame_map: list[int], first: int, stop: int) -> list[int]:
+    """For each scene frame first..stop-1, the job frame made from it: the first k whose
+    scene frame is at or after it (the last real job frame when none is)."""
+    found, k, last = [], 0, len(frame_map) - 1
+    for index in range(first, stop):
+        while k < last and frame_map[k] < index:
+            k += 1
+        found.append(k)
+    return found
