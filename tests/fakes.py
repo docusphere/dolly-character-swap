@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from character_swap.providers.errors import OutputExpired
+from character_swap.providers.errors import OutputExpired, ProviderError
 
 
 class ReplicateOutputExpired(OutputExpired):
@@ -134,3 +134,26 @@ class FakeWaveSpeed:
         else:
             shutil.copyfile(source, dest)
         return Path(dest)
+
+
+class RefusingReplicate(FakeReplicate):
+    """FakeReplicate whose `refuse` model always ends "failed", like a refusal.
+
+    The first run saves the failed record (that run is counted); later runs read it and fail
+    again without a new run, as the real client does.
+    """
+
+    def __init__(self, *args, refuse: str, reason: str = "User Input Error", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.refuse, self.reason = refuse, reason
+
+    def run(self, *, input, record: Path, version=None, model=None, on_created=None):
+        if (version or model) != self.refuse:
+            return super().run(
+                input=input, record=record, version=version, model=model, on_created=on_created
+            )
+        if not record.exists():
+            self.runs.append({"key": self.refuse, "input": input})
+            failed = {"id": "refused-1", "status": "failed", "error": self.reason}
+            record.write_text(json.dumps(failed))
+        raise ProviderError(f"Prediction refused-1 failed: {self.reason}")

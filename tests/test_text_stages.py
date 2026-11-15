@@ -1,9 +1,11 @@
 import pytest
 
 from character_swap.jobs import Job
-from character_swap.stages.describe import DESCRIBE_MODEL, describe_scene
+from character_swap.providers.errors import ProviderError
+from character_swap.stages import StageError
+from character_swap.stages.describe import DESCRIBE_MODEL, describe_scene, use_setting
 from character_swap.stages.transcribe import WHISPER_VERSION, transcribe
-from fakes import FakeReplicate
+from fakes import FakeReplicate, RefusingReplicate
 from helpers import solid, tone, write_video, write_wav
 
 
@@ -110,3 +112,34 @@ def test_jobs_from_before_the_language_option_use_auto(runs_dir, tmp_path):
     fake = FakeReplicate(outputs={WHISPER_VERSION: {"transcription": "hi"}})
     transcribe(job, fake)
     assert fake.runs[0]["input"]["language"] == "auto"
+
+
+def test_a_refused_description_names_the_free_way_on(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    fake = RefusingReplicate(refuse=DESCRIBE_MODEL)
+    with pytest.raises(StageError, match=r"it said: User Input Error\)") as info:
+        describe_scene(job, fake)
+    message = str(info.value)
+    assert f'charswap resume {job.id} --setting "a dim room with ..."' in message
+    assert "Deleting describe-prediction.json and resuming asks it again" in message
+    with pytest.raises(StageError, match="--setting"):  # a resume says it again, buying nothing
+        describe_scene(job, fake)
+    assert len(fake.runs) == 1
+
+
+def test_other_description_errors_keep_their_own_message(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    job.path("describe-prediction.json").write_text('{"status": "creating"}')
+
+    class Unconfirmed(FakeReplicate):
+        def run(self, **kwargs):
+            raise ProviderError("The request was sent but not confirmed")
+
+    with pytest.raises(ProviderError, match="not confirmed"):
+        describe_scene(job, Unconfirmed())
+
+
+def test_a_setting_you_wrote_needs_no_call(runs_dir, tmp_path):
+    job = make_job(runs_dir, tmp_path)
+    assert use_setting(job, "A dim room.") == "A dim room."
+    assert job.state["scene"] == "A dim room." and job.path("scene.jpg").exists()
