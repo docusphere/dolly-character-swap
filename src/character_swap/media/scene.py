@@ -14,7 +14,8 @@ import av
 import numpy as np
 
 from character_swap.errors import CharSwapError
-from character_swap.media.video import FPS
+from character_swap.media.audio import MAX_MISMATCH
+from character_swap.media.video import FPS, stream_seconds
 
 CUT_MIN = 12.0  # a cut changes the picture by at least this much (mean, of 255) ...
 CUT_RATIO = 4.0  # ... and by at least 4 times the median change of the frames around it
@@ -127,3 +128,81 @@ def find_bars(path: Path, start: float = 0.0, end: float = math.inf) -> tuple[in
     """
     rows, columns, _ = _luma_extent(path, start, end)
     return _box(rows, columns)
+
+
+MIN_PART, MAX_PART = 1.0, 30.0  # seconds the part to swap may last
+MIN_SECONDS = 4  # Seedance's shortest clip; the part is padded to whole seconds, at least this
+
+
+def check_sound(path: Path) -> None:
+    """Refuse a scene whose sound and picture lengths differ by more than MAX_MISMATCH."""
+    with av.open(str(path)) as probe:
+        if not probe.streams.audio:
+            return  # no sound at all: the result is silent too
+    sound, picture = stream_seconds(path, "audio"), stream_seconds(path, "video")
+    if abs(sound - picture) > MAX_MISMATCH:
+        raise SceneError(
+            f"The scene's sound lasts {sound:.1f} s but its picture {picture:.1f} s, so the "
+            "original soundtrack could not be put back. Re-export the scene so both have the "
+            "same length. Nothing was charged."
+        )
+
+
+def padded_seconds(seconds: float) -> int:
+    """Whole seconds the AI gets: the part rounded up, at least MIN_SECONDS."""
+    return max(MIN_SECONDS, math.ceil(seconds - 1e-6))
+
+
+@dataclass(frozen=True)
+class Plan:
+    segment: dict  # saved in state.json as "segment"; cut_segment's frame map is added to it
+    scene_seconds: float
+    moved: tuple[bool, bool]  # --from and --to sit on a shot cut
+    inside: tuple[float, ...]  # shot cuts inside the part, more than SNAP from both edges
+
+
+def _nearest(edges: list[float], moment: float) -> int:
+    return min(range(len(edges)), key=lambda index: abs(edges[index] - moment))
+
+
+def plan_part(scene: Path, start: float, end: float) -> Plan:
+    """Free checks and facts for swapping start..end of `scene` (seconds), before any question.
+
+    Each edge moves to a shot cut within SNAP seconds, else to the nearest frame.
+    """
+    if not Path(scene).is_file():
+        raise SceneError(f"Video not found: {scene}")
+    scan = _scan(scene)
+    picture = stream_seconds(scene, "video")
+    if not 0 <= start < end <= picture + 0.05:
+        raise SceneError(
+            f"The scene is {picture:.1f} s; pick --from and --to inside it, --from first. "
+            "Nothing was charged."
+        )
+    edges = [*scan.times, picture]  # the part ends where the next frame (or the scene) starts
+    first, last = snap(start, scan.cuts), snap(end, scan.cuts)
+    start_frame, end_frame = _nearest(edges, first), _nearest(edges, last)
+    begin, finish = edges[start_frame], edges[end_frame]
+    seconds = finish - begin
+    if not MIN_PART - 1e-6 <= seconds <= MAX_PART + 1e-6:
+        raise SceneError(
+            f"The part to swap is {seconds:.1f} s; it must be {MIN_PART:g} to {MAX_PART:g} s. "
+            "Nothing was charged."
+        )
+    check_sound(scene)
+    x, y, w, h = find_bars(scene, begin, finish)
+    segment = {
+        "start": round(begin, 6),
+        "end": round(finish, 6),
+        "start_frame": start_frame,
+        "end_frame": end_frame,  # the first frame after the part
+        "seconds": round(seconds, 6),
+        "padded_seconds": padded_seconds(seconds),
+        "fps": str(scan.rate),
+        "width": scan.width,
+        "height": scan.height,
+        "crop": {"x": x, "y": y, "w": w, "h": h},
+        "cuts": [round(cut, 6) for cut in scan.cuts],
+    }
+    inside = tuple(cut for cut in scan.cuts if begin + SNAP < cut < finish - SNAP)
+    return Plan(segment, picture, (first in scan.cuts, last in scan.cuts), inside)
