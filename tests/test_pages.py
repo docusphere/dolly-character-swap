@@ -2,7 +2,7 @@ import pytest
 
 from character_swap.config import Settings
 from character_swap.review import decide, fingerprint
-from character_swap.web import pages
+from character_swap.web import pages, steps
 from viewer_jobs import finish_stage, make_job
 
 
@@ -223,3 +223,27 @@ def test_pages_never_write(runs_dir, media):
     for number in (1, 2, 3, 4, 5):
         pages.job_page(job, runs_dir, number)
     assert sorted((p.name, p.stat().st_mtime_ns) for p in job.root.rglob("*")) == before
+
+
+# ---- a scene swap ------------------------------------------------------------------
+def test_a_scene_swap_compares_the_draft_and_final_with_the_whole_scene(runs_dir, media):
+    job = _approved(runs_dir, media)
+    media.copy("full-scene.mp4", job.path("full-scene.mp4"))
+    finish_stage(job, media, "draft")
+    draft = pages.job_page(job, runs_dir, 4)
+    assert draft.wipe.before == f"/jobs/{job.id}/files/full-scene.mp4"
+    assert draft.wipe.after.endswith("/draft.mp4") and draft.scene_line == steps.SCENE_LINE
+    finish_stage(job, media, "final")
+    assert pages.job_page(job, runs_dir, 5).wipe.before.endswith("/full-scene.mp4")
+    upload = pages.job_page(job, runs_dir, 1)
+    assert upload.upload.endswith("/full-scene.mp4") and upload.scene_line == ""
+    check = pages.job_page(job, runs_dir, 3)  # what the AI sees: the part, unchanged
+    assert check.wipe.before.endswith("/original.mp4") and check.scene_line == ""
+
+
+def test_a_single_shot_draft_still_compares_with_the_clip(runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    page = pages.job_page(job, runs_dir, 4)
+    assert page.wipe.before.endswith("/original.mp4") and page.scene_line == ""
+    assert pages.job_page(job, runs_dir, 1).upload.endswith("/upload.mp4")

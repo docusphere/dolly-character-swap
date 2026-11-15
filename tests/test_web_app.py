@@ -483,3 +483,14 @@ def test_app_script_polls_and_never_interrupts_playback(client):
     assert "fast: 2000" in script and "slow: 10000" in script
     assert "Object.keys(shown)" in script  # compares only what the page was rendered with
     assert "if (!playing())" in script and 'getElementById("new-results").hidden = false' in script
+
+
+def test_a_scene_swaps_draft_page_shows_the_whole_scene(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    media.copy("full-scene.mp4", job.path("full-scene.mp4"))
+    finish_stage(job, media, "draft")
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    before = f'class="wipe-before" muted playsinline preload="auto" src="/jobs/{job.id}/files/'
+    assert before + 'full-scene.mp4"' in text
+    assert steps.SCENE_LINE in text
+    assert steps.SCENE_LINE not in client.get(f"/jobs/{job.id}/step/3").text

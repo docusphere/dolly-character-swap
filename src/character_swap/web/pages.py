@@ -96,6 +96,7 @@ class JobPage:
     tabs: tuple[TabView, ...] = ()
     tab: TabView | None = None
     wipe: Wipe | None = None
+    scene_line: str = ""  # a scene swap's draft and final: what was laid back (S14)
     state: str = "waiting"  # the step's own work: "ready" | "running" | "waiting" | "failed"
     error: str | None = None
     started_at: str = ""  # a running draft/final (for the elapsed timer)
@@ -257,6 +258,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
     original = (
         file_if_present(job, "original.mp4") if stage_status(state, "normalize") == "done" else None
     )
+    scene = file_if_present(job, "full-scene.mp4")  # a scene swap: the whole scene (S14)
     common: dict[str, Any] = {
         "id": job.id,
         "short_id": job.id[:8],
@@ -276,7 +278,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
         return JobPage(
             **common,
             state="ready",
-            upload=file_if_present(job, "upload.mp4"),
+            upload=scene or file_if_present(job, "upload.mp4"),
             photo=file_if_present(job, state.get("character_primary")),
             look=_look(state["mode"]),
             description=str(state.get("character_description") or ""),
@@ -309,7 +311,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
             fingerprint=current,
         )
     stage = "draft" if number == 4 else "final"
-    shown = _generation(job, state, stage, original)
+    shown = _generation(job, state, stage, scene or original)
     final = state["stages"].get("final")
     resolution = final.get("resolution", "") if isinstance(final, dict) else ""
     wipe = shown.get("wipe")
@@ -320,5 +322,6 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
         prompt=_prompt(job, state) if number == 4 else "",
         resolution=resolution if isinstance(resolution, str) else "",
         download=wipe.after if number == 5 and wipe else None,
+        scene_line=steps.SCENE_LINE if scene else "",
         **shown,
     )
