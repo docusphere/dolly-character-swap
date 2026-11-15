@@ -33,7 +33,8 @@ from character_swap.faces import (
     FaceLibrary,
     check_photo,
 )
-from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError
+from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError, clean_setting
+from character_swap.media.scene import Plan, cut_segment, plan_part
 from character_swap.modes import MODES, generator_name
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
@@ -241,6 +242,25 @@ def _parser() -> argparse.ArgumentParser:
         help="spoken language code for the transcript, e.g. en or es (default: auto, detect it)",
     )
     prep.add_argument(
+        "--from",
+        dest="start",
+        type=float,
+        metavar="SECONDS",
+        help="swap one shot of a longer scene: where it starts (moves to a shot cut within 0.3 s)",
+    )
+    prep.add_argument(
+        "--to",
+        dest="end",
+        type=float,
+        metavar="SECONDS",
+        help="where that shot ends (moves to a shot cut within 0.3 s)",
+    )
+    prep.add_argument(
+        "--setting",
+        metavar="TEXT",
+        help="describe the setting yourself (1 to 300 characters); skips the paid description",
+    )
+    prep.add_argument(
         "--yes", action="store_true", help="answer yes to the questions (rights and cost)"
     )
 
@@ -429,9 +449,99 @@ def _provider_for(args) -> str:
     return args.provider or SEEDANCE_PROVIDERS[0]
 
 
+SCENE_NEEDS = (
+    "Swapping one part of a scene needs WaveSpeed and depth_mesh or depth mode. "
+    "Nothing was charged."
+)
+SETTING_FOR_SEEDANCE = (
+    "--setting only matters for Seedance modes (Wan has no setting description). "
+    "Nothing was charged."
+)
+MODES_FOR_SCENES = ("depth_mesh", "depth")  # the paste-back needs SAM masks (S12)
+
+
+def _is_scene_swap(args, mode: str, provider: str) -> bool:
+    """--from and --to: swap one part of a scene. Refuses what it can't do, before any question."""
+    if (args.start is None) != (args.end is None):
+        raise JobError("Use --from and --to together. Nothing was charged.")
+    if args.start is None:
+        return False
+    if args.generator != "seedance" or provider != "wavespeed" or mode not in MODES_FOR_SCENES:
+        raise JobError(SCENE_NEEDS)
+    return True
+
+
+def _setting(text: str | None, mode: str) -> str:
+    if text is None:
+        return ""
+    if mode == "direct":
+        raise JobError(SETTING_FOR_SEEDANCE)
+    return clean_setting(text)
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _edges(moved: tuple[bool, bool]) -> str:
+    if all(moved):
+        return "moved to the shot cuts you were near"
+    if not any(moved):
+        return "no shot cut near either time, so both are used as typed, to the nearest frame"
+    snapped, typed = ("--from", "--to") if moved[0] else ("--to", "--from")
+    return f"{snapped} moved to the shot cut you were near; {typed} is used as typed"
+
+
+def scene_summary(plan: Plan) -> str:
+    """What a scene swap will do, in plain English, before any question."""
+    segment = plan.segment
+    width, height, crop = segment["width"], segment["height"], segment["crop"]
+    cuts = [f"{cut:.2f} s" for cut in segment["cuts"]]
+    found = f"Shot cuts found at {_listed(cuts)}." if cuts else "No shot cuts found."
+    padded = segment["padded_seconds"]
+    if padded - segment["seconds"] > 0.02:
+        length = f"made {padded} s long by holding its last frame"
+    else:
+        length = f"{padded} s long"
+    sees = f"{crop['w']}x{crop['h']}"
+    if crop["w"] >= width - 1 and crop["h"] >= height - 1:
+        bars = f"No black bars found, so it sees {sees}."
+    else:
+        bars = f"Black bars are left out, so it sees {sees}."
+    lines = [
+        f"Scene: {plan.scene_seconds:.1f} s, {width}x{height}. {found}",
+        f"Swapping {segment['start']:.2f} s to {segment['end']:.2f} s "
+        f"({segment['seconds']:.1f} s; {_edges(plan.moved)}).",
+        f"The AI only gets this part, {length}. {bars} The rest of the scene is kept as it is "
+        "and is never sent anywhere.",
+    ]
+    lines += [
+        f"There is a shot cut at {cut:.1f} s inside the part; the AI will see two shots. "
+        "Check it in the app before approving."
+        for cut in plan.inside
+    ]
+    return "\n".join(lines)
+
+
+def _cut_part(args, plan: Plan, scratch: Path) -> tuple[Path, dict]:
+    """The part the AI gets (free), and the scene and segment for Job.create."""
+    crop = plan.segment["crop"]
+    part = scratch / "part.mp4"
+    frame_map = cut_segment(
+        args.video,
+        plan.segment["start"],
+        plan.segment["end"],
+        (crop["x"], crop["y"], crop["w"], crop["h"]),
+        part,
+    )
+    return part, {"scene": args.video, "segment": {**plan.segment, "frame_map": frame_map}}
+
+
 def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth_mesh")
     provider = _provider_for(args)
+    scene_swap = _is_scene_swap(args, mode, provider)
+    setting = _setting(args.setting, mode)
     if args.generator == "wan" and args.character is None and args.face is None:
         raise JobError(
             "Wan needs --character IMAGE or --face NAME (your face or character picture)."
@@ -454,6 +564,9 @@ def _prepare(args, settings, env) -> int:
     with tempfile.TemporaryDirectory() as scratch:
         # Free checks first, so a bad photo or face is refused before any question.
         character, character2, faces = _characters(args, settings, env, Path(scratch), provider)
+        plan = plan_part(args.video, args.start, args.end) if scene_swap else None
+        if plan is not None:
+            env.out(scene_summary(plan))
         key = f"seedance:{provider}" if provider else "wan"
         env.out(
             f"Generator: {generator_name(key)}. The draft and final are paid there; each "
@@ -464,7 +577,7 @@ def _prepare(args, settings, env) -> int:
             env.out(PHOTO_CONSENT)
             if not args.yes and not env.proceed(RIGHTS_QUESTION):
                 return 1
-        estimate = estimate_prepare(mode, seconds=30)
+        estimate = estimate_prepare(mode, seconds=30, skip=("describe",) if setting else ())
         free = estimate.total == 0
         if free:
             env.out("Preparing is free for this mode (nothing is sent to a paid service).")
@@ -472,9 +585,13 @@ def _prepare(args, settings, env) -> int:
             env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
             if not args.yes and not env.proceed():
                 return 1
+        source, scene = args.video, {}
+        if plan is not None:
+            env.out("Cutting the part out of the scene (free)...")
+            source, scene = _cut_part(args, plan, Path(scratch))
         job = Job.create(
             settings.runs_dir,
-            args.video,
+            source,
             generator=args.generator,
             mode=mode,
             subject=args.subject,
@@ -484,6 +601,8 @@ def _prepare(args, settings, env) -> int:
             faces=faces,
             language=args.language,
             provider=provider,
+            setting=setting,
+            **scene,
         )
         env.track(job, "resume {id}")
         env.out(f"JOB {job.id}")
