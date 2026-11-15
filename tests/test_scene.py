@@ -57,6 +57,18 @@ def test_snap_moves_to_the_nearest_cut_within_the_window():
     assert scene.snap(2.6, []) == 2.6
 
 
+def test_frames_without_timestamps_are_timed_one_after_another(tmp_path, small_boxes):
+    clip = write_shots(tmp_path / "s.h264", [(RED, 30), (BLUE, 20)], size=(64, 96), bars=16)
+    with av.open(str(clip)) as probe:  # a raw H.264 stream: its frames carry no time
+        stream = probe.streams.video[0]
+        rate = stream.average_rate
+        assert next(probe.decode(stream)).time is None
+    assert scene.find_cuts(clip) == pytest.approx([float(30 / rate)], abs=1e-6)
+    assert scene.find_bars(clip, float(30 / rate)) == (0, 16, 64, 64)
+    frame_map = scene.cut_segment(clip, 0.0, float(50 / rate), (0, 16, 64, 64), tmp_path / "p.mp4")
+    assert frame_map == [int(k * rate / 24) for k in range(len(frame_map))]  # normalize's rule
+
+
 def test_a_clip_without_video_is_refused(tmp_path):
     sound = write_wav(tmp_path / "a.wav", tone(1))
     with pytest.raises(scene.SceneError, match="a.wav has no video frames"):

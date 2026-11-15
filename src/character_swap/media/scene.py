@@ -41,6 +41,19 @@ def _video_stream(container, path: Path):
     return stream
 
 
+def _timed(container, stream):
+    """(seconds, frame) for every decoded frame. A frame without a timestamp is put one frame
+    after the one before (the first at 0), so a raw stream is timed rather than refused."""
+    step = 1 / float(stream.average_rate or FPS)
+    moment = None
+    for frame in container.decode(stream):
+        if frame.time is not None:
+            moment = float(frame.time)
+        else:
+            moment = 0.0 if moment is None else moment + step
+        yield moment, frame
+
+
 @dataclass(frozen=True)
 class _Scan:
     times: tuple[float, ...]  # every frame's time, in decode order
@@ -58,10 +71,10 @@ def _scan(path: Path) -> _Scan:
         rate = Fraction(stream.average_rate or FPS)
         width, height = stream.width, stream.height
         small = max(2, round(64 * height / width))
-        for frame in container.decode(stream):
+        for moment, frame in _timed(container, stream):
             gray = frame.reformat(width=64, height=small, format="gray").to_ndarray()
             gray = gray.astype(np.int16)
-            times.append(float(frame.time))
+            times.append(moment)
             changes.append(0.0 if previous is None else float(np.abs(gray - previous).mean()))
             previous = gray
     cuts = []
@@ -91,8 +104,7 @@ def _luma_extent(path: Path, start: float, end: float) -> tuple[np.ndarray, np.n
     count = 0
     with av.open(str(path)) as container:
         stream = _video_stream(container, path)
-        for frame in container.decode(stream):
-            moment = float(frame.time)
+        for moment, frame in _timed(container, stream):
             if moment < start - 1e-6 or moment >= end - 1e-6:
                 continue
             luma = frame.to_ndarray(format="gray")
@@ -230,20 +242,20 @@ def cut_segment(
         silent = Path(scratch) / "part.mp4"
         with av.open(str(scene)) as container, VideoWriter(silent, w, h) as writer:
             stream = _video_stream(container, scene)
-            frames = enumerate(container.decode(stream))
+            frames = ((index, *timed) for index, timed in enumerate(_timed(container, stream)))
             current, upcoming, picture = None, next(frames, None), None
             for k in range(real):
                 moment = start + k / FPS
                 while (
                     upcoming is not None
-                    and float(upcoming[1].time) <= moment + 1e-6
-                    and float(upcoming[1].time) < end - 1e-6
+                    and upcoming[1] <= moment + 1e-6
+                    and upcoming[1] < end - 1e-6
                 ):
                     current, upcoming = upcoming, next(frames, None)
                 if current is None:
                     raise SceneError(f"{Path(scene).name} has no frame at {start:.2f} s.")
                 if not frame_map or frame_map[-1] != current[0]:
-                    picture = current[1].to_ndarray(format="rgb24")[y : y + h, x : x + w]
+                    picture = current[2].to_ndarray(format="rgb24")[y : y + h, x : x + w]
                 frame_map.append(current[0])
                 writer.write(picture)
             for _ in range(padded * FPS - real):
