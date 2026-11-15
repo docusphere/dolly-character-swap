@@ -23,6 +23,9 @@ MODEL_URL = (
     "face_landmarker/float16/latest/face_landmarker.task"
 )
 Point = tuple[float, float]  # normalized (x, y) in the full frame
+# A head turned away for a moment is fine: those frames just get no face lines.
+MAX_GAP = 6  # frames in a row (a quarter second)
+MAX_MISSING_SHARE = 0.05  # of all frames
 
 
 @dataclass(frozen=True)
@@ -148,12 +151,20 @@ def track_and_draw(
     }
     (report_dir / "face-landmarks.json").write_text(json.dumps({"fps": FPS, "frames": saved}))
     (report_dir / "face-tracking.json").write_text(json.dumps(report, indent=2))
-    if missing:
+    if _too_many_gaps(missing, len(counts)):
         raise StageError(
             f"Face tracking lost the face on frames {missing}. Use a clip with one centered, "
             "visible face, or choose depth mode."
         )
     return report
+
+
+def _too_many_gaps(missing: list[int], frames: int) -> bool:
+    longest = run = 0
+    for previous, index in zip([-2, *missing], missing, strict=False):
+        run = run + 1 if index == previous + 1 else 1
+        longest = max(longest, run)
+    return longest > MAX_GAP or len(missing) > MAX_MISSING_SHARE * frames
 
 
 class MediaPipeDetector:  # pragma: no cover - exercised by the live smoke test
