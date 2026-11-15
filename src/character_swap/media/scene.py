@@ -317,6 +317,7 @@ CRF = 16  # the one re-encode of the scene: visually lossless
 AI_LIT = 0.02  # an AI clip's edge row or column with more of its pixels above BAR_MAX is picture
 AI_MIN_SHARE = 0.4  # the AI picture inside its bars is at least this share of each side
 TRIM_GAIN = 0.01  # removing AI bars must bring the aspect at least this much closer to the box's
+HOLD_A = 2  # an empty subject mask (SAM missed the subject) reuses the last one this many frames
 
 
 @dataclass(frozen=True)
@@ -432,8 +433,9 @@ def paste_back(
     masks_a: the job's subject masks, one PNG per job frame. masks_b: SAM 3 "person" on the AI
     clip, one PNG per AI frame, or None. Outside the part every frame is written as decoded;
     inside it only lay_alpha's region changes, never outside the crop box. The video keeps the
-    scene's size, frame count and rate. Add the sound with
-    media.audio.add_original_soundtrack(..., fit=False).
+    scene's size, frame count and rate. An empty A (SAM missed the subject) reuses the last
+    non-empty one for up to HOLD_A frames, so the person does not flicker out. Add the sound
+    with media.audio.add_original_soundtrack(..., fit=False).
     """
     clip = ai_clip(raw, segment)
     crop = segment["crop"]
@@ -453,6 +455,7 @@ def paste_back(
         stream = _video_stream(container, scene)
         ai_frames = ai_container.decode(_video_stream(ai_container, raw))
         ai_index, ai_frame = -1, None
+        held, missed = None, 0  # the last non-empty A, and the empty ones since
         rate = Fraction(segment["fps"])
         with VideoWriter(dst, stream.width, stream.height, fps=rate, crf=CRF) as writer:
             for index, frame in enumerate(container.decode(stream)):
@@ -466,6 +469,10 @@ def paste_back(
                             break
                         ai_frame, ai_index = following, ai_index + 1
                     a = _mask(a_files[k], (w, h))
+                    if a.any():
+                        held, missed = a, 0
+                    elif held is not None and missed < HOLD_A:
+                        a, missed = held, missed + 1
                     b = None
                     if b_files:
                         b_file = b_files[min(ai_index, len(b_files) - 1)]

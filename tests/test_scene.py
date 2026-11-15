@@ -410,6 +410,24 @@ def test_every_frame_of_the_part_shows_the_ai_frame_made_from_it(lay, tmp_path):
         assert _near(frame, kept, 48, BLUE), f"scene frame {index} used the wrong mask"
 
 
+def test_a_missed_subject_mask_holds_the_last_one_for_two_frames(lay, tmp_path):
+    clip, segment, _masks_a = lay
+    first, stop = segment["start_frame"], segment["end_frame"]
+    made_from = scene.job_frames(segment["frame_map"], first, stop)
+    missed = {made_from[index - first] for index in (40, 60, 61, 62, 63)}  # SAM lost the subject
+    subject = _box_mask(16, 48, 48, 80, size=(64, 128))
+    masks = [np.zeros_like(subject) if k in missed else subject for k in range(96)]
+    out = tmp_path / "pasted.mp4"
+    scene.paste_back(
+        clip, _ai(tmp_path / "raw.mp4"), _write_masks(tmp_path / "a", masks), None, segment, out
+    )
+    frames = list(iter_frames(out))
+    for index in (39, 40, 41, 60, 61, 64):  # one or two missed frames: the last A is held
+        assert _near(frames[index], 64, 48, MAGENTA), f"scene frame {index} lost the person"
+    for index in (62, 63):  # a third missed frame in a row: nothing is pasted
+        assert _near(frames[index], 64, 48, BLUE), f"scene frame {index} pasted a stale A"
+
+
 def test_a_slightly_short_ai_clip_holds_its_last_frame(lay, tmp_path):
     clip, segment, masks_a = lay
     raw = _ai(tmp_path / "raw.mp4", frames=64)  # 2.67 s for a 3.0 s part: 0.34 s short
