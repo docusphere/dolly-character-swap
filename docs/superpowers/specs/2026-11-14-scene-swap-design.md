@@ -86,7 +86,7 @@ out, so it sees 1920x800. The rest of the scene is kept as it is and is never se
   - `paste_back(scene, raw, masks_a, masks_b, segment, dst)`. Stream frame by frame (O(1) memory). For source frame i at time t inside the part:
     - job frame `k(i)` = the first k with `src(k) ≥ i` (from `frame_map`; clamped to the last real one). This is the job frame that shows this very source frame. `round((t − start) × 24)` would be one frame late at 23.976 fps: job frame k shows source frame k − 1;
     - mask A frame = `k(i)`; AI frame = `round(k(i) × ai_fps / 24)`, held at its last frame;
-    - `find_bars` runs once on `{stage}-raw.mp4`; that same box is cut from every AI frame and every B mask (SAM ran on the raw clip, bars included) before scaling;
+    - the AI clip's own bars are found once on `{stage}-raw.mp4` (`_lit_shares` + `_ai_box`: a tolerant version of `find_bars` that prefers no trim and only trims when that brings the aspect closer to the crop's); that same box is cut from every AI frame and every B mask (SAM ran on the raw clip, bars included) before scaling;
     - scale the AI frame (Lanczos) and masks A and B to the crop box;
     - region = dilate(A ∪ (B ∩ near(A))) by 7 % of the crop height, blurred by 2 % (Gaussian) for the alpha (first live draft: 1.5 % left the original's loose hair as a ghost around the new head);
     - blend only inside the crop box.

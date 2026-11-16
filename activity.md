@@ -157,3 +157,21 @@
   - No final for the demo job; the walkthrough ends at the draft. Why: Frank does not need it for the video.
 - **Lessons:**
   - Picking the default tab by page order showed the least visual tab (Voice); order by pipeline stage instead.
+
+## 2026-11-16 — Session 9: Scene swap (one shot of a longer scene)
+- **Goal:** put Frank's face only on the Joker in a 17 s Dark Knight scene, leaving the police and Batman shots untouched.
+- **Completed:**
+  - Spec and 15-task plan (dry-run green), built task by task with reviews; free checkpoint on the Harry job showed a clean paste-back.
+  - `charswap prepare scene.mp4 --from --to --subject --setting`: snaps to shot cuts, crops black bars, pads the part to whole seconds; only that part goes to the AI. `generate` lays the result back into the full scene at its own rate, soundtrack copied byte for byte.
+  - Live run (job f50b21f3…): prepare ~$0.06, draft ~$2.86 + SAM $0.002. AI clip came back 1012x422, 24 fps, 312 frames for a 960x400 input. Frank: "looks very, very good".
+  - Fixes from review and the live run: tolerant bar detection on the AI clip, mask count off by up to 2 accepted, short face-tracking gaps allowed (Joker looks down for 4 frames), wider pasted region (ghost hair), stray mask dots ignored (they pulled the foreground Batman shape in).
+  - `charswap edge <job> tight|normal|wide` (free re-lay from saved files) and a "Swapped area" tab in the walkthrough app.
+- **Decisions:**
+  - Pasted region grows 7 % of the crop height (was 1.5 %), feather 2 %. Why: SAM's outline misses loose hair, so the original's strands showed as a ghost; the AI's plain wall matches, so the wider edge is invisible.
+  - No hair-matting model. Why: Frank wants as few paid AI calls as possible; a free adjustable edge covers it for now.
+  - No "look before you pay" step in the real product; the area view is for the YouTube walkthrough only. Why: Frank prefers a free rerun to a gate.
+- **Lessons:**
+  - The swapped-area view caught a real bug (stray dots in A pulling in a second person) the first time it was used; visual checks of the pasted region are worth keeping.
+  - WaveSpeed returns a 2.4:1 input as 1012x422 (not ~1152x480 as guessed); the tolerant AI-clip bar check handled it.
+  - Face tracking demanded every frame; a head turn of 4 frames stopped a 312-frame job.
+
