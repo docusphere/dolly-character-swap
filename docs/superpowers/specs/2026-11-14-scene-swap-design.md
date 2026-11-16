@@ -35,7 +35,7 @@ Test clip: `inputs/dark-knight-1m38-1m55.mp4` (1920×1080 with black bars, real 
 | S11 | `--setting "TEXT"` (on `prepare` and `resume`) skips the GPT-4o mini call and uses TEXT as the setting. When GPT-4o mini refuses or fails, prepare stops with a message that names `resume --setting`. | Fail fast: never drop the setting silently. `resume --setting` continues free, without a new job, and keeps the paid Demucs and Whisper results. It works for any Seedance job. |
 | S12 | Scene swaps need `--provider wavespeed` (the default) and mode `depth_mesh` (default) or `depth`. Other combinations are refused before any question. | The paste-back needs SAM masks (`face_mesh` and Wan have none). YAGNI: PiAPI is untested live. |
 | S13 | Single-shot jobs (no `segment` in `state.json`) take exactly today's code path. Every new branch checks `is_scene_job(job)`. | Existing jobs must not change. The existing tests prove it. |
-| S14 | App: minimal. On the Draft and Final steps of a scene job, the "before" side is `full-scene.mp4`. Step 1 shows the full scene. Add one line of text. No new tab. | Enough to show "same scene, new face" on camera. A Paste-back tab is optional and left out (YAGNI). |
+| S14 | App: minimal. On the Draft and Final steps of a scene job, the "before" side is `full-scene.mp4`. Step 1 shows the full scene. Add one line of text. Added after the first live draft: a "Swapped area" tab (the scene with the pasted region tinted) and `charswap edge <job> tight|normal|wide` (free re-lay). | Enough to show "same scene, new face" on camera; the tab shows viewers exactly what was replaced, and the free re-lay handles loose hair without a new paid draft. |
 
 ## Flow (the Dark Knight clip)
 
@@ -214,4 +214,4 @@ marker first, the id saved before waiting, no auto-retry, every paid action aske
 - Correcting a camera move or reframe made by the AI (global alignment).
 - PiAPI, Wan and `face_mesh` mode for scene swaps.
 - Stream-copying untouched shots for bit-exact output.
-- A Paste-back tab in the app; any app buttons.
+- Any app buttons.
