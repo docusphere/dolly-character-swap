@@ -301,6 +301,48 @@ def test_b_next_to_a_is_added_but_someone_far_away_is_not():
     assert scene.lay_alpha(a, np.zeros_like(a)).tolist() == scene.lay_alpha(a, None).tolist()
 
 
+def test_the_edge_presets_and_the_default():
+    assert {
+        "tight": scene.Edge(0.03, 0.01),
+        "normal": scene.Edge(scene.GROW, scene.FEATHER),
+        "wide": scene.Edge(0.12, 0.03),
+    } == scene.EDGES
+    assert (scene.GROW, scene.FEATHER) == (0.07, 0.02)
+    a = _box_mask(150, 250, 250, 350)
+    normal = scene.lay_alpha(a, None, scene.EDGES["normal"])
+    assert scene.lay_alpha(a, None).tolist() == normal.tolist()
+
+
+def test_a_wider_edge_pastes_further_and_a_tighter_one_less():
+    a = _box_mask(150, 250, 250, 350)  # 400 px high: tight 12 px, normal 28 px, wide 48 px
+    tight, normal, wide = (scene.lay_alpha(a, None, scene.EDGES[n]) for n in scene.EDGES)
+    assert tight[150 - 20, 300] < 0.1 < 0.8 < normal[150 - 20, 300]
+    assert normal[150 - 40, 300] < 0.1 < 0.6 < wide[150 - 40, 300]
+
+
+def test_the_swapped_area_view_tints_the_region_and_outlines_it():
+    part = np.full((100, 100, 3), 100, dtype=np.uint8)
+    alpha = np.zeros((100, 100), dtype=np.float32)
+    alpha[30:70, 30:70] = 1.0
+    alpha[30:70, 20:30] = 0.3  # a feathered fringe: lightly tinted, outside the outline
+    shown = scene.area_view(part, alpha)
+    assert part.max() == part.min() == 100  # the input is never changed
+    expected = 100 + scene.TINT_SHARE * (np.array(scene.TINT) - 100)
+    assert np.abs(shown[50, 50].astype(int) - expected).max() <= 1  # inside: tinted
+    assert shown[30, 50].tolist() == list(scene.OUTLINE)  # where alpha crosses 0.5: the line
+    assert shown[50, 30].tolist() == list(scene.OUTLINE)
+    assert shown[50, 25].tolist() not in ([100, 100, 100], list(scene.OUTLINE))  # lightly
+    assert shown[10, 10].tolist() == [100, 100, 100]  # outside: the scene as it is
+
+
+def test_a_region_reaching_the_crop_edge_is_outlined_there():
+    part = np.zeros((40, 60, 3), dtype=np.uint8)
+    alpha = np.zeros((40, 60), dtype=np.float32)
+    alpha[:20] = 1.0  # the pasted region stops at the top of the crop box
+    shown = scene.area_view(part, alpha)
+    assert shown[0, 30].tolist() == list(scene.OUTLINE)
+
+
 def _write_masks(folder, masks):
     folder.mkdir(parents=True, exist_ok=True)
     for index, mask in enumerate(masks):
@@ -387,6 +429,45 @@ def test_the_ai_person_lands_exactly_on_a_and_nothing_else_changes(lay, tmp_path
         assert _near(frame, 36, 48, BLUE)  # beside A: the scene, not the AI's room
         assert _near(frame, 112, 34, BLUE)  # the far-away shoulder is not pasted
         assert frame[:12].max() <= 24 and frame[84:].max() <= 24  # the bars stay black
+
+
+def test_a_wide_edge_lays_more_of_the_ai_picture_back(lay, tmp_path):
+    clip, segment, masks_a = lay
+    raw = _ai(tmp_path / "draft-raw.mp4")
+    shown = {}
+    for name in ("normal", "wide"):  # 64 px high crop: normal grows 4 px, wide 8 px
+        out = tmp_path / f"{name}.mp4"
+        scene.paste_back(clip, raw, masks_a, None, segment, out, edge=scene.EDGES[name])
+        shown[name] = list(iter_frames(out))[60]
+    assert _near(shown["normal"], 40, 48, BLUE)  # 8 px left of A: the scene
+    assert not _near(shown["wide"], 40, 48, BLUE)  # the wide edge reaches it
+
+
+def test_the_swapped_area_is_the_scene_with_the_pasted_region_tinted(lay, tmp_path):
+    clip, segment, masks_a = lay
+    area = tmp_path / "draft-area.mp4"
+    scene.paste_back(
+        clip, _ai(tmp_path / "raw.mp4"), masks_a, None, segment, tmp_path / "o.mp4", area=area
+    )
+    frames, originals = list(iter_frames(area)), list(iter_frames(clip))
+    assert len(frames) == len(originals) == 120
+    with av.open(str(area)) as container:
+        assert container.streams.video[0].average_rate == SCENE_RATE
+        assert not container.streams.audio
+    for index in (0, 23, 96, 119):  # outside the part: the scene as decoded
+        assert abs(frames[index].astype(int) - originals[index]).mean() < 2
+    tinted = np.array(BLUE) + scene.TINT_SHARE * (np.array(scene.TINT) - np.array(BLUE))
+    for index in (24, 60, 95):
+        frame = frames[index]
+        assert _near(frame, 64, 48, tinted)  # A's middle: the original, tinted (never the AI)
+        assert _near(frame, 112, 34, BLUE)  # far away: untouched
+        assert frame[:12].max() <= 24 and frame[84:].max() <= 24  # the bars stay black
+
+
+def test_without_an_area_path_no_area_is_written(lay, tmp_path):
+    clip, segment, masks_a = lay
+    scene.paste_back(clip, _ai(tmp_path / "raw.mp4"), masks_a, None, segment, tmp_path / "o.mp4")
+    assert sorted(p.name for p in tmp_path.glob("*area*")) == []
 
 
 def test_the_spliced_scene_keeps_its_sound_byte_for_byte(lay, tmp_path):

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import shutil
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -15,7 +16,7 @@ from pathlib import Path
 import av
 import numpy as np
 from PIL import Image
-from scipy.ndimage import gaussian_filter, label, maximum_filter
+from scipy.ndimage import gaussian_filter, label, maximum_filter, minimum_filter
 
 from character_swap.errors import CharSwapError
 from character_swap.media.audio import MAX_MISMATCH, RATE, embed_samples, read_audio
@@ -286,6 +287,24 @@ def job_frames(frame_map: list[int], first: int, stop: int) -> list[int]:
 NEAR = 0.04  # B counts only this close to A (share of the picture height)
 GROW = 0.07  # the pasted region reaches this far past A and B (covers loose hair SAM misses)
 FEATHER = 0.02  # its edge is blurred this much (Gaussian sigma)
+
+
+@dataclass(frozen=True)
+class Edge:
+    """How far the pasted region reaches past the person, and how soft its edge is
+    (both a share of the crop height). Wider hides more of the original's loose hair but
+    lays more of the AI's own background over the scene."""
+
+    grow: float
+    feather: float
+
+
+NORMAL = Edge(GROW, FEATHER)
+EDGES = {"tight": Edge(0.03, 0.01), "normal": NORMAL, "wide": Edge(0.12, 0.03)}
+TINT = (255, 40, 160)  # the swapped-area view: the pasted region is tinted this colour ...
+TINT_SHARE = 0.5  # ... this strongly where alpha is 1 (less on the feathered edge) ...
+OUTLINE = (255, 230, 0)  # ... and outlined where alpha crosses 0.5
+LINE = 0.004  # the outline's width (share of the crop height, at least 1 px)
 SECOND = 0.25  # a separate region at least this share of the largest is another person
 CROWDED = 0.10  # more than this share of such frames stops a scene job's prepare
 
@@ -295,18 +314,33 @@ def _grow(mask: np.ndarray, radius: float) -> np.ndarray:
     return maximum_filter(mask.astype(np.uint8), size=size) > 0
 
 
-def lay_alpha(a: np.ndarray, b: np.ndarray | None) -> np.ndarray:
+def lay_alpha(a: np.ndarray, b: np.ndarray | None, edge: Edge = NORMAL) -> np.ndarray:
     """The pasted region's alpha (0 to 1): dilate(A + (B near A)), feathered.
 
     a: the original subject mask; b: SAM 3 "person" on the AI result, or None. Both are
     booleans the size of the crop box. B away from A (someone else the AI redrew) is left out.
+    edge: how far the region grows and how soft its edge is (EDGES).
     """
     height = a.shape[0]
     union = a.copy()
     if b is not None:
         union |= b & _grow(a, NEAR * height)
-    region = _grow(union, GROW * height)
-    return gaussian_filter(region.astype(np.float32), sigma=FEATHER * height)
+    region = _grow(union, edge.grow * height)
+    return gaussian_filter(region.astype(np.float32), sigma=edge.feather * height)
+
+
+def area_view(part: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """The swapped-area view of one crop box: the original picture tinted by alpha, with an
+    outline where alpha crosses 0.5 (also along the crop box, where the pasting stops)."""
+    weight = TINT_SHARE * alpha[:, :, None]
+    shown = part.astype(np.float32)
+    shown += weight * (np.array(TINT, dtype=np.float32) - shown)
+    shown = np.rint(shown).astype(np.uint8)
+    inside = alpha >= 0.5
+    size = 2 * max(1, round(LINE * alpha.shape[0])) + 1
+    core = minimum_filter(inside.astype(np.uint8), size=size, mode="constant", cval=0) > 0
+    shown[inside & ~core] = OUTLINE
+    return shown
 
 
 def crowded_frames(mask_dir: Path) -> tuple[int, int]:
@@ -438,16 +472,27 @@ def _mask(
 
 
 def paste_back(
-    scene: Path, raw: Path, masks_a: Path, masks_b: Path | None, segment: dict, dst: Path
+    scene: Path,
+    raw: Path,
+    masks_a: Path,
+    masks_b: Path | None,
+    segment: dict,
+    dst: Path,
+    *,
+    edge: Edge = NORMAL,
+    area: Path | None = None,
 ) -> None:
     """Lay the AI's person back into the scene's own frames, one frame at a time (no sound).
 
     masks_a: the job's subject masks, one PNG per job frame. masks_b: SAM 3 "person" on the AI
     clip, one PNG per AI frame, or None. Outside the part every frame is written as decoded;
-    inside it only lay_alpha's region changes, never outside the crop box. The video keeps the
-    scene's size, frame count and rate. An empty A (SAM missed the subject) reuses the last
-    non-empty one for up to HOLD_A frames, so the person does not flicker out. Add the sound
-    with media.audio.add_original_soundtrack(..., fit=False).
+    inside it only lay_alpha's region (grown and feathered by `edge`) changes, never outside
+    the crop box. The video keeps the scene's size, frame count and rate. An empty A (SAM
+    missed the subject) reuses the last non-empty one for up to HOLD_A frames, so the person
+    does not flicker out. Add the sound with media.audio.add_original_soundtrack(..., fit=False).
+
+    area: also write the swapped-area view there in the same pass (area_view on the original
+    frames; same size, frame count and rate; no sound).
     """
     clip = ai_clip(raw, segment)
     crop = segment["crop"]
@@ -469,9 +514,16 @@ def paste_back(
         ai_index, ai_frame = -1, None
         held, missed = None, 0  # the last non-empty A, and the empty ones since
         rate = Fraction(segment["fps"])
-        with VideoWriter(dst, stream.width, stream.height, fps=rate, crf=CRF) as writer:
+        with ExitStack() as writers:
+            writer = writers.enter_context(
+                VideoWriter(dst, stream.width, stream.height, fps=rate, crf=CRF)
+            )
+            shows = None
+            if area is not None:
+                shows = writers.enter_context(VideoWriter(area, stream.width, stream.height, rate))
             for index, frame in enumerate(container.decode(stream)):
                 picture = frame.to_ndarray(format="rgb24")
+                shown = picture
                 if first <= index < stop:
                     k = made_from[index - first]
                     wanted = min(round(k * clip.rate / FPS), clip.frames - 1)
@@ -489,12 +541,18 @@ def paste_back(
                     if b_files:
                         b_file = b_files[min(ai_index, len(b_files) - 1)]
                         b = _mask(b_file, (w, h), frame=(clip.width, clip.height), box=clip.box)
-                    alpha = lay_alpha(a, b) if a.any() else None
+                    alpha = lay_alpha(a, b, edge) if a.any() else None
                     if alpha is not None and ai_frame is not None:
                         art = ai_frame.to_image().crop((left, top, left + width, top + height))
                         art = np.asarray(art.resize((w, h), Image.Resampling.LANCZOS))
-                        part = picture[y : y + h, x : x + w].astype(np.float32)
+                        original = picture[y : y + h, x : x + w]
+                        part = original.astype(np.float32)
                         mixed = part + alpha[:, :, None] * (art.astype(np.float32) - part)
                         picture = picture.copy()
                         picture[y : y + h, x : x + w] = np.rint(mixed).astype(np.uint8)
+                        if shows is not None:
+                            shown = shown.copy()
+                            shown[y : y + h, x : x + w] = area_view(original, alpha)
                 writer.write(picture)
+                if shows is not None:
+                    shows.write(shown)
