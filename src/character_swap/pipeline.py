@@ -27,7 +27,7 @@ from character_swap.media.audio import (
     read_audio,
 )
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
-from character_swap.media.scene import CROWDED, check_sound, crowded_frames
+from character_swap.media.scene import CROWDED, EDGES, check_sound, crowded_frames
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import (
     GENERATION_STAGES,
@@ -49,7 +49,7 @@ from character_swap.stages.depth import depth_huggingface, depth_replicate
 from character_swap.stages.describe import describe_scene, use_setting
 from character_swap.stages.face_mesh import FaceDetector, track_and_draw
 from character_swap.stages.masks import segment
-from character_swap.stages.paste import lay_back
+from character_swap.stages.paste import area_name, has_saved_lay_back, lay_back, lay_back_saved
 from character_swap.stages.pitch import pitch_vocals
 from character_swap.stages.separate import separate_vocals
 from character_swap.stages.transcribe import transcribe
@@ -485,7 +485,8 @@ def archive_stale_draft(job: Job) -> list[Path]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     moves = []
     for stage in GENERATION_STAGES:
-        for name in (*generation_files(stage), f"{stage}-sam"):  # a scene job's lay-back masks
+        # a scene job's lay-back masks and swapped-area view, too
+        for name in (*generation_files(stage), f"{stage}-sam", area_name(stage)):
             source = job.path(name)
             if source.exists():
                 target = job.path(f"{stage}-old-{stamp}{name[len(stage) :]}")
@@ -845,6 +846,41 @@ def generate(
                 result,
                 lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
             )
+    _notify(status, f"{stage.capitalize()} ready: {result}")
+    return result
+
+
+def lay_back_again(job: Job, stage: str, edge: str, *, status: Status = print) -> Path:
+    """`charswap edge`: save the edge width, then lay the saved AI clip back with it.
+
+    Free and local: it reads only saved files ({stage}-raw.mp4, the SAM 3 masks of the clip
+    and of the AI result, full-scene.mp4) and never calls a provider. Later lay-backs inside
+    generate use the saved edge too. {stage}.mp4 and {stage}-area.mp4 are replaced only when
+    the new ones are complete.
+    """
+    if not is_scene_job(job):
+        raise JobError(
+            "Only a scene swap (prepare --from --to) is laid back into a scene, so this job "
+            "has no edge to change. Nothing was charged."
+        )
+    if edge not in EDGES:
+        raise JobError(f"Choose tight, normal or wide, not {edge!r}. Nothing was charged.")
+    job.update(edge=edge)
+    if not (job.stage_done(stage) and has_saved_lay_back(job, stage)):
+        raise StageError(
+            f"There is no {stage} to lay back yet. The {edge} edge is saved, so the next "
+            f"{stage} uses it: charswap generate {job.id} --{stage} (it shows the price and "
+            "asks first). Nothing was charged."
+        )
+    result = job.path(f"{stage}.mp4")
+    _notify(status, f"Laying the new person back with a {edge} edge (free)...")
+    with _wrap("Laying the new person back"):
+        _write_atomically(
+            result,
+            lambda part: lay_back_saved(
+                job, stage, part, status=lambda text: _notify(status, text)
+            ),
+        )
     _notify(status, f"{stage.capitalize()} ready: {result}")
     return result
 

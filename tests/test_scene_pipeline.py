@@ -1,6 +1,7 @@
 """Scene jobs through the pipeline: prepare (Task 9) and generate (Task 10)."""
 
 import json
+import shutil
 
 import av
 import pytest
@@ -9,7 +10,7 @@ from PIL import Image
 from character_swap import pipeline
 from character_swap.costs import Estimate, Line
 from character_swap.jobs import Job, JobError, clean_setting
-from character_swap.media.scene import SceneError
+from character_swap.media.scene import EDGES, SceneError
 from character_swap.media.video import count_frames, iter_frames
 from character_swap.pipeline import (
     Services,
@@ -35,6 +36,7 @@ from scene_jobs import (
     GREEN,
     RED,
     TWO,
+    drafted_scene_job,
     fake_pitch,
     make_scene_job,
     masks_zip,
@@ -391,3 +393,156 @@ def test_a_single_shot_job_never_lays_back_or_reads_a_scene(runs_dir, tmp_path, 
     generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
     assert job.stage_done("draft") and services.replicate.runs == []
     assert [c["step"] for c in job.state["costs"]] == ["draft"]
+
+
+# ---- the swapped area and the edge width ---------------------------------------------------
+def test_a_scene_draft_also_writes_the_swapped_area(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    generate(job, gen_services(tmp_path), "draft", runs_dir=runs_dir, **QUIET)
+    area = job.path("draft-area.mp4")
+    assert count_frames(area) == count_frames(job.path("full-scene.mp4")) == 143
+    assert not _near(list(iter_frames(area))[70], 32, 24, MAGENTA)  # the original, tinted
+    assert sorted(p.name for p in job.root.glob("*.part*")) == []
+
+
+def test_a_new_draft_also_moves_the_old_swapped_area_aside(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    generate(job, gen_services(tmp_path), "draft", runs_dir=runs_dir, **QUIET)
+    moved = archive_stale_draft(job)
+    assert not job.path("draft-area.mp4").exists()
+    assert any(p.name.startswith("draft-old-") and p.name.endswith("-area.mp4") for p in moved)
+
+
+def _edges_used(monkeypatch):
+    real, used = paste_stage.paste_back, []
+
+    def spy(*args, edge, **kwargs):
+        used.append(edge)
+        return real(*args, edge=edge, **kwargs)
+
+    monkeypatch.setattr(paste_stage, "paste_back", spy)
+    return used
+
+
+def test_the_saved_edge_is_used_when_a_draft_is_laid_back(runs_dir, tmp_path, monkeypatch):
+    job = approved_scene_job(runs_dir, tmp_path)
+    job.update(edge="wide")
+    used = _edges_used(monkeypatch)
+    generate(job, gen_services(tmp_path), "draft", runs_dir=runs_dir, **QUIET)
+    assert used == [EDGES["wide"]]
+
+
+def test_without_a_saved_edge_the_lay_back_uses_the_normal_one(runs_dir, tmp_path, monkeypatch):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    used = _edges_used(monkeypatch)
+    pipeline.lay_back_again(job, "draft", "normal", **QUIET)
+    assert used == [EDGES["normal"]] and job.state["edge"] == "normal"
+
+
+def test_an_unknown_saved_edge_stops_before_buying_the_lay_back(runs_dir, tmp_path):
+    job = approved_scene_job(runs_dir, tmp_path)
+    job.update(edge="huge")
+    services = gen_services(tmp_path)
+    with pytest.raises(StageError, match=r"unknown edge 'huge'.*charswap edge .* normal"):
+        generate(job, services, "draft", runs_dir=runs_dir, **QUIET)
+    assert services.replicate.runs == [] and job.path("draft-raw.mp4").exists()
+
+
+def test_laying_back_again_is_free_and_uses_the_new_edge(runs_dir, tmp_path, monkeypatch):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    used = _edges_used(monkeypatch)
+    said = []
+    result = pipeline.lay_back_again(job, "draft", "wide", status=said.append)
+    assert result == job.path("draft.mp4") and used == [EDGES["wide"]]
+    assert said == [
+        "Laying the new person back with a wide edge (free)...",
+        f"Draft ready: {result}",
+    ]
+    assert job.state["edge"] == "wide" and job.state.get("costs", []) == []
+    frames = list(iter_frames(result))
+    assert len(frames) == count_frames(job.path("full-scene.mp4")) == 143
+    assert audio_packets(result) == audio_packets(job.path("full-scene.mp4"))
+    assert _near(frames[70], 32, 24, MAGENTA) and _near(frames[10], 32, 24, RED)
+    assert count_frames(job.path("draft-area.mp4")) == 143
+    assert sorted(p.name for p in job.root.glob("*.part*")) == []
+
+
+def test_laying_the_final_back_again(runs_dir, tmp_path):
+    job = drafted_scene_job(runs_dir, tmp_path, "final")
+    said = []
+    pipeline.lay_back_again(job, "final", "tight", status=said.append)
+    assert said[-1] == f"Final ready: {job.path('final.mp4')}"
+    assert job.path("final-area.mp4").exists() and not job.path("draft.mp4").exists()
+
+
+def test_laying_back_again_when_sam_found_nobody_uses_the_original_outline(runs_dir, tmp_path):
+    job = drafted_scene_job(runs_dir, tmp_path, b_box=None)
+    said = []
+    pipeline.lay_back_again(job, "draft", "wide", status=said.append)
+    assert paste_stage.NOBODY in said
+    assert _near(list(iter_frames(job.path("draft.mp4")))[70], 32, 24, MAGENTA)
+
+
+def test_laying_back_again_reuses_the_cleaned_masks(runs_dir, tmp_path):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    pipeline.lay_back_again(job, "draft", "normal", **QUIET)
+    shutil.rmtree(job.path("draft-sam/raw-masks"))  # only the cleaned ones are left
+    pipeline.lay_back_again(job, "draft", "wide", **QUIET)
+    assert job.state["edge"] == "wide"
+
+
+@pytest.mark.parametrize("missing", ["draft-raw.mp4", "draft-sam", "stage"])
+def test_laying_back_again_needs_the_saved_draft(runs_dir, tmp_path, missing):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    if missing == "stage":
+        job.reset_stages("draft")
+    elif missing == "draft-sam":
+        shutil.rmtree(job.path(missing))
+    else:
+        job.path(missing).unlink()
+    with pytest.raises(StageError) as caught:
+        pipeline.lay_back_again(job, "draft", "wide", **QUIET)
+    message = str(caught.value)
+    assert f"charswap generate {job.id} --draft" in message
+    assert message.endswith("Nothing was charged.")
+    assert job.state["edge"] == "wide"  # kept for the draft you make next
+    assert not job.path("draft.mp4").exists()
+
+
+def test_laying_the_final_back_before_it_exists_names_the_final(runs_dir, tmp_path):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    with pytest.raises(StageError, match=r"charswap generate \w+ --final"):
+        pipeline.lay_back_again(job, "final", "wide", **QUIET)
+
+
+def test_a_failed_re_lay_keeps_the_draft_you_had(runs_dir, tmp_path, monkeypatch):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    pipeline.lay_back_again(job, "draft", "normal", **QUIET)
+    before = job.path("draft.mp4").read_bytes(), job.path("draft-area.mp4").read_bytes()
+
+    def broken(*args, area, **kwargs):
+        area.write_bytes(b"half")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(paste_stage, "paste_back", broken)
+    with pytest.raises(StageError, match="disk full"):
+        pipeline.lay_back_again(job, "draft", "wide", **QUIET)
+    assert (job.path("draft.mp4").read_bytes(), job.path("draft-area.mp4").read_bytes()) == before
+    assert sorted(p.name for p in job.root.glob("*.part*")) == []
+
+
+def test_a_single_shot_job_has_no_edge_to_change(runs_dir, tmp_path):
+    clip = write_video(tmp_path / "c.mp4", [solid(RED)] * 24, audio_seconds=1)
+    photo = tmp_path / "me.jpg"
+    Image.new("RGB", (64, 64), (200, 150, 120)).save(photo, "JPEG")
+    job = Job.create(runs_dir, clip, generator="seedance", mode="depth", character=photo)
+    with pytest.raises(JobError, match=r"scene swap.*Nothing was charged\."):
+        pipeline.lay_back_again(job, "draft", "wide", **QUIET)
+    assert "edge" not in job.state
+
+
+def test_an_unknown_edge_name_is_refused(runs_dir, tmp_path):
+    job = drafted_scene_job(runs_dir, tmp_path)
+    with pytest.raises(JobError, match="tight, normal or wide"):
+        pipeline.lay_back_again(job, "draft", "huge", **QUIET)
+    assert "edge" not in job.state

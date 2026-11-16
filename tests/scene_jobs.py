@@ -15,9 +15,10 @@ from character_swap.stages.masks import SAM_VERSION
 from character_swap.stages.separate import DEMUCS_VERSION
 from character_swap.stages.transcribe import WHISPER_VERSION
 from fakes import FakeReplicate
-from helpers import SCENE_RATE, solid, tone, write_shots, write_video, write_wav
+from helpers import SCENE_RATE, solid, tone, write_mask_pngs, write_shots, write_video, write_wav
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
+YELLOW, MAGENTA = (220, 220, 40), (220, 40, 220)
 FRAMES = 96  # the default part: 95 scene frames (3.96 s) -> 96 job frames, 4 s for the AI
 ONE = [(16, 8, 48, 40)]  # mask boxes (x0, y0, x1, y1) on the 64 x 48 job frames
 TWO = [(4, 8, 28, 40), (36, 8, 60, 40)]  # two people of the same size
@@ -102,3 +103,24 @@ def make_scene_job(runs_dir, tmp_path, *, mode="depth", setting="", face_frames=
         segment={**plan.segment, "frame_map": frame_map},
         setting=setting,
     )
+
+
+def drafted_scene_job(runs_dir, tmp_path, stage="draft", *, b_box=(32, 16, 96, 80)):
+    """A scene job whose `stage` is done, with every file a free lay-back reads saved: the
+    subject masks (A), the AI clip at twice the job's size (a yellow room, the new person in
+    magenta where A is) and SAM 3's "person" masks on it (B: `b_box`; None = SAM 3 found nobody).
+    No prepare and no generate run: nothing is faked as bought."""
+    job = make_scene_job(runs_dir, tmp_path)
+    write_mask_pngs(job.path("sam") / "clean-masks", FRAMES, box=ONE[0], size=(64, 48))
+    picture = solid(YELLOW, (128, 96))
+    picture[16:80, 32:96] = MAGENTA  # ONE's box (16, 8, 48, 40), doubled
+    write_video(job.path(f"{stage}-raw.mp4"), [picture] * FRAMES)
+    folder = job.path(f"{stage}-sam")
+    folder.mkdir()
+    (folder / "sam-prediction.json").write_text('{"id": "s1", "status": "succeeded"}')
+    raw = folder / "raw-masks"
+    raw.mkdir()
+    if b_box is not None:
+        write_mask_pngs(raw, FRAMES, box=b_box, size=(128, 96))
+    job.mark_stage(stage)
+    return job
