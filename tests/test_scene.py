@@ -282,11 +282,12 @@ def _box_mask(top, bottom, left, right, size=(400, 600)):
 
 
 def test_the_region_covers_a_and_feathers_its_edge():
-    a = _box_mask(150, 250, 250, 350)  # 400 px high: grow 6 px, feather sigma 4 px
+    a = _box_mask(150, 250, 250, 350)  # 400 px high: grow 28 px, feather sigma 8 px
     alpha = scene.lay_alpha(a, None)
     assert alpha[200, 300] > 0.99  # inside A
-    assert 0.9 < alpha[150, 300] < 1.0  # on A's edge: inside the grown region, feathered
-    assert alpha[150 - 8, 300] < 0.5  # 8 px out: past the 6 px growth
+    assert alpha[150 - 10, 300] > 0.98  # loose hair just past A's edge is still pasted
+    assert 0.1 < alpha[150 - 28, 300] < 0.9  # the grown region's edge: feathered
+    assert alpha[150 - 45, 300] < 0.1  # past the growth: the scene
     assert alpha[50, 50] == 0.0  # far away: exactly the scene
 
 

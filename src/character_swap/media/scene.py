@@ -284,8 +284,8 @@ def job_frames(frame_map: list[int], first: int, stop: int) -> list[int]:
 
 
 NEAR = 0.04  # B counts only this close to A (share of the picture height)
-GROW = 0.015  # the pasted region reaches this far past A and B
-FEATHER = 0.01  # its edge is blurred this much (Gaussian sigma)
+GROW = 0.07  # the pasted region reaches this far past A and B (covers loose hair SAM misses)
+FEATHER = 0.02  # its edge is blurred this much (Gaussian sigma)
 SECOND = 0.25  # a separate region at least this share of the largest is another person
 CROWDED = 0.10  # more than this share of such frames stops a scene job's prepare
 

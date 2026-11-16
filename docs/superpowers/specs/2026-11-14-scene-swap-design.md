@@ -88,7 +88,7 @@ out, so it sees 1920x800. The rest of the scene is kept as it is and is never se
     - mask A frame = `k(i)`; AI frame = `round(k(i) × ai_fps / 24)`, held at its last frame;
     - `find_bars` runs once on `{stage}-raw.mp4`; that same box is cut from every AI frame and every B mask (SAM ran on the raw clip, bars included) before scaling;
     - scale the AI frame (Lanczos) and masks A and B to the crop box;
-    - region = dilate(A ∪ (B ∩ near(A))) by 1.5 % of the crop height, blurred by 1 % (Gaussian) for the alpha;
+    - region = dilate(A ∪ (B ∩ near(A))) by 7 % of the crop height, blurred by 2 % (Gaussian) for the alpha (first live draft: 1.5 % left the original's loose hair as a ghost around the new head);
     - blend only inside the crop box.
 
     Frames outside the part are written as decoded. The video is written at the scene's own rate (a Fraction), CRF 16.
