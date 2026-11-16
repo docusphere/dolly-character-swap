@@ -305,6 +305,7 @@ TINT = (255, 40, 160)  # the swapped-area view: the pasted region is tinted this
 TINT_SHARE = 0.5  # ... this strongly where alpha is 1 (less on the feathered edge) ...
 OUTLINE = (255, 230, 0)  # ... and outlined where alpha crosses 0.5
 LINE = 0.004  # the outline's width (share of the crop height, at least 1 px)
+SPECK = 0.02  # a part of A smaller than this share of its largest part is a stray dot
 SECOND = 0.25  # a separate region at least this share of the largest is another person
 CROWDED = 0.10  # more than this share of such frames stops a scene job's prepare
 
@@ -312,6 +313,18 @@ CROWDED = 0.10  # more than this share of such frames stops a scene job's prepar
 def _grow(mask: np.ndarray, radius: float) -> np.ndarray:
     size = 2 * max(1, round(radius)) + 1
     return maximum_filter(mask.astype(np.uint8), size=size) > 0
+
+
+def _without_specks(mask: np.ndarray) -> np.ndarray:
+    """The mask without stray dots: parts smaller than SPECK of its largest part."""
+    labels, count = label(mask)
+    if count < 2:
+        return mask.copy()
+    sizes = np.bincount(labels.ravel())
+    sizes[0] = 0
+    keep = sizes >= SPECK * sizes.max()
+    keep[0] = False
+    return keep[labels]
 
 
 def lay_alpha(a: np.ndarray, b: np.ndarray | None, edge: Edge = NORMAL) -> np.ndarray:
@@ -322,9 +335,10 @@ def lay_alpha(a: np.ndarray, b: np.ndarray | None, edge: Edge = NORMAL) -> np.nd
     edge: how far the region grows and how soft its edge is (EDGES).
     """
     height = a.shape[0]
-    union = a.copy()
+    subject = _without_specks(a)
+    union = subject.copy()
     if b is not None:
-        union |= b & _grow(a, NEAR * height)
+        union |= b & _grow(subject, NEAR * height)
     region = _grow(union, edge.grow * height)
     return gaussian_filter(region.astype(np.float32), sigma=edge.feather * height)
 

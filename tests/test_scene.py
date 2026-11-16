@@ -291,6 +291,15 @@ def test_the_region_covers_a_and_feathers_its_edge():
     assert alpha[50, 50] == 0.0  # far away: exactly the scene
 
 
+def test_stray_dots_in_a_do_not_pull_in_someone_else():
+    a = _box_mask(150, 250, 250, 350)
+    a[300:302, 20:22] = True  # a 4 px speck SAM left on someone in the foreground
+    foreground = _box_mask(200, 400, 0, 80)  # SAM 3 on the result finds that person
+    alpha = scene.lay_alpha(a, foreground)
+    assert alpha[300, 20] == 0.0  # neither the speck nor the person next to it is pasted
+    assert alpha[200, 300] > 0.99  # the subject still is
+
+
 def test_b_next_to_a_is_added_but_someone_far_away_is_not():
     a = _box_mask(150, 250, 250, 350)
     hair = _box_mask(140, 250, 250, 350)  # SAM 3 on the result: 10 px more on top
