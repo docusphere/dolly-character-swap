@@ -73,6 +73,10 @@ a 13 s part costs about $2.86 for the draft.
 Name the one person in `--subject`; if SAM 3 finds two people in the part, prepare stops and
 says so. Scene swaps need WaveSpeed and the `depth_mesh` (default) or `depth` mode.
 
+If the original's loose hair shows around the new head (or too much AI background does), redo
+the lay-back for free: `uv run charswap edge <id> wide` (or `tight`, `normal`; `--final` for
+the final). Later drafts keep that edge; the app's "Swapped area" tab shows what was replaced.
+
 If GPT-4o mini refuses to describe the setting (it can, on film stills), describe it yourself
 and go on for free: `uv run charswap resume <id> --setting "a dim room with ..."`. You can
 also give `--setting` to `prepare` from the start, for any Seedance swap.

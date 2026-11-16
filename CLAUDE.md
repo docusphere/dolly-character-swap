@@ -14,6 +14,7 @@ Python 3.12 · uv · PyAV/NumPy/Pillow · httpx · MediaPipe · FastAPI/Jinja2 (
 - Prompt (Seedance): `uv run charswap prompt <job>`
 - One shot of a scene: `uv run charswap prepare scene.mp4 --from S --to S --subject "..." --character me.jpg` (`--setting TEXT` skips the paid description; also on `resume`)
 - Generate (paid, asks first): `uv run charswap generate <job> --draft|--final [--resolution 720p|1080p]`
+- Scene swap edge (free, local): `uv run charswap edge <job> tight|normal|wide [--final]` (re-lays from saved files; saved as `edge` in state.json; also writes `{stage}-area.mp4`)
 - Walkthrough app: `uv run charswap app` (read-only)
 
 ## Layout
