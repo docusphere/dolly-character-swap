@@ -494,3 +494,18 @@ def test_a_scene_swaps_draft_page_shows_the_whole_scene(client, runs_dir, media)
     assert before + 'full-scene.mp4"' in text
     assert steps.SCENE_LINE in text
     assert steps.SCENE_LINE not in client.get(f"/jobs/{job.id}/step/3").text
+
+
+def test_a_scene_swaps_draft_page_has_a_swapped_area_tab(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    media.copy("full-scene.mp4", job.path("full-scene.mp4"))
+    finish_stage(job, media, "draft")
+    media.copy("area.mp4", job.path("draft-area.mp4"))
+    main = client.get(f"/jobs/{job.id}/step/4").text
+    assert f'href="/jobs/{job.id}/step/4?tab=area">{steps.AREA}</a>' in main
+    assert 'aria-current="page">Draft</a>' in main and steps.AREA_LINE not in main
+    area = client.get(f"/jobs/{job.id}/step/4?tab=area").text
+    assert f'aria-current="page">{steps.AREA}</a>' in area and steps.AREA_LINE in area
+    assert f'src="/jobs/{job.id}/files/draft-area.mp4"' in area
+    assert 'class="button wipe-sound"' not in area  # the area view has no sound
+    assert client.get(f"/jobs/{job.id}/files/draft-area.mp4").status_code == 200

@@ -214,3 +214,10 @@ def tabs_for(mode: str) -> tuple[Tab, ...]:
 SCENE_LINE = (
     "Only the person you picked is laid back into the scene; everything else is the original."
 )
+
+# A scene swap's draft and final can also show what was replaced ({stage}-area.mp4).
+AREA = "Swapped area"
+AREA_LINE = (
+    "Tinted: the part of each frame that was replaced. Everything else is the original film."
+)
+VIEWS = "What to watch"  # the tabs' label for screen readers

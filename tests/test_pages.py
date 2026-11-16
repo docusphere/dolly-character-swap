@@ -247,3 +247,41 @@ def test_a_single_shot_draft_still_compares_with_the_clip(runs_dir, media):
     page = pages.job_page(job, runs_dir, 4)
     assert page.wipe.before.endswith("/original.mp4") and page.scene_line == ""
     assert pages.job_page(job, runs_dir, 1).upload.endswith("/upload.mp4")
+
+
+def test_a_scene_swap_can_show_the_swapped_area(runs_dir, media):
+    job = _approved(runs_dir, media)
+    media.copy("full-scene.mp4", job.path("full-scene.mp4"))
+    for stage, number in (("draft", 4), ("final", 5)):
+        finish_stage(job, media, stage)
+        media.copy("area.mp4", job.path(f"{stage}-area.mp4"))
+        main = pages.job_page(job, runs_dir, number)
+        url = f"/jobs/{job.id}/step/{number}"
+        assert [(v.id, v.title, v.url) for v in main.views] == [
+            ("result", stage.capitalize(), url),
+            ("area", steps.AREA, f"{url}?tab=area"),
+        ]
+        assert main.view == "result" and main.view_line == ""
+        assert main.wipe.after.endswith(f"/{stage}.mp4") and main.wipe.sound
+        area = pages.job_page(job, runs_dir, number, tab="area")
+        assert area.view == "area" and area.view_line == steps.AREA_LINE
+        assert area.wipe.before.endswith("/full-scene.mp4")
+        assert area.wipe.after.endswith(f"/{stage}-area.mp4") and not area.wipe.sound
+        assert area.wipe.after_label == steps.AREA
+    assert area.download.endswith("/final.mp4")  # the download is always the final itself
+
+
+def test_without_a_swapped_area_file_there_is_no_tab(runs_dir, media):
+    job = _approved(runs_dir, media)
+    media.copy("full-scene.mp4", job.path("full-scene.mp4"))
+    finish_stage(job, media, "draft")  # an older scene job: made before the area view
+    page = pages.job_page(job, runs_dir, 4, tab="area")
+    assert page.views == () and page.wipe.after.endswith("/draft.mp4")
+
+
+def test_a_single_shot_job_never_shows_the_swapped_area(runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    media.copy("area.mp4", job.path("draft-area.mp4"))
+    page = pages.job_page(job, runs_dir, 4, tab="area")
+    assert page.views == () and page.wipe.after.endswith("/draft.mp4")

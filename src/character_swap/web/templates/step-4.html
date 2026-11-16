@@ -1,4 +1,4 @@
-{% from "macros.html" import wipe, placeholder %}
+{% from "macros.html" import wipe, placeholder, views %}
 {% if page.prompt %}
 <div class="field">
   <label for="prompt">Prompt</label>
@@ -11,6 +11,7 @@
   <p class="meta">{{ steps.DRAFT_TIME }}</p>
 </div>
 {% elif page.wipe %}
+{{ views(page) }}
 {{ wipe(page.wipe) }}
 {% if page.stale %}<p class="notice">{{ steps.STALE_DRAFT }}</p>{% endif %}
 {% else %}
