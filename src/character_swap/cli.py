@@ -35,7 +35,7 @@ from character_swap.faces import (
     check_photo,
 )
 from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError, clean_setting
-from character_swap.media.scene import Plan, cut_segment, plan_part
+from character_swap.media.scene import EDGES, Plan, cut_segment, plan_part
 from character_swap.modes import MODES, generator_name
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
@@ -56,6 +56,7 @@ from character_swap.pipeline import (
     generator_promotes,
     is_promote,
     is_scene_job,
+    lay_back_again,
     needs_lay_back_charge,
     needs_new_charge,
     next_step,
@@ -195,12 +196,22 @@ EPILOG = """example:
   charswap generate <id> --draft
   charswap generate <id> --final
   charswap generate <id> --final --resolution 1080p
+  charswap edge <id> wide            (scene swaps: redo the lay-back, free)
   charswap app
 
 other providers:
   charswap face add frank me.jpg
   charswap prepare clip.mp4 --provider piapi --face frank
   charswap prepare clip.mp4 --generator wan --character me.jpg
+"""
+
+
+EDGE_HELP = """Lay the new person back into the scene again with another edge. Free: no AI run,
+nothing is uploaded; it reuses the saved files. Later drafts and finals use it too.
+
+  tight   lays back the least of the AI's background; more of the original's loose hair shows
+  normal  the default
+  wide    hides more of the original's loose hair, but shows more of the AI's background
 """
 
 
@@ -312,6 +323,15 @@ def _parser() -> argparse.ArgumentParser:
         "(default, upgrades the draft) or 720p (cheaper fresh run)",
     )
     gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    edge = sub.add_parser(
+        "edge",
+        help="scene swaps: lay the new person back with a tight, normal or wide edge (free)",
+        description=EDGE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    edge.add_argument("job")
+    edge.add_argument("width", choices=list(EDGES), help="how far past the person to lay it back")
+    edge.add_argument("--final", action="store_true", help="redo the final instead of the draft")
     sub.add_parser("doctor", help="check this machine's setup")
     face = sub.add_parser("face", help="save and check faces in your PiAPI face library (free)")
     face_sub = face.add_subparsers(dest="face_command", required=True)
@@ -914,6 +934,14 @@ def _after_draft_hint(job: Job, services: Services) -> str:
     )
 
 
+def _edge(args, settings, env) -> int:
+    """Free and local: never builds a paid client (see pipeline.lay_back_again)."""
+    job = Job.load(settings.runs_dir, args.job)
+    stage = "final" if args.final else "draft"
+    lay_back_again(job, stage, args.width, status=env.out)
+    return 0
+
+
 def _doctor(args, settings, env) -> int:
     out = env.out
     ok = True
@@ -1050,6 +1078,7 @@ COMMANDS = {
     "prompt": _prompt,
     "repair": _repair,
     "generate": _generate,
+    "edge": _edge,
     "doctor": _doctor,
     "face": _face,
     "app": _app,

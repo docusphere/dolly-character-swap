@@ -15,7 +15,7 @@ from character_swap.review import decide, fingerprint
 from character_swap.stages.describe import DESCRIBE_MODEL
 from fakes import FakeWaveSpeed, RefusingReplicate
 from helpers import SCENE_RATE, solid, write_shots, write_video
-from scene_jobs import TWO, fake_pitch, make_scene_job, prep_services
+from scene_jobs import TWO, drafted_scene_job, fake_pitch, make_scene_job, prep_services
 
 RED, BLUE, GREEN = (200, 30, 30), (30, 30, 200), (30, 160, 30)
 
@@ -400,3 +400,50 @@ def test_repair_is_refused_on_a_scene_job(settings, tmp_path, monkeypatch):
     code, out = run(["repair", job.id], settings, confirm=asked.append)
     assert code == 2 and asked == []
     assert "already cuts out on the original colors" in out.err.text
+
+
+# ---- charswap edge (free) ---------------------------------------------------------------
+def _no_services(settings):
+    pytest.fail("charswap edge must never build a paid client")
+
+
+def test_edge_lays_the_draft_back_again_for_free(settings, tmp_path):
+    job = drafted_scene_job(settings.runs_dir, tmp_path)
+    asked = []
+    code, out = run(
+        ["edge", job.id, "wide"], settings, confirm=asked.append, services_factory=_no_services
+    )
+    assert code == 0 and asked == [] and out.err.lines == []
+    assert out.lines == [
+        "Laying the new person back with a wide edge (free)...",
+        f"Draft ready: {job.path('draft.mp4')}",
+    ]
+    assert job.state["edge"] == "wide" and job.state.get("costs", []) == []
+    assert job.path("draft-area.mp4").exists()
+
+
+def test_edge_final_before_there_is_a_final_says_how_to_make_it(settings, tmp_path):
+    job = drafted_scene_job(settings.runs_dir, tmp_path)
+    code, out = run(["edge", job.id, "tight", "--final"], settings, services_factory=_no_services)
+    assert code == 2 and not job.path("final.mp4").exists()
+    assert f"charswap generate {job.id} --final" in out.err.text
+    assert "Nothing was charged." in out.err.text
+
+
+def test_edge_is_refused_on_a_single_shot_job(settings, tmp_path):
+    clip = write_video(tmp_path / "c.mp4", [solid(RED)] * 24, audio_seconds=1)
+    photo = tmp_path / "me.jpg"
+    _photo(photo)
+    job = Job.create(settings.runs_dir, clip, generator="seedance", mode="depth", character=photo)
+    code, out = run(["edge", job.id, "wide"], settings, services_factory=_no_services)
+    assert code == 2 and "scene swap" in out.err.text and "edge" not in job.state
+
+
+def test_edge_help_explains_each_width_in_one_line(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["edge", "--help"])
+    text = capsys.readouterr().out
+    assert "tight" in text and "normal" in text and "Free: no AI run" in text
+    assert "wide    hides more of the original's loose hair, but shows more of the AI's" in text
+    with pytest.raises(SystemExit):
+        cli.main(["edge", "some-job", "huge"])
