@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 RATE = 44100
+SCENE_RATE = Fraction(24000, 1001)  # a film scene's rate (23.976 fps)
 
 
 def solid(color, size=(64, 64)) -> np.ndarray:
@@ -74,3 +75,18 @@ def write_mask_pngs(folder: Path, count: int, box=(16, 16, 48, 48), size=(64, 64
         mask[y0:y1, x0:x1] = 255
         Image.fromarray(mask).save(folder / f"mask_{i:05d}.png")
     return folder
+
+
+def write_shots(path: Path, shots, *, size=(64, 48), bars=0, fps=SCENE_RATE, audio_seconds=None):
+    """A scene of solid-color shots, e.g. [((200, 30, 30), 30), ((30, 30, 200), 20)].
+
+    bars: black rows at the top and at the bottom; the picture is between them.
+    """
+    frames = []
+    for color, count in shots:
+        frame = solid(color, size)
+        if bars:
+            frame[:bars] = 0
+            frame[-bars:] = 0
+        frames.extend([frame] * count)
+    return write_video(path, frames, fps=fps, audio_seconds=audio_seconds)

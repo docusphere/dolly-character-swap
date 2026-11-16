@@ -140,8 +140,10 @@ def cost_line(key: str, seconds: float) -> Line:
     return Line(price.item, round(usd, 4))
 
 
-def estimate_prepare(mode: str, seconds: float) -> Estimate:
-    return Estimate(lines=tuple(cost_line(key, seconds) for key in PREP_STEPS[mode]))
+def estimate_prepare(mode: str, seconds: float, skip: tuple[str, ...] = ()) -> Estimate:
+    """The mode's paid prep steps, leaving out the stages in `skip` (e.g. "describe")."""
+    stages = [stage for stage in MODES[mode].paid_stages if stage not in skip]
+    return Estimate(lines=tuple(cost_line(STAGE_PRICE[stage], seconds) for stage in stages))
 
 
 def estimate_stages(stage_names: list[str], seconds: float) -> Estimate:

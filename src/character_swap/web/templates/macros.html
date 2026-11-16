@@ -34,3 +34,14 @@
   {% else %}{{ steps.WAITING }}{% endif %}
 </div>
 {% endmacro %}
+
+{% macro views(page) %}
+{% if page.views %}
+<nav class="tabs" aria-label="{{ steps.VIEWS }}">
+  {% for item in page.views %}
+  <a class="tab{% if item.id == page.view %} tab-selected{% endif %}" href="{{ item.url }}"{% if item.id == page.view %} aria-current="page"{% endif %}>{{ item.title }}</a>
+  {% endfor %}
+</nav>
+{% if page.view_line %}<p class="line">{{ page.view_line }}</p>{% endif %}
+{% endif %}
+{% endmacro %}

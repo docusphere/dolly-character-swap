@@ -35,6 +35,7 @@ WHISPER_LANGUAGES: tuple[str, ...] = (
 )
 # fmt: on
 SEEDANCE_PROVIDERS: tuple[str, ...] = ("wavespeed", "piapi")  # the first is the default
+MAX_SETTING = 300  # characters of a setting you write (--setting); the prompt keeps 300
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -50,6 +51,16 @@ class JobError(CharSwapError, ValueError):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def clean_setting(text: str) -> str:
+    """A setting you wrote (--setting), on one line: 1 to MAX_SETTING characters."""
+    cleaned = " ".join(text.split())
+    if not 1 <= len(cleaned) <= MAX_SETTING:
+        raise JobError(
+            f"Describe the setting in 1 to {MAX_SETTING} characters. Nothing was charged."
+        )
+    return cleaned
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,9 @@ class Job:
         faces: dict[str, str] | None = None,  # slot ("primary"/"secondary") -> saved face name
         language: str = "auto",
         provider: str = "",  # Seedance: "wavespeed" | "piapi"; "" = decided later (old jobs)
+        scene: Path | None = None,  # a scene swap: the whole scene; `source` is its cut part
+        segment: dict[str, Any] | None = None,  # media.scene.Plan.segment + "frame_map"
+        setting: str = "",  # a setting you wrote: skips the paid description
     ) -> Job:
         if generator not in MODES_BY_GENERATOR:
             choices = ", ".join(MODES_BY_GENERATOR)
@@ -100,12 +114,20 @@ class Job:
             raise JobError(
                 f"Unknown provider {provider!r}. Use one of: {', '.join(SEEDANCE_PROVIDERS)}."
             )
+        if (scene is None) != (segment is None):
+            raise JobError("A scene swap needs both the scene and its segment.")
+        if scene is not None and not Path(scene).is_file():
+            raise JobError(f"Video not found: {scene}")
+        if setting:
+            setting = clean_setting(setting)
 
         job_id = uuid.uuid4().hex
         root = Path(runs_dir) / job_id
         root.mkdir(parents=True)
         try:
             shutil.copy2(source, root / "upload.mp4")
+            if scene is not None:
+                shutil.copy2(scene, root / "full-scene.mp4")
             state: dict[str, Any] = {
                 "id": job_id,
                 "generator": generator,
@@ -119,6 +141,10 @@ class Job:
             }
             if provider:
                 state["provider"] = provider
+            if segment is not None:
+                state["segment"] = segment  # "scene" is already the setting's text
+            if setting:
+                state["setting"] = setting
             for slot, image in (("primary", character), ("secondary", character2)):
                 if image is None:
                     continue

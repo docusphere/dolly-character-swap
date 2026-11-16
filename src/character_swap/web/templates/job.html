@@ -8,6 +8,7 @@
     <p class="step-count">Step {{ page.step.number }} of 5 · Swap <code>{{ page.short_id }}</code></p>
     <h1>{{ page.step.heading }}</h1>
     <p class="line">{{ page.step.line }}</p>
+    {% if page.scene_line %}<p class="line">{{ page.scene_line }}</p>{% endif %}
     {{ tags(page.tags) }}
   </div>
   <p id="new-results" class="notice info" role="status" hidden>

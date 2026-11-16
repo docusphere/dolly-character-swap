@@ -208,3 +208,16 @@ def step(number: int) -> Step:
 def tabs_for(mode: str) -> tuple[Tab, ...]:
     """The prepare tabs a job's mode shows, in page order."""
     return tuple(tab for tab in TABS if mode in tab.modes)
+
+
+# A scene swap: only one shot of a longer scene is swapped (charswap prepare --from --to).
+SCENE_LINE = (
+    "Only the person you picked is laid back into the scene; everything else is the original."
+)
+
+# A scene swap's draft and final can also show what was replaced ({stage}-area.mp4).
+AREA = "Swapped area"
+AREA_LINE = (
+    "Tinted: the part of each frame that was replaced. Everything else is the original film."
+)
+VIEWS = "What to watch"  # the tabs' label for screen readers

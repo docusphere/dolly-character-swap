@@ -76,6 +76,28 @@ def test_tracking_gaps_raise_with_frames(tmp_path):
     assert (tmp_path / "face-landmarks.json").exists()
 
 
+def test_a_short_glance_away_is_allowed(tmp_path):
+    # 4 of 100 frames lost in short runs (a head turn): no lines on those frames, no stop
+    src = write_video(tmp_path / "original.mp4", [solid((0, 0, 0))] * 100)
+    detector = FakeDetector(miss={59, 62, 63, 64})
+    report = track_and_draw(src, tmp_path / "m.mp4", detector, STYLE, tmp_path)
+    assert report["missing_frames"] == [59, 62, 63, 64] and report["tracked"] == 96
+
+
+def test_a_long_gap_still_stops(tmp_path):
+    src = write_video(tmp_path / "original.mp4", [solid((0, 0, 0))] * 100)
+    detector = FakeDetector(miss=set(range(40, 47)))  # 7 frames in a row
+    with pytest.raises(StageError, match="lost the face"):
+        track_and_draw(src, tmp_path / "m.mp4", detector, STYLE, tmp_path)
+
+
+def test_many_short_gaps_still_stop(tmp_path):
+    src = write_video(tmp_path / "original.mp4", [solid((0, 0, 0))] * 100)
+    detector = FakeDetector(miss=set(range(0, 100, 15)) | set(range(1, 100, 15)))  # 14 frames
+    with pytest.raises(StageError, match="lost the face"):
+        track_and_draw(src, tmp_path / "m.mp4", detector, STYLE, tmp_path)
+
+
 def test_ensure_model_downloads_once(tmp_path):
     calls = []
 

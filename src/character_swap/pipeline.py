@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 import av
 
-from character_swap.costs import record_spend
+from character_swap.costs import Estimate, cost_line, estimate_prepare, record_spend, usd_text
 from character_swap.faces import FaceError
 from character_swap.jobs import SEEDANCE_PROVIDERS, Job, JobError
 from character_swap.media.audio import (
@@ -27,6 +27,7 @@ from character_swap.media.audio import (
     read_audio,
 )
 from character_swap.media.composite import clean_border_fragments, composite_depth_subject
+from character_swap.media.scene import CROWDED, EDGES, check_sound, crowded_frames
 from character_swap.media.video import normalize, stream_seconds
 from character_swap.modes import (
     GENERATION_STAGES,
@@ -43,11 +44,12 @@ from character_swap.providers.generators.seedance_wavespeed import SeedanceWaveS
 from character_swap.providers.generators.wan_replicate import WanGenerator
 from character_swap.review import ReviewError, fingerprint, require_approved
 from character_swap.review import clear as clear_review
-from character_swap.stages import StageError
+from character_swap.stages import NewJobNeeded, StageError
 from character_swap.stages.depth import depth_huggingface, depth_replicate
-from character_swap.stages.describe import describe_scene
+from character_swap.stages.describe import describe_scene, use_setting
 from character_swap.stages.face_mesh import FaceDetector, track_and_draw
 from character_swap.stages.masks import segment
+from character_swap.stages.paste import area_name, has_saved_lay_back, lay_back, lay_back_saved
 from character_swap.stages.pitch import pitch_vocals
 from character_swap.stages.separate import separate_vocals
 from character_swap.stages.transcribe import transcribe
@@ -60,9 +62,24 @@ PREP_STAGES_BY_MODE: dict[str, tuple[str, ...]] = {
 }
 
 
+SCENE = "full-scene.mp4"  # a scene swap's whole scene; upload.mp4 is the part the AI gets
+
+
+def is_scene_job(job: Job, state: dict[str, Any] | None = None) -> bool:
+    """True for a scene swap (state.json has a "segment"); single-shot jobs run as before."""
+    state = job.state if state is None else state
+    return isinstance(state.get("segment"), dict)
+
+
+def prep_skip(job: Job) -> tuple[str, ...]:
+    """Paid prep stages this job leaves out: the description, when you wrote the setting."""
+    return ("describe",) if job.state.get("setting") else ()
+
+
 def remaining_paid_stages(job: Job) -> list[str]:
     """Paid stages this job's mode needs that are not finished yet."""
-    return [name for name in PAID_STAGES[job.mode] if not job.stage_done(name)]
+    skip = prep_skip(job)
+    return [name for name in PAID_STAGES[job.mode] if name not in skip and not job.stage_done(name)]
 
 
 def clip_seconds(job: Job) -> float:
@@ -145,13 +162,20 @@ def _tracked(job: Job, name: str, **info: object) -> Iterator[None]:
     job.mark_stage(name, started_at=started_at, **info)
 
 
-def _stage(job: Job, name: str, label: str, work: Callable[[], object], status: Status) -> None:
+def _stage(
+    job: Job,
+    name: str,
+    label: str,
+    work: Callable[[], object],
+    status: Status,
+    **info: object,
+) -> None:
     if job.stage_done(name):
         _notify(status, f"{label} · already done")
         return
     _notify(status, label)
     clear_review(job)  # any new work invalidates a previous approval
-    with _tracked(job, name), _wrap(label):
+    with _tracked(job, name, **info), _wrap(label):
         work()
 
 
@@ -189,7 +213,18 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
         status,
     )
     _stage(job, "transcribe", "Transcribing speech", lambda: transcribe(job, r), status)
-    _stage(job, "describe", "Describing the setting", lambda: describe_scene(job, r), status)
+    setting = job.state.get("setting")
+    if setting:
+        _stage(
+            job,
+            "describe",
+            "Using the setting you wrote",
+            lambda: use_setting(job, setting),
+            status,
+            source="you",
+        )
+    else:
+        _stage(job, "describe", "Describing the setting", lambda: describe_scene(job, r), status)
 
     if MODES[job.mode].uses_depth:
         _stage(job, "depth", "Generating depth video", lambda: _depth(job, services), status)
@@ -197,14 +232,14 @@ def prepare(job: Job, services: Services, status: Status = print) -> None:
             job,
             "masks",
             "Cutting out the subject (SAM 3)",
-            lambda: _masks(job, r, "depth.mp4"),
+            lambda: _subject_masks(job, r),
             status,
         )
         _stage(
             job,
             "composite",
             "Compositing depth subject over background",
-            lambda: _composite(job),
+            lambda: _composite_checked(job),
             status,
         )
     if MODES[job.mode].uses_mesh:
@@ -256,10 +291,37 @@ def _masks(job: Job, replicate, video: str, folder: str = "sam") -> Path:
     return clean
 
 
+def _subject_masks(job: Job, replicate) -> None:
+    if is_scene_job(job):  # S5: "man with white face paint" can't be seen in a depth map
+        _masks(job, replicate, "original.mp4")
+        job.update(mask_source="rgb")
+    else:
+        _masks(job, replicate, "depth.mp4")
+
+
 def _composite(job: Job, folder: str = "sam") -> None:
     composite_depth_subject(
         job.path("original.mp4"), job.path("depth.mp4"), job.path(folder) / "clean-masks", job.root
     )
+
+
+def _composite_checked(job: Job) -> None:
+    _composite(job)
+    if is_scene_job(job):
+        _check_one_person(job)
+
+
+def _check_one_person(job: Job) -> None:
+    """S6: one photo means one person to hide. Runs after mask.mp4 exists, so it can be watched."""
+    crowded, total = crowded_frames(job.path("sam") / "clean-masks")
+    if total and crowded > CROWDED * total:
+        again = usd_text(estimate_prepare(job.mode, 30, skip=prep_skip(job)).total)
+        raise NewJobNeeded(
+            f"SAM 3 found more than one person in {crowded} of {total} frames (watch "
+            f"{job.path('mask.mp4')}: white is what was cut out). Start a new job with "
+            '--subject naming the one to swap, for example --subject "man with white face '
+            f'paint" (preparing again costs about {again}).'
+        )
 
 
 def _mesh(job: Job, services: Services) -> None:
@@ -328,6 +390,8 @@ def _readable_clip_seconds(job: Job) -> float:
 
 def _check_soundtrack_fits(job: Job) -> None:
     """Free pre-flight: refuse to pay for a video whose original sound can't be put back."""
+    if is_scene_job(job):  # the scene's own sound goes back on the scene's own picture
+        check_sound(job.path(SCENE))
     upload = job.path("upload.mp4")
     try:
         with av.open(str(upload)) as probe:
@@ -421,7 +485,8 @@ def archive_stale_draft(job: Job) -> list[Path]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     moves = []
     for stage in GENERATION_STAGES:
-        for name in generation_files(stage):
+        # a scene job's lay-back masks and swapped-area view, too
+        for name in (*generation_files(stage), f"{stage}-sam", area_name(stage)):
             source = job.path(name)
             if source.exists():
                 target = job.path(f"{stage}-old-{stamp}{name[len(stage) :]}")
@@ -437,6 +502,32 @@ def archive_stale_draft(job: Job) -> list[Path]:
 def needs_new_charge(job: Job, stage: str) -> bool:
     """False when a saved provider request or a downloaded result exists (resume is free)."""
     return not already_paid(job, stage)
+
+
+def paste_record(stage: str) -> str:
+    """A scene job's saved SAM 3 run on its AI result (the lay-back)."""
+    return f"{stage}-sam/sam-prediction.json"
+
+
+def needs_lay_back_charge(job: Job, stage: str) -> bool:
+    """A scene job whose lay-back SAM 3 run (~$0.002) was never created."""
+    return is_scene_job(job) and not job.path(paste_record(stage)).exists()
+
+
+def generation_estimate(
+    job: Job,
+    generator: Generator,
+    request: GenerationRequest,
+    stage: str,
+    *,
+    replacing_stale: bool = False,
+) -> Estimate:
+    """What this step charges: the generator's price, plus the lay-back's SAM 3 run on a scene
+    job while it is still to be bought (always on a remake: the old masks are archived)."""
+    estimate = generator.estimate(request, stage)
+    if is_scene_job(job) and (replacing_stale or needs_lay_back_charge(job, stage)):
+        return Estimate(lines=(*estimate.lines, cost_line("sam3", 0)))
+    return estimate
 
 
 # A Seedance job made before WaveSpeed has no saved provider. It was PiAPI's when it has
@@ -734,12 +825,61 @@ def generate(
     with _tracked(job, stage, fingerprint=inputs, **extra), _wrap(label):
         if not raw.exists():  # downloaded already: never ask the provider again
             generator.generate(request, stage, record=record, dest=raw, on_created=log_charge)
-        _notify(status, "Putting the original soundtrack back")
-        # Wan keeps the exact call it always had; only whole-second jobs cut the sound.
-        cut = {"seconds": request.seconds} if job.generator in WHOLE_SECONDS else {}
+        if is_scene_job(job):
+            _notify(status, "Laying the new person back into the scene")
+            _write_atomically(
+                result,
+                lambda part: lay_back(
+                    job,
+                    stage,
+                    services.replicate,
+                    part,
+                    runs_dir=runs_dir,
+                    status=lambda text: _notify(status, text),
+                ),
+            )
+        else:
+            _notify(status, "Putting the original soundtrack back")
+            # Wan keeps the exact call it always had; only whole-second jobs cut the sound.
+            cut = {"seconds": request.seconds} if job.generator in WHOLE_SECONDS else {}
+            _write_atomically(
+                result,
+                lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
+            )
+    _notify(status, f"{stage.capitalize()} ready: {result}")
+    return result
+
+
+def lay_back_again(job: Job, stage: str, edge: str, *, status: Status = print) -> Path:
+    """`charswap edge`: save the edge width, then lay the saved AI clip back with it.
+
+    Free and local: it reads only saved files ({stage}-raw.mp4, the SAM 3 masks of the clip
+    and of the AI result, full-scene.mp4) and never calls a provider. Later lay-backs inside
+    generate use the saved edge too. {stage}.mp4 and {stage}-area.mp4 are replaced only when
+    the new ones are complete.
+    """
+    if not is_scene_job(job):
+        raise JobError(
+            "Only a scene swap (prepare --from --to) is laid back into a scene, so this job "
+            "has no edge to change. Nothing was charged."
+        )
+    if edge not in EDGES:
+        raise JobError(f"Choose tight, normal or wide, not {edge!r}. Nothing was charged.")
+    job.update(edge=edge)
+    if not (job.stage_done(stage) and has_saved_lay_back(job, stage)):
+        raise StageError(
+            f"There is no {stage} to lay back yet. The {edge} edge is saved, so the next "
+            f"{stage} uses it: charswap generate {job.id} --{stage} (it shows the price and "
+            "asks first). Nothing was charged."
+        )
+    result = job.path(f"{stage}.mp4")
+    _notify(status, f"Laying the new person back with a {edge} edge (free)...")
+    with _wrap("Laying the new person back"):
         _write_atomically(
             result,
-            lambda part: add_original_soundtrack(raw, job.path("upload.mp4"), part, **cut),
+            lambda part: lay_back_saved(
+                job, stage, part, status=lambda text: _notify(status, text)
+            ),
         )
     _notify(status, f"{stage.capitalize()} ready: {result}")
     return result

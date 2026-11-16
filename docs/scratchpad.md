@@ -17,6 +17,18 @@
 - [x] S8 — Walkthrough app (Plan 3a Tasks 1–4 + review fixes): `charswap app` shows every swap step by step with before/after wipe players and technique tags; read-only, checked in a browser on job ea899aff…
 - [ ] (parked S8) Plan 3a Tasks 6–14 (buttons: upload, approve, draft/final with the price dialog). Frank only needs the walkthrough for the video. If picked up: Task 12's whole-file `step-5.html` block must keep `aria-hidden`, `steps.MAKING_FINAL` and `steps.SPENT_SWAP`; expected test counts are 13 higher; restore a New swap button on home.
 - [ ] Plan 3 — web UI, skill, docs, legacy removal
+- [x] S9 — Scene swap: swap one person in one shot of a longer scene (`prepare --from --to --setting`, paste-back into the full scene, original soundtrack byte for byte). Live draft on the Dark Knight scene (job f50b21f3…): ~$2.92, AI clip 1012x422 for a 2.4:1 input. Free `charswap edge <job> tight|normal|wide` and a "Swapped area" tab in the app (1183 tests, 97.08 %)
+- [ ] Optional: 720p final of the Joker scene (~$5.72, over the $5 line; needs Frank's OK + ~$2 WaveSpeed top-up)
+- [ ] Plan 3b — Claude skill (demo in the desktop app), `_legacy` removal, Dolly waitlist (not started; ask Frank if the video needs the skill)
+
+## Deferred from the scene-swap final review (S9, none blocking)
+- [ ] `charswap edge` on a done stage with deleted `{stage}-raw.mp4`/`{stage}-sam/` points to `generate`, which says "already done"; name the missing file instead
+- [ ] HOLD_A counts scene frames, not job frames (cosmetic below 24 fps; can carry a mask across a cut inside the part for 2 frames)
+- [ ] `_trims` "no trim" drops one row/column on odd-sized AI clips (harmless)
+- [ ] A job stopped by the one-person check (`NewJobNeeded`) still shows `charswap resume` as next step in status/app
+- [ ] `edge` without `--final` changes the job's edge but leaves an existing `final.mp4` as it was (by design; document)
+- [ ] Lay-back encodes the area video as a second full-scene encode and decodes the AI clip twice (fine for 30 s parts)
+- [ ] Hair matting (soft masks) if a busy background ever needs a narrow edge; Frank prefers free/local fixes first
 
 ## Do first in Plan 2 (from final Plan 1 review)
 - [x] S5 — (2b) Decide whole-second clip length: PiAPI `duration` is an int 4–30, `normalize` keeps fractional seconds, and `restore_original_audio` refuses > 0.25 s longer / > 0.5 s shorter. Snap video+audio to whole seconds at normalize (and use that as the soundtrack source) or round up and trim the generated video. Add a normalize → restore test with an integer-length generated video.

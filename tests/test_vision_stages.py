@@ -10,7 +10,7 @@ from character_swap.stages.depth import (
     depth_replicate,
     pick_depth_url,
 )
-from character_swap.stages.masks import SAM_VERSION, segment
+from character_swap.stages.masks import SAM_VERSION, NoMasks, segment
 from fakes import FakeReplicate
 
 
@@ -203,3 +203,25 @@ def test_segment_resume_does_not_rerun(tmp_path):
 
 def test_pick_depth_url_skips_non_string_values():
     assert pick_depth_url({"depth_meta": {"a": 1}, "depth_video": "u"}) == "u"
+
+
+def test_segment_reports_a_new_paid_run(tmp_path):
+    video, fake = sam_fake(tmp_path, make_zip("mask_00000.png"))
+    created = []
+    segment(video, tmp_path / "sam", "person", fake, on_created=created.append)
+    segment(video, tmp_path / "sam", "person", fake, on_created=created.append)  # resumed
+    assert created == [{"id": "pred-1", "status": "starting"}]
+
+
+def test_a_zip_without_masks_is_no_masks(tmp_path):
+    video, fake = sam_fake(tmp_path, make_zip("a.txt"))
+    with pytest.raises(NoMasks, match="no mask_"):
+        segment(video, tmp_path / "sam", "person", fake)
+    assert issubclass(NoMasks, StageError)
+
+
+def test_a_damaged_zip_is_not_no_masks(tmp_path):
+    video, fake = sam_fake(tmp_path, b"not a zip")
+    with pytest.raises(StageError, match="not a valid zip") as info:
+        segment(video, tmp_path / "sam", "person", fake)
+    assert not isinstance(info.value, NoMasks)

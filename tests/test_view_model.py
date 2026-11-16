@@ -400,3 +400,33 @@ def test_a_record_written_by_hand_is_read_safely(runs_dir, media):
     job = make_job(runs_dir, media, "depth")
     write_record(job, "rgb-repair/sam-prediction.json", {"id": "pred-repair"})
     assert vm.prediction_url(job, vm.RGB_REPAIR_RECORD) == "https://replicate.com/p/pred-repair"
+
+
+def test_a_setting_you_wrote_has_no_cost_row(runs_dir, media):
+    job = make_job(runs_dir, media, "depth")
+    job.mark_stage("describe", source="you")
+    rows = vm.cost_rows(job, job.state)
+    assert "Scene description" not in [row.step for row in rows]
+    expected = round(estimate_prepare("depth", 30).total - 0.001, 4)
+    assert vm.completed_cost(rows) == pytest.approx(expected)
+
+
+def test_the_lay_back_is_its_own_cost_row(runs_dir, media):
+    job = make_job(runs_dir, media, "depth_mesh", provider="wavespeed")
+    decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
+    finish_stage(job, media, "draft")
+    job.append_cost({"step": "draft", "usd": 0.88, "task_id": "pred-draft"})
+    write_record(job, "draft-sam/sam-prediction.json", {"id": "sam-1", "status": "succeeded"})
+    job.append_cost({"step": "draft-paste", "usd": 0.002, "task_id": "sam-old"})  # archived
+    job.append_cost({"step": "draft-paste", "usd": 0.002, "task_id": "sam-1"})
+    rows = vm.cost_rows(job, job.state)
+    assert [row.step for row in rows][-2:] == ["Draft (480p)", "Lay back (SAM 3)"]
+    assert rows[-1] == vm.CostRow(
+        "Lay back (SAM 3)", "Replicate", 0.002, "https://replicate.com/p/sam-1"
+    )
+
+
+def test_no_lay_back_row_without_its_current_record(runs_dir, media):
+    job = make_job(runs_dir, media, "depth_mesh", provider="wavespeed")
+    job.append_cost({"step": "draft-paste", "usd": 0.002, "task_id": "sam-old"})
+    assert "Lay back (SAM 3)" not in [row.step for row in vm.cost_rows(job, job.state)]

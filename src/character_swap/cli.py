@@ -18,6 +18,7 @@ import av
 
 from character_swap.config import Settings
 from character_swap.costs import (
+    Estimate,
     estimate_prepare,
     estimate_repair,
     estimate_stages,
@@ -33,7 +34,8 @@ from character_swap.faces import (
     FaceLibrary,
     check_photo,
 )
-from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError
+from character_swap.jobs import SEEDANCE_PROVIDERS, WHISPER_LANGUAGES, Job, JobError, clean_setting
+from character_swap.media.scene import EDGES, Plan, cut_segment, plan_part
 from character_swap.modes import MODES, generator_name
 from character_swap.pipeline import (
     FINAL_RESOLUTIONS,
@@ -45,6 +47,7 @@ from character_swap.pipeline import (
     check_can_generate,
     draft_prompt_changed,
     final_resolution,
+    generation_estimate,
     generation_files,
     generation_label,
     generation_prompt,
@@ -52,9 +55,13 @@ from character_swap.pipeline import (
     generator_key,
     generator_promotes,
     is_promote,
+    is_scene_job,
+    lay_back_again,
+    needs_lay_back_charge,
     needs_new_charge,
     next_step,
     pin_provider,
+    prep_skip,
     refuse_another_final,
     remaining_paid_stages,
     rename_old_prompt_names,
@@ -74,7 +81,7 @@ from character_swap.providers.replicate import unconfirmed_message as replicate_
 from character_swap.providers.wavespeed import unconfirmed_message as wavespeed_unconfirmed
 from character_swap.review import decide
 from character_swap.review import status as review_status
-from character_swap.stages import StageError
+from character_swap.stages import NewJobNeeded, StageError
 
 Out = Callable[[str], None]
 
@@ -189,12 +196,22 @@ EPILOG = """example:
   charswap generate <id> --draft
   charswap generate <id> --final
   charswap generate <id> --final --resolution 1080p
+  charswap edge <id> wide            (scene swaps: redo the lay-back, free)
   charswap app
 
 other providers:
   charswap face add frank me.jpg
   charswap prepare clip.mp4 --provider piapi --face frank
   charswap prepare clip.mp4 --generator wan --character me.jpg
+"""
+
+
+EDGE_HELP = """Lay the new person back into the scene again with another edge. Free: no AI run,
+nothing is uploaded; it reuses the saved files. Later drafts and finals use it too.
+
+  tight   lays back the least of the AI's background; more of the original's loose hair shows
+  normal  the default
+  wide    hides more of the original's loose hair, but shows more of the AI's background
 """
 
 
@@ -241,6 +258,25 @@ def _parser() -> argparse.ArgumentParser:
         help="spoken language code for the transcript, e.g. en or es (default: auto, detect it)",
     )
     prep.add_argument(
+        "--from",
+        dest="start",
+        type=float,
+        metavar="SECONDS",
+        help="swap one shot of a longer scene: where it starts (moves to a shot cut within 0.3 s)",
+    )
+    prep.add_argument(
+        "--to",
+        dest="end",
+        type=float,
+        metavar="SECONDS",
+        help="where that shot ends (moves to a shot cut within 0.3 s)",
+    )
+    prep.add_argument(
+        "--setting",
+        metavar="TEXT",
+        help="describe the setting yourself (1 to 300 characters); skips the paid description",
+    )
+    prep.add_argument(
         "--yes", action="store_true", help="answer yes to the questions (rights and cost)"
     )
 
@@ -254,6 +290,11 @@ def _parser() -> argparse.ArgumentParser:
         "(saved provider predictions are re-checked, not re-bought)",
     )
     resume.add_argument("job")
+    resume.add_argument(
+        "--setting",
+        metavar="TEXT",
+        help="describe the setting yourself and go on for free (when the description failed)",
+    )
     resume.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     review = sub.add_parser("review", help="approve or reject the prepared clip")
     review.add_argument("job")
@@ -282,6 +323,15 @@ def _parser() -> argparse.ArgumentParser:
         "(default, upgrades the draft) or 720p (cheaper fresh run)",
     )
     gen.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    edge = sub.add_parser(
+        "edge",
+        help="scene swaps: lay the new person back with a tight, normal or wide edge (free)",
+        description=EDGE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    edge.add_argument("job")
+    edge.add_argument("width", choices=list(EDGES), help="how far past the person to lay it back")
+    edge.add_argument("--final", action="store_true", help="redo the final instead of the draft")
     sub.add_parser("doctor", help="check this machine's setup")
     face = sub.add_parser("face", help="save and check faces in your PiAPI face library (free)")
     face_sub = face.add_subparsers(dest="face_command", required=True)
@@ -311,8 +361,8 @@ def _port(text: str) -> int:
     return port
 
 
-def _hint(env: Env) -> None:
-    if env.job_id:
+def _hint(env: Env, error: CharSwapError) -> None:
+    if env.job_id and not isinstance(error, NewJobNeeded):
         env.err(f"Fix the issue, then run: {env.retry_command()}")
 
 
@@ -343,7 +393,7 @@ def main(
         return COMMANDS[args.command](args, settings, env)
     except CharSwapError as error:
         err(f"Error: {error}")
-        _hint(env)
+        _hint(env, error)
         return 2
     except KeyboardInterrupt:
         if (env.retry or "").startswith("repair"):
@@ -429,9 +479,99 @@ def _provider_for(args) -> str:
     return args.provider or SEEDANCE_PROVIDERS[0]
 
 
+SCENE_NEEDS = (
+    "Swapping one part of a scene needs WaveSpeed and depth_mesh or depth mode. "
+    "Nothing was charged."
+)
+SETTING_FOR_SEEDANCE = (
+    "--setting only matters for Seedance modes (Wan has no setting description). "
+    "Nothing was charged."
+)
+MODES_FOR_SCENES = ("depth_mesh", "depth")  # the paste-back needs SAM masks (S12)
+
+
+def _is_scene_swap(args, mode: str, provider: str) -> bool:
+    """--from and --to: swap one part of a scene. Refuses what it can't do, before any question."""
+    if (args.start is None) != (args.end is None):
+        raise JobError("Use --from and --to together. Nothing was charged.")
+    if args.start is None:
+        return False
+    if args.generator != "seedance" or provider != "wavespeed" or mode not in MODES_FOR_SCENES:
+        raise JobError(SCENE_NEEDS)
+    return True
+
+
+def _setting(text: str | None, mode: str) -> str:
+    if text is None:
+        return ""
+    if mode == "direct":
+        raise JobError(SETTING_FOR_SEEDANCE)
+    return clean_setting(text)
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _edges(moved: tuple[bool, bool]) -> str:
+    if all(moved):
+        return "moved to the shot cuts you were near"
+    if not any(moved):
+        return "no shot cut near either time, so both are used as typed, to the nearest frame"
+    snapped, typed = ("--from", "--to") if moved[0] else ("--to", "--from")
+    return f"{snapped} moved to the shot cut you were near; {typed} is used as typed"
+
+
+def scene_summary(plan: Plan) -> str:
+    """What a scene swap will do, in plain English, before any question."""
+    segment = plan.segment
+    width, height, crop = segment["width"], segment["height"], segment["crop"]
+    cuts = [f"{cut:.2f} s" for cut in segment["cuts"]]
+    found = f"Shot cuts found at {_listed(cuts)}." if cuts else "No shot cuts found."
+    padded = segment["padded_seconds"]
+    if padded - segment["seconds"] > 0.02:
+        length = f"made {padded} s long by holding its last frame"
+    else:
+        length = f"{padded} s long"
+    sees = f"{crop['w']}x{crop['h']}"
+    if crop["w"] >= width - 1 and crop["h"] >= height - 1:
+        bars = f"No black bars found, so it sees {sees}."
+    else:
+        bars = f"Black bars are left out, so it sees {sees}."
+    lines = [
+        f"Scene: {plan.scene_seconds:.1f} s, {width}x{height}. {found}",
+        f"Swapping {segment['start']:.2f} s to {segment['end']:.2f} s "
+        f"({segment['seconds']:.1f} s; {_edges(plan.moved)}).",
+        f"The AI only gets this part, {length}. {bars} The rest of the scene is kept as it is "
+        "and is never sent anywhere.",
+    ]
+    lines += [
+        f"There is a shot cut at {cut:.1f} s inside the part; the AI will see two shots. "
+        "Check it in the app before approving."
+        for cut in plan.inside
+    ]
+    return "\n".join(lines)
+
+
+def _cut_part(args, plan: Plan, scratch: Path) -> tuple[Path, dict]:
+    """The part the AI gets (free), and the scene and segment for Job.create."""
+    crop = plan.segment["crop"]
+    part = scratch / "part.mp4"
+    frame_map = cut_segment(
+        args.video,
+        plan.segment["start"],
+        plan.segment["end"],
+        (crop["x"], crop["y"], crop["w"], crop["h"]),
+        part,
+    )
+    return part, {"scene": args.video, "segment": {**plan.segment, "frame_map": frame_map}}
+
+
 def _prepare(args, settings, env) -> int:
     mode = args.mode or ("direct" if args.generator == "wan" else "depth_mesh")
     provider = _provider_for(args)
+    scene_swap = _is_scene_swap(args, mode, provider)
+    setting = _setting(args.setting, mode)
     if args.generator == "wan" and args.character is None and args.face is None:
         raise JobError(
             "Wan needs --character IMAGE or --face NAME (your face or character picture)."
@@ -454,6 +594,9 @@ def _prepare(args, settings, env) -> int:
     with tempfile.TemporaryDirectory() as scratch:
         # Free checks first, so a bad photo or face is refused before any question.
         character, character2, faces = _characters(args, settings, env, Path(scratch), provider)
+        plan = plan_part(args.video, args.start, args.end) if scene_swap else None
+        if plan is not None:
+            env.out(scene_summary(plan))
         key = f"seedance:{provider}" if provider else "wan"
         env.out(
             f"Generator: {generator_name(key)}. The draft and final are paid there; each "
@@ -464,7 +607,7 @@ def _prepare(args, settings, env) -> int:
             env.out(PHOTO_CONSENT)
             if not args.yes and not env.proceed(RIGHTS_QUESTION):
                 return 1
-        estimate = estimate_prepare(mode, seconds=30)
+        estimate = estimate_prepare(mode, seconds=30, skip=("describe",) if setting else ())
         free = estimate.total == 0
         if free:
             env.out("Preparing is free for this mode (nothing is sent to a paid service).")
@@ -472,9 +615,13 @@ def _prepare(args, settings, env) -> int:
             env.out("Preparation cost (up to a 30 s clip):\n" + estimate.describe())
             if not args.yes and not env.proceed():
                 return 1
+        source, scene = args.video, {}
+        if plan is not None:
+            env.out("Cutting the part out of the scene (free)...")
+            source, scene = _cut_part(args, plan, Path(scratch))
         job = Job.create(
             settings.runs_dir,
-            args.video,
+            source,
             generator=args.generator,
             mode=mode,
             subject=args.subject,
@@ -484,20 +631,51 @@ def _prepare(args, settings, env) -> int:
             faces=faces,
             language=args.language,
             provider=provider,
+            setting=setting,
+            **scene,
         )
         env.track(job, "resume {id}")
         env.out(f"JOB {job.id}")
-        prepare_job(job, env.services_factory(settings), status=env.out)
-        if not free:
-            record_spend(job, "prepare", estimate, settings.runs_dir)
+        _prepare_and_log(job, settings, env, None if free else estimate)
         watch = "original.mp4" if job.mode == "direct" else "prepared.mp4"
         env.out(f"Next: watch {job.path(watch)} then run `charswap status {job.id}`.")
         return 0
 
 
+def _prepare_and_log(job: Job, settings: Settings, env: Env, estimate: Estimate | None) -> None:
+    """prepare_job, then log its spend once (None: free, nothing to log). Also logged when a
+    free check after every paid step stops the job (the one-person check): that was paid."""
+    try:
+        prepare_job(job, env.services_factory(settings), status=env.out)
+    except CharSwapError:
+        if not remaining_paid_stages(job):
+            _log_prepare_spend(job, estimate, settings)
+        raise
+    _log_prepare_spend(job, estimate, settings)
+
+
+def _log_prepare_spend(job: Job, estimate: Estimate | None, settings: Settings) -> None:
+    if estimate is None or any(c["step"] == "prepare" for c in job.state.get("costs", [])):
+        return
+    record_spend(job, "prepare", estimate, settings.runs_dir)
+
+
+def _save_setting(job: Job, text: str) -> None:
+    """resume --setting: the describe stage then uses it and makes no call."""
+    setting = _setting(text, job.mode)
+    if job.stage_done("describe"):
+        raise JobError(
+            "The setting is already done for this job, so --setting changes nothing. "
+            "Nothing was charged."
+        )
+    job.update(setting=setting)
+
+
 def _resume(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
     env.track(job, "resume {id}")
+    if args.setting is not None:
+        _save_setting(job, args.setting)
     if job.mode != "direct":
         settings.require("REPLICATE_API_TOKEN")
     remaining = remaining_paid_stages(job)
@@ -507,9 +685,8 @@ def _resume(args, settings, env) -> int:
         if not args.yes and not env.proceed():
             return 1
     env.out(f"Resuming {job.id}; finished steps are skipped and saved predictions are re-checked.")
-    prepare_job(job, env.services_factory(settings), status=env.out)
-    if not any(c["step"] == "prepare" for c in job.state.get("costs", [])):
-        record_spend(job, "prepare", estimate_prepare(job.mode, seconds=30), settings.runs_dir)
+    estimate = estimate_prepare(job.mode, seconds=30, skip=prep_skip(job))
+    _prepare_and_log(job, settings, env, estimate)
     return 0
 
 
@@ -573,6 +750,11 @@ def _prompt(args, settings, env) -> int:
 
 def _repair(args, settings, env) -> int:
     job = Job.load(settings.runs_dir, args.job)
+    if is_scene_job(job):
+        raise StageError(
+            "This job already cuts out on the original colors, so there is nothing to repair. "
+            "Nothing was charged."
+        )
     env.track(job, "repair {id}")
     if job.mode not in ("depth", "depth_mesh"):
         raise StageError("This mode has no SAM mask to repair. Prepare the face tracking again.")
@@ -641,7 +823,9 @@ def _generate(args, settings, env) -> int:
         )
         if is_promote(job, stage, resolution):
             SeedanceGenerator.promote_body(request.draft_task_id)  # refuses with no task id
-        estimate = generator_for(job, services).estimate(request, stage)
+        estimate = generation_estimate(
+            job, generator_for(job, services), request, stage, replacing_stale=remake
+        )
         if stage == "draft" and request.prompt:
             env.out(
                 f"Prompt sent to Seedance (change it with `charswap prompt {job.id}`):\n"
@@ -674,7 +858,12 @@ def _generate(args, settings, env) -> int:
         if remake:
             archive_stale_draft(job)
     elif resumes_without_charge(job, stage):
-        env.out(f"Found a saved {stage} request; resuming it (no new charge).")
+        if needs_lay_back_charge(job, stage):
+            env.out(LAY_BACK_ONLY)
+            if not args.yes and not env.proceed():
+                return 1
+        else:
+            env.out(f"Found a saved {stage} request; resuming it (no new charge).")
     result = generate_stage(
         job,
         services,
@@ -687,6 +876,9 @@ def _generate(args, settings, env) -> int:
     if stage == "draft":
         env.out(_after_draft_hint(job, services))
     return 0
+
+
+LAY_BACK_ONLY = "The AI part resumes free; laying it back needs one SAM 3 run (~$0.002)."
 
 
 def _has_final_files(job: Job) -> bool:
@@ -717,7 +909,9 @@ def _after_draft_hint(job: Job, services: Services) -> str:
     generator = generator_for(job, services)
     try:
         price = {
-            res: generator.estimate(
+            res: generation_estimate(
+                job,
+                generator,
                 build_request(job, faces=services.faces, stage="final", final_resolution=res),
                 "final",
             ).total
@@ -738,6 +932,14 @@ def _after_draft_hint(job: Job, services: Services) -> str:
         f"{run_final} makes a new {default} take (~${price[default]:.2f}); add "
         f"`--resolution {other}` for a new {other} take (~${price[other]:.2f})."
     )
+
+
+def _edge(args, settings, env) -> int:
+    """Free and local: never builds a paid client (see pipeline.lay_back_again)."""
+    job = Job.load(settings.runs_dir, args.job)
+    stage = "final" if args.final else "draft"
+    lay_back_again(job, stage, args.width, status=env.out)
+    return 0
 
 
 def _doctor(args, settings, env) -> int:
@@ -876,6 +1078,7 @@ COMMANDS = {
     "prompt": _prompt,
     "repair": _repair,
     "generate": _generate,
+    "edge": _edge,
     "doctor": _doctor,
     "face": _face,
     "app": _app,

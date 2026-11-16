@@ -197,3 +197,11 @@ def test_wavespeed_prices_bill_input_and_output_seconds():
         lines=(cost_line("wavespeed-480", seconds), cost_line("wavespeed-480-input", seconds))
     )
     assert draft.total == pytest.approx(0.88)
+
+
+def test_prepare_can_leave_out_the_description():
+    full = estimate_prepare("depth_mesh", 30)
+    mine = estimate_prepare("depth_mesh", 30, skip=("describe",))
+    assert "Scene description" not in [line.item for line in mine.lines]
+    assert mine.total == pytest.approx(full.total - 0.001)
+    assert estimate_prepare("depth_mesh", 30, skip=()) == full

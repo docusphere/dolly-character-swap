@@ -46,6 +46,7 @@ PAID_RECORD: dict[str, str] = {
     "final": "final-prediction.json",
 }
 RGB_REPAIR_RECORD = "rgb-repair/sam-prediction.json"
+LAY_BACK = "Lay back (SAM 3)"  # a scene swap's SAM 3 run on the AI result, per draft/final
 _PREDICTION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
@@ -269,6 +270,8 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
     for stage in PAID_STAGES[state["mode"]]:
         if stage_status(state, stage) != "done":
             continue
+        if stage == "describe" and state["stages"]["describe"].get("source") == "you":
+            continue  # you wrote the setting: nothing was paid
         if stage == "depth" and state.get("depth_provider") == "huggingface":
             rows.append(CostRow(STEP_NAMES[stage], "Hugging Face · free", 0.0, None))
             continue
@@ -277,17 +280,33 @@ def cost_rows(job: Job, state: dict[str, Any]) -> tuple[CostRow, ...]:
             CostRow(STEP_NAMES[stage], "Replicate", usd, prediction_url(job, PAID_RECORD[stage]))
         )
     for stage in GENERATION_STAGES:  # priced by length: use the estimate logged at creation
-        if stage_status(state, stage) != "done":
-            continue
-        rows.append(
-            CostRow(
-                _generation_name(state, stage, key),
-                PROVIDER_NAMES.get(key, "Replicate"),
-                _generation_cost(job, state, stage),
-                None if seedance else prediction_url(job, PAID_RECORD[stage]),
+        if stage_status(state, stage) == "done":
+            rows.append(
+                CostRow(
+                    _generation_name(state, stage, key),
+                    PROVIDER_NAMES.get(key, "Replicate"),
+                    _generation_cost(job, state, stage),
+                    None if seedance else prediction_url(job, PAID_RECORD[stage]),
+                )
             )
-        )
+        lay_back = _lay_back_cost(job, state, stage)
+        if lay_back is not None:
+            record = f"{stage}-sam/sam-prediction.json"
+            rows.append(CostRow(LAY_BACK, "Replicate", lay_back, prediction_url(job, record)))
     return tuple(rows)
+
+
+def _lay_back_cost(job: Job, state: dict[str, Any], stage: str) -> float | None:
+    """A scene swap's lay-back SAM 3 run for the current {stage}-sam record, or None."""
+    current = prediction_id(job, f"{stage}-sam/sam-prediction.json")
+    entries = [
+        entry
+        for entry in _cost_entries(state)
+        if entry.get("step") == f"{stage}-paste" and current and entry.get("task_id") == current
+    ]
+    if not entries:
+        return None
+    return round(sum(_usd(entry.get("usd")) for entry in entries), 4)
 
 
 def _generation_name(state: dict[str, Any], stage: str, key: str) -> str:
