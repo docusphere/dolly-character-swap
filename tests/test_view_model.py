@@ -104,6 +104,8 @@ def test_current_step_follows_the_job(runs_dir, media):
     decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
     assert vm.current_step(job, job.state) == 4  # approved, no draft
     finish_stage(job, media, "draft")
+    assert vm.current_step(job, job.state) == 4  # no final made: the draft is the last step
+    job.mark_stage("final", "running")
     assert vm.current_step(job, job.state) == 5
     job.mark_stage("draft", fingerprint="older-inputs")
     assert vm.current_step(job, job.state) == 4  # the draft is out of date

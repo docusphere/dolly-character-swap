@@ -130,6 +130,7 @@ def test_unknown_step_numbers(client, runs_dir, media, number):
 def test_every_step_has_the_bar_its_line_and_no_inline_code(client, runs_dir, media, number):
     job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")
+    finish_stage(job, media, "final")
     text = client.get(f"/jobs/{job.id}/step/{number}").text
     assert f"Step {number} of 5" in text and 'aria-label="Steps"' in text
     assert 'aria-current="step"' in text
@@ -170,6 +171,16 @@ def test_draft_step_shows_the_prompt_read_only_for_now(client, runs_dir, media):
     assert not job.path("prompt.txt").exists()
 
 
+def test_without_a_final_the_draft_is_the_last_step(client, runs_dir, media):
+    job = _approved(runs_dir, media)
+    finish_stage(job, media, "draft")
+    text = client.get(f"/jobs/{job.id}/step/4").text
+    assert "Step 4 of 4" in text and ">Final<" not in text
+    assert steps.FINAL_OPTIONAL in text and steps.NEXT_FINAL not in text
+    response = client.get(f"/jobs/{job.id}/step/5", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"].endswith("/step/4")
+
+
 def test_final_step_offers_the_download(client, runs_dir, media):
     job = _approved(runs_dir, media)
     finish_stage(job, media, "draft")
@@ -206,7 +217,7 @@ def test_a_wan_draft_has_no_seedance_tag(client, runs_dir, media):
     job = make_job(runs_dir, media, "direct")
     decide(job, approved=True, note="ok", fingerprint=fingerprint(job))
     text = client.get(f"/jobs/{job.id}/step/4").text
-    assert "Step 4 of 5" in text and "Seedance 2.5" not in text
+    assert "Step 4 of 4" in text and "Seedance 2.5" not in text
 
 
 def test_a_job_without_a_photo_or_an_error_message_says_so(client, runs_dir, media):

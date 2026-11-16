@@ -18,7 +18,9 @@
 {{ placeholder(page.state) }}
 {% endif %}
 <div class="actions">
-  {% if page.wipe and not page.stale %}
+  {% if page.wipe and not page.stale and page.bar|length == 5 %}
   <a class="button primary" href="/jobs/{{ page.id }}/step/5">{{ steps.NEXT_FINAL }}</a>
+  {% elif page.wipe and not page.stale %}
+  <p class="meta">{{ steps.FINAL_OPTIONAL }}</p>
   {% endif %}
 </div>

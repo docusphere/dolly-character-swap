@@ -158,6 +158,9 @@ NEXT_DRAFT = "Next: draft"
 MAKE_DRAFT = "Make draft"
 ANOTHER_DRAFT = "Make another draft"
 NEXT_FINAL = "Next: final"
+FINAL_OPTIONAL = (
+    "This is the finished swap. A sharper 720p or 1080p final is optional and costs extra."
+)
 DOWNLOAD = "Download"
 TRY_AGAIN = "Try again"
 CONTINUE_FREE = "Continue (no new charge)"

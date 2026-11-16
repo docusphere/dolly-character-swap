@@ -25,6 +25,7 @@ from character_swap.web.view_model import (
     cost_rows,
     current_step,
     file_if_present,
+    has_final,
     is_app_job,
     list_jobs,
     prep_done,
@@ -145,10 +146,14 @@ def step_url(job_id: str, number: int) -> str:
     return f"/jobs/{job_id}/step/{number}"
 
 
-def step_bar(job_id: str | None, current: int, reachable: int) -> tuple[BarItem, ...]:
-    """1 Upload · 2 Prepare · 3 Check · 4 Draft · 5 Final; earlier steps can be revisited."""
+def step_bar(
+    job_id: str | None, current: int, reachable: int, *, last: int = 5
+) -> tuple[BarItem, ...]:
+    """1 Upload · 2 Prepare · 3 Check · 4 Draft · 5 Final; earlier steps can be revisited.
+
+    last: the final step shown (4 when no final was made: the draft is the finished swap)."""
     items = []
-    for item in steps.STEPS:
+    for item in steps.STEPS[:last]:
         if item.number == current:
             state = "current"
         elif item.number < reachable:
@@ -275,7 +280,7 @@ def job_page(job: Job, runs_dir: Path, number: int, *, tab: str = "") -> JobPage
         "id": job.id,
         "short_id": job.id[:8],
         "step": steps.step(number),
-        "bar": step_bar(job.id, number, reachable),
+        "bar": step_bar(job.id, number, reachable, last=5 if has_final(state) else 4),
         "mode": state["mode"],
         "read_only": not is_app_job(state, key),
         "progress": progress(state),

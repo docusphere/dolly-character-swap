@@ -165,7 +165,14 @@ def current_step(job: Job, state: dict[str, Any]) -> int:
         return 4
     if draft.get("fingerprint") != decision.get("fingerprint"):
         return 4  # the approved inputs changed since the draft: a new draft is next
+    if not has_final(state):
+        return 4  # no final made: the draft is the last step shown
     return 5
+
+
+def has_final(state: dict[str, Any]) -> bool:
+    """A final was started (running, done or failed); without one the app stops at the draft."""
+    return isinstance(state["stages"].get("final"), dict)
 
 
 def is_app_job(state: dict[str, Any], key: str) -> bool:

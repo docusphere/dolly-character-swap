@@ -5,7 +5,7 @@
 <main id="main" class="page" data-job-id="{{ page.id }}" data-poll="{{ page.progress.poll }}" data-progress="{{ progress_json }}">
   {% include "bar.html" %}
   <div class="step-head">
-    <p class="step-count">Step {{ page.step.number }} of 5 · Swap <code>{{ page.short_id }}</code></p>
+    <p class="step-count">Step {{ page.step.number }} of {{ page.bar|length }} · Swap <code>{{ page.short_id }}</code></p>
     <h1>{{ page.step.heading }}</h1>
     <p class="line">{{ page.step.line }}</p>
     {% if page.scene_line %}<p class="line">{{ page.scene_line }}</p>{% endif %}

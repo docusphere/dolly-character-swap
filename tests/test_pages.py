@@ -285,3 +285,8 @@ def test_a_single_shot_job_never_shows_the_swapped_area(runs_dir, media):
     media.copy("area.mp4", job.path("draft-area.mp4"))
     page = pages.job_page(job, runs_dir, 4, tab="area")
     assert page.views == () and page.wipe.after.endswith("/draft.mp4")
+
+
+def test_the_step_bar_can_stop_at_the_draft():
+    bar = pages.step_bar("j" * 32, 4, 4, last=4)
+    assert [item.title for item in bar] == ["Upload", "Prepare", "Check", "Draft"]
