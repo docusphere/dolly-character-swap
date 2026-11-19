@@ -6,6 +6,17 @@ Swap a person in a short video for your own character while keeping the original
 
 Only use faces and footage you have the rights to use.
 
+Don't want to set anything up? Join the waitlist for the hosted version at
+[trydolly.io](https://trydolly.io).
+
+## Use it with Claude
+
+Clone this repo and open the folder in Claude Code (terminal, desktop app or IDE). The repo
+includes a skill in `.claude/skills/character-swap/`, so you can say "swap me into this clip"
+and Claude runs the steps below for you. It checks your setup, shows each price and waits for
+your yes before anything is paid, and has you watch the prepared clip before it approves it.
+You still type your own API keys into `.env`.
+
 ## See how it works: the walkthrough app
 
 `uv run charswap app` opens a local page (only on your computer) that walks through every
